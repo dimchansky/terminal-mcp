@@ -1,0 +1,77 @@
+diff --git a/internal/httpguard/guard.go b/internal/httpguard/guard.go
+--- a/internal/httpguard/guard.go
++++ b/internal/httpguard/guard.go
+@@ -81,6 +81,11 @@
+ 			http.Error(w, "unexpected Host or Origin", http.StatusForbidden)
+ 			return
+ 		}
++		// Absent routes, including OAuth discovery, must be 404 rather than an auth challenge.
++		if r.URL.Path != "/mcp" || r.URL.RawQuery != "" {
++			http.NotFound(w, r)
++			return
++		}
+ 		auth := r.Header.Values("Authorization")
+ 		if len(auth) != 1 {
+ 			http.Error(w, "authentication required", http.StatusUnauthorized)
+@@ -91,10 +96,6 @@
+ 			http.Error(w, "authentication required", http.StatusUnauthorized)
+ 			return
+ 		}
+-		if r.URL.Path != "/mcp" || r.URL.RawQuery != "" {
+-			http.NotFound(w, r)
+-			return
+-		}
+ 		if r.ContentLength > MaxBody {
+ 			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+ 			return
+diff --git a/internal/httpguard/guard_test.go b/internal/httpguard/guard_test.go
+--- a/internal/httpguard/guard_test.go
++++ b/internal/httpguard/guard_test.go
+@@ -40,6 +40,9 @@
+ 		{"browser", "127.0.0.1:8090", "Bearer " + token, "http://attacker.example", "/mcp", 403},
+ 		{"same origin browser", "127.0.0.1:8090", "Bearer " + token, "http://127.0.0.1:8090", "/mcp", 403},
+ 		{"wrong path", "127.0.0.1:8090", "Bearer " + token, "", "/mcp/extra", 404},
++		{"unknown path without auth", "127.0.0.1:8090", "", "", "/mcp/extra", 404},
++		{"discovery host check", "attacker.example:8090", "", "", "/.well-known/oauth-protected-resource", 403},
++		{"discovery origin check", "127.0.0.1:8090", "", "http://attacker.example", "/.well-known/oauth-protected-resource", 403},
+ 		{"query token", "127.0.0.1:8090", "Bearer " + token, "", "/mcp?token=leak", 404},
+ 	}
+ 	for _, c := range cases {
+@@ -117,3 +120,37 @@
+ 		t.Fatal("environment token failed")
+ 	}
+ }
++
++func TestAbsentOAuthMetadataReturnsNotFound(t *testing.T) {
++	token := strings.Repeat("d", 64)
++	h, err := Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
++		t.Fatal("OAuth discovery reached the MCP handler")
++	}), "127.0.0.1:8090", token)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, path := range []string{
++		"/",
++		"/.well-known/oauth-protected-resource/mcp",
++		"/.well-known/oauth-protected-resource",
++		"/.well-known/oauth-authorization-server",
++		"/.well-known/openid-configuration",
++	} {
++		t.Run(path, func(t *testing.T) {
++			for _, auth := range []string{"", "Bearer wrong", "Bearer " + token} {
++				r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8090"+path, nil)
++				if auth != "" {
++					r.Header.Set("Authorization", auth)
++				}
++				w := httptest.NewRecorder()
++				h.ServeHTTP(w, r)
++				if w.Code != http.StatusNotFound {
++					t.Errorf("auth present=%v: got %d, want 404; body=%q", auth != "", w.Code, w.Body.String())
++				}
++				if w.Header().Get("WWW-Authenticate") != "" {
++					t.Error("absent OAuth metadata must not advertise an authorization flow")
++				}
++			}
++		})
++	}
++}
