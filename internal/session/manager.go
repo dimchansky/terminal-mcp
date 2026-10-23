@@ -13,17 +13,18 @@ import (
 )
 
 type Manager struct {
-	mu        sync.Mutex
-	id        string
-	limits    Limits
-	sessions  map[string]*Session
-	starting  int
-	starts    sync.WaitGroup
-	closed    bool
-	closeOnce sync.Once
-	closeDone chan struct{}
-	ops       ledger
-	startPTY  PTYStarter
+	mu              sync.Mutex
+	id              string
+	limits          Limits
+	sessions        map[string]*Session
+	starting        int
+	starts          sync.WaitGroup
+	closed          bool
+	closeOnce       sync.Once
+	closeDone       chan struct{}
+	ops             ledger
+	startPTY        PTYStarter
+	drainGeneration uint64
 }
 
 func newID() string {
@@ -116,6 +117,7 @@ func (m *Manager) List(context.Context) (ListResult, error) {
 	m.mu.Unlock()
 	sort.Slice(out.Sessions, func(i, j int) bool { return out.Sessions[i].SessionID < out.Sessions[j].SessionID })
 	out.OperationsUsed = m.ops.count()
+	out.Draining = m.ops.raw.Frozen()
 	return out, nil
 }
 
@@ -128,7 +130,7 @@ func (m *Manager) Start(ctx context.Context, args StartArgs) (ActionResult, erro
 		return ActionResult{}, err
 	}
 	effect := a
-	effect.ServerID, effect.OperationID, effect.WaitMS, effect.MaxBytes = "", "", 0, 0
+	effect.ServerID, effect.OperationID, effect.WaitMS, effect.MaxBytes, effect.WaitFor = "", "", 0, 0, ""
 	receipt, replayed, err := m.ops.do(ctx, m.limits.MaxOperations, a.OperationID, "start", effect, func() Receipt {
 		m.mu.Lock()
 		m.pruneLocked()
@@ -163,7 +165,7 @@ func (m *Manager) Start(ctx context.Context, args StartArgs) (ActionResult, erro
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return m.observeAction(ctx, receipt, replayed, "", a.WaitMS, a.MaxBytes), nil
+	return m.observeAction(ctx, receipt, replayed, "", a.WaitMS, a.MaxBytes, a.WaitFor), nil
 }
 
 func (m *Manager) Read(ctx context.Context, args ReadArgs) (Observation, error) {
@@ -178,7 +180,7 @@ func (m *Manager) Read(ctx context.Context, args ReadArgs) (Observation, error) 
 	return s.read(ctx, a)
 }
 
-func (m *Manager) observeAction(ctx context.Context, receipt Receipt, replayed bool, cursor string, waitMS, maxBytes int) ActionResult {
+func (m *Manager) observeAction(ctx context.Context, receipt Receipt, replayed bool, cursor string, waitMS, maxBytes int, waitFor ...string) ActionResult {
 	result := ActionResult{Receipt: receipt, Replayed: replayed}
 	if receipt.SessionID == "" {
 		return result
@@ -186,7 +188,11 @@ func (m *Manager) observeAction(ctx context.Context, receipt Receipt, replayed b
 	if cursor == "" {
 		cursor = receipt.BeforeCursor
 	}
-	obs, err := m.Read(ctx, ReadArgs{SessionID: receipt.SessionID, Cursor: cursor, WaitMS: waitMS, MaxBytes: maxBytes})
+	wait := ""
+	if len(waitFor) != 0 {
+		wait = waitFor[0]
+	}
+	obs, err := m.Read(ctx, ReadArgs{SessionID: receipt.SessionID, Cursor: cursor, WaitMS: waitMS, MaxBytes: maxBytes, WaitFor: wait})
 	if err != nil {
 		result.ObservationError = err.Error()
 	} else {
@@ -363,4 +369,49 @@ func (m *Manager) Close() {
 		close(m.closeDone)
 	})
 	<-m.closeDone
+}
+
+// PrepareRestart atomically excludes new mutations after checking managed jobs are finished.
+func (m *Manager) PrepareRestart(id string) error {
+	if err := m.checkServer(id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.starting != 0 {
+		return fmt.Errorf("active_sessions: process launch in progress")
+	}
+	for _, s := range m.sessions {
+		s.mu.Lock()
+		active := s.exit == nil || !s.outputDone
+		s.mu.Unlock()
+		if active {
+			return fmt.Errorf("active_sessions: update requires all managed processes to finish")
+		}
+	}
+	if err := m.ops.raw.Freeze(); err != nil {
+		return err
+	}
+	m.drainGeneration++
+	generation := m.drainGeneration
+	// A dead updater must not leave a healthy server permanently read-only.
+	time.AfterFunc(time.Minute, func() { m.expireDrain(generation) })
+	return nil
+}
+func (m *Manager) CancelRestart(id string) error {
+	if err := m.checkServer(id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.drainGeneration++
+	m.ops.raw.Resume()
+	return nil
+}
+func (m *Manager) expireDrain(generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.drainGeneration == generation {
+		m.ops.raw.Resume()
+	}
 }

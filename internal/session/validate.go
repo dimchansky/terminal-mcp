@@ -35,6 +35,15 @@ func validKey(k string) bool {
 }
 
 func (m *Manager) readOptions(a ReadArgs) (ReadArgs, error) {
+	if a.WaitFor == "" {
+		a.WaitFor = "output"
+	}
+	if a.WaitFor != "output" && a.WaitFor != "completion" {
+		return a, fmt.Errorf("wait_for must be output or completion")
+	}
+	if a.WaitFor == "completion" && a.Until != "" {
+		return a, fmt.Errorf("until cannot be combined with wait_for=completion")
+	}
 	if a.View == "" {
 		a.View = "events"
 	}
@@ -126,7 +135,8 @@ func (m *Manager) normalizeStart(a StartArgs) (StartArgs, error) {
 	if total > 65536 {
 		return a, fmt.Errorf("environment overrides exceed 64 KiB")
 	}
-	_, err = m.readOptions(ReadArgs{WaitMS: a.WaitMS, MaxBytes: a.MaxBytes})
+	options, err := m.readOptions(ReadArgs{WaitMS: a.WaitMS, MaxBytes: a.MaxBytes, WaitFor: a.WaitFor})
+	a.WaitFor = options.WaitFor
 	return a, err
 }
 

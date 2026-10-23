@@ -7,13 +7,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"terminalmcp/internal/filesystem"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"terminalmcp/internal/httpguard"
 	"terminalmcp/internal/session"
+	"terminalmcp/internal/terminal"
 )
 
 func call[T any](t *testing.T, ctx context.Context, cs *mcp.ClientSession, name string, args any) T {
@@ -158,5 +161,101 @@ func TestHTTPReconnectRetainsProcess(t *testing.T) {
 	stop := call[session.ActionResult](t, ctx, second, "terminal_signal", session.SignalArgs{ServerID: list.ServerID, OperationID: "stop", SessionID: r.Receipt.SessionID, Signal: "KILL"})
 	if stop.Receipt.Status != "applied" {
 		t.Fatalf("stop: %#v", stop)
+	}
+}
+
+func TestFileToolsAndCompletionOverMCP(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	manager := session.New(nil)
+	defer manager.Close()
+	files, err := filesystem.New(manager, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	ct, st := mcp.NewInMemoryTransports()
+	ss, err := New(manager, files).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "files-contract", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil || len(tools.Tools) != 12 {
+		t.Fatalf("%+v %v", tools, err)
+	}
+	for _, tool := range tools.Tools {
+		if strings.HasPrefix(tool.Name, "file_") && (tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint) {
+			t.Fatal("local filesystem marked open world")
+		}
+	}
+	list := call[session.ListResult](t, ctx, cs, "terminal_list", struct{}{})
+	path := filepath.Join(files.Root(), "new.txt")
+	created := call[filesystem.ActionResult](t, ctx, cs, "file_write", filesystem.WriteArgs{ServerID: list.ServerID, OperationID: "create", Path: path, Content: "hello\n"})
+	if created.Receipt.Status != "applied" {
+		t.Fatal(created)
+	}
+	read := call[filesystem.ReadResult](t, ctx, cs, "file_read", filesystem.ReadArgs{Files: []filesystem.Range{{Path: path}}})
+	if read.Files[0].Version != created.Receipt.Version {
+		t.Fatal("wrong read version")
+	}
+	edited := call[filesystem.ActionResult](t, ctx, cs, "file_edit", filesystem.EditArgs{ServerID: list.ServerID, OperationID: "edit", Path: path, ExpectedVersion: created.Receipt.Version, Edits: []filesystem.Edit{{OldText: "hello", NewText: "world"}}})
+	if edited.Receipt.Status != "applied" {
+		t.Fatal(edited)
+	}
+	run := call[session.ActionResult](t, ctx, cs, "terminal_start", session.StartArgs{ServerID: list.ServerID, OperationID: "quick", Argv: []string{"/bin/sh", "-c", "printf done"}, CloseOnExit: true, WaitFor: "completion", WaitMS: 1000})
+	if run.Observation == nil || run.Observation.ReturnReason != "completed" || !run.Observation.Session.Closed {
+		t.Fatal(run)
+	}
+}
+
+func TestMaintenanceEndpointContract(t *testing.T) {
+	manager := session.New(nil)
+	defer manager.Close()
+	state, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Maintenance(manager)
+	cases := []struct {
+		method, body string
+		status       int
+	}{
+		{"GET", "", 405},
+		{"POST", `{}`, 400},
+		{"POST", `{"server_id":"old","action":"begin"}`, 409},
+		{"POST", `{"server_id":"` + state.ServerID + `","action":"begin","unknown":1}`, 400},
+		{"POST", `{"server_id":"` + state.ServerID + `","action":"begin"} {}`, 400},
+		{"POST", `{"server_id":"` + state.ServerID + `","action":"begin"}`, 200},
+		{"POST", `{"server_id":"` + state.ServerID + `","action":"cancel"}`, 200},
+	}
+	for _, tc := range cases {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(tc.method, "/admin/maintenance", strings.NewReader(tc.body)))
+		if response.Code != tc.status {
+			t.Fatalf("%s: %d %s", tc.body, response.Code, response.Body.String())
+		}
+	}
+}
+func TestPTYAutoCloseKeepsScreen(t *testing.T) {
+	manager := session.New(terminal.Start)
+	defer manager.Close()
+	list, _ := manager.List(context.Background())
+	result, err := manager.Start(context.Background(), session.StartArgs{
+		ServerID: list.ServerID, OperationID: "pty-complete", Mode: "pty",
+		Argv:        []string{"/bin/sh", "-c", "printf rendered"},
+		CloseOnExit: true, WaitFor: "completion", WaitMS: 3000,
+	})
+	if err != nil || result.Observation == nil || !result.Observation.Session.Closed {
+		t.Fatalf("%+v %v", result, err)
+	}
+	out, err := manager.Read(context.Background(), session.ReadArgs{SessionID: result.Receipt.SessionID, View: "screen"})
+	if err != nil || out.Screen == nil || !strings.Contains(out.Screen.Text, "rendered") {
+		t.Fatalf("%+v %v", out, err)
 	}
 }

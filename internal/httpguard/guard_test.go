@@ -154,3 +154,23 @@ func TestAbsentOAuthMetadataReturnsNotFound(t *testing.T) {
 		})
 	}
 }
+
+func TestMaintenanceUsesSameAuthentication(t *testing.T) {
+	called := false
+	h, err := Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; w.WriteHeader(204) }), "127.0.0.1:8090", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "http://127.0.0.1:8090/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 401 || called {
+		t.Fatal("unprotected maintenance")
+	}
+	r.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 64))
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 204 || !called {
+		t.Fatal("authorized maintenance rejected")
+	}
+}

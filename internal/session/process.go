@@ -39,6 +39,7 @@ type Session struct {
 	readers                                           []io.ReadCloser
 	writeGate                                         chan struct{}
 	done, drained                                     chan struct{}
+	closeOnExit                                       bool
 	closeOnce                                         sync.Once
 	closeDone                                         chan struct{}
 }
@@ -51,7 +52,7 @@ func spawn(a StartArgs, limits Limits, startPTY PTYStarter) (*Session, error) {
 	}
 	cmd := exec.Command(path, a.Argv[1:]...)
 	cmd.Dir, cmd.Env = a.Cwd, env
-	s := &Session{id: newID(), mode: a.Mode, cwd: a.Cwd, argv: append([]string(nil), a.Argv...),
+	s := &Session{closeOnExit: a.CloseOnExit, id: newID(), mode: a.Mode, cwd: a.Cwd, argv: append([]string(nil), a.Argv...),
 		startedAt: time.Now(), cmd: cmd, limits: limits, journal: newJournal(limits.JournalBytes, limits.JournalEvents),
 		changed: make(chan struct{}), writeGate: make(chan struct{}, 1), done: make(chan struct{}), drained: make(chan struct{}), closeDone: make(chan struct{})}
 	var streams []string
@@ -202,7 +203,7 @@ func (s *Session) infoLocked() Info {
 	}
 	return Info{SessionID: s.id, Mode: s.mode, PID: s.cmd.Process.Pid, Argv: append([]string(nil), s.argv...), Cwd: s.cwd,
 		StartedAt: s.startedAt.UTC().Format(time.RFC3339Nano), ProcessState: state, Exit: s.exit, Closed: s.closed,
-		OutputDone: s.outputDone, OutputIncomplete: s.outputIncomplete, EndCursor: makeCursor(s.id, s.journal.end), Diagnostics: append([]string(nil), s.diagnostics...)}
+		CloseOnExit: s.closeOnExit, OutputDone: s.outputDone, OutputIncomplete: s.outputIncomplete, EndCursor: makeCursor(s.id, s.journal.end), Diagnostics: append([]string(nil), s.diagnostics...)}
 }
 
 func (s *Session) wait() {
@@ -239,6 +240,18 @@ func (s *Session) wait() {
 		for _, r := range s.readers {
 			_ = r.Close()
 		}
+	}
+	if s.closeOnExit {
+		// Readers close independently; never truncate output merely because the leader exited.
+		<-s.drained
+		s.closeOnce.Do(func() {
+			_ = s.stdin.Close()
+			s.mu.Lock()
+			s.closed = true
+			s.notifyLocked()
+			s.mu.Unlock()
+			close(s.closeDone)
+		})
 	}
 }
 
@@ -299,11 +312,13 @@ func (s *Session) read(ctx context.Context, a ReadArgs) (Observation, error) {
 			out.ReturnReason = "gap"
 		case out.HasMore || (out.Screen != nil && out.Screen.Truncated):
 			out.ReturnReason = "limit"
-		case out.Session.OutputDone:
+		case a.WaitFor == "completion" && out.Session.Exit != nil && out.Session.OutputDone && (!s.closeOnExit || out.Session.Closed):
+			out.ReturnReason = "completed"
+		case a.WaitFor != "completion" && out.Session.OutputDone:
 			out.ReturnReason = "eof"
-		case a.Until == "" && hasNew:
+		case a.WaitFor != "completion" && a.Until == "" && hasNew:
 			out.ReturnReason = "output"
-		case a.Until == "" && out.Session.Exit != nil:
+		case a.WaitFor != "completion" && a.Until == "" && out.Session.Exit != nil:
 			out.ReturnReason = "exited"
 		case expired || !time.Now().Before(end):
 			out.ReturnReason = "deadline"

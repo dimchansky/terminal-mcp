@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"terminalmcp/internal/filesystem"
 	"terminalmcp/internal/httpguard"
 	"terminalmcp/internal/mcpserver"
 	"terminalmcp/internal/session"
@@ -33,6 +34,7 @@ func run() error {
 	transport := flag.String("transport", "http", "http (independent process) or stdio (owned by the MCP host)")
 	listen := flag.String("listen", "127.0.0.1:8090", "HTTP literal loopback address")
 	tokenFile := flag.String("token-file", "", "0600 file holding the HTTP bearer token; otherwise use TERMINAL_MCP_TOKEN")
+	fileRoot := flag.String("file-root", ".", "Root directory for file tools (default: service working directory)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
@@ -44,7 +46,12 @@ func run() error {
 	defer stop()
 	manager := session.New(terminal.Start)
 	defer manager.Close()
-	server := mcpserver.New(manager)
+	files, err := filesystem.New(manager, *fileRoot)
+	if err != nil {
+		return err
+	}
+	defer files.Close()
+	server := mcpserver.New(manager, files)
 	if *transport == "stdio" {
 		err := server.Run(ctx, &mcp.StdioTransport{MaxLineLength: httpguard.MaxBody})
 		if errors.Is(err, context.Canceled) {
@@ -64,7 +71,10 @@ func run() error {
 		return err
 	}
 	defer listener.Close()
-	handler, err := httpguard.Wrap(mcpserver.HTTP(server), listener.Addr().String(), token)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpserver.HTTP(server))
+	mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
+	handler, err := httpguard.Wrap(mux, listener.Addr().String(), token)
 	if err != nil {
 		return err
 	}

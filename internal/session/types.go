@@ -54,10 +54,13 @@ type StartArgs struct {
 	Cols         int               `json:"cols,omitempty"`
 	WaitMS       int               `json:"wait_ms,omitempty" jsonschema:"Observation wait only; 0 is immediate; maximum 10000."`
 	MaxBytes     int               `json:"max_bytes,omitempty"`
+	CloseOnExit  bool              `json:"close_on_exit,omitempty" jsonschema:"Release the session automatically after process exit and output drain; retained output remains readable. Default false."`
+	WaitFor      string            `json:"wait_for,omitempty" jsonschema:"output (default) or completion; bounded by wait_ms, output limits and gaps."`
 	MaxRuntimeMS int64             `json:"max_runtime_ms,omitempty" jsonschema:"Independent process lifetime limit; 0 disables it."`
 }
 
 type ReadArgs struct {
+	WaitFor   string `json:"wait_for,omitempty" jsonschema:"output (default) or completion; completion requires process exit and output drain, and automatic cleanup when requested."`
 	SessionID string `json:"session_id"`
 	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque next_cursor from a previous read. Omit to start at byte zero."`
 	View      string `json:"view,omitempty" jsonschema:"events (default) or screen (PTY only)."`
@@ -122,6 +125,7 @@ type Info struct {
 	ProcessState     string   `json:"process_state"`
 	Exit             *Exit    `json:"exit,omitempty"`
 	Closed           bool     `json:"closed"`
+	CloseOnExit      bool     `json:"close_on_exit"`
 	OutputDone       bool     `json:"output_done"`
 	OutputIncomplete bool     `json:"output_incomplete"`
 	EndCursor        string   `json:"end_cursor"`
@@ -191,6 +195,7 @@ type Summary struct {
 }
 
 type ListResult struct {
+	Draining       bool      `json:"draining"`
 	ServerID       string    `json:"server_id"`
 	Limits         Limits    `json:"limits"`
 	Sessions       []Summary `json:"sessions"`

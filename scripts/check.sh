@@ -9,5 +9,6 @@ fi
 go mod verify
 go test -race -count=1 -timeout=120s ./...
 go vet ./...
+python3 -m unittest discover -s scripts -p "test_*.py"
 mkdir -p bin
 go build -trimpath -o bin/terminal-mcp ./cmd/terminal-mcp

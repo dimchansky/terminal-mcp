@@ -376,3 +376,41 @@ Dependency APIs are pinned in `go.mod`; updating them requires rerunning tests.
 The last reference documents a 120-second request budget, not a process lifetime.
 This design uses much shorter waits and does not depend on those limits remaining
 unchanged. No particular hosted-client behavior is assumed by the core contract.
+
+
+## 14. Version 0.2: files, completion and supervised updates
+
+This section extends the earlier seven-terminal-tool contract. Detailed argument
+limits and operations are in [DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+`close_on_exit` defaults false and releases I/O after leader exit and bounded output
+drain. It never discards retained output, sends stale-PID signals or consumes another
+mutation ID. It shares the single-close primitive with manual close. The `closed`
+flag is not proof of a resource leak: completed-session retention already worked
+independently of it. `wait_for=completion` waits for exit, drained output and requested
+auto-close; deadlines, gaps and size caps still return earlier. `until` cannot be
+combined with completion. Wait mode is observational and excluded from retry identity;
+auto-close changes lifetime and is included. No duplicate terminal_exec API is needed.
+
+Five file tools use one os.Root and absolute paths, no mutable global cwd. Reads
+return whole-file SHA-256 versions. Edits require exact unique, non-overlapping text
+against that version. Writes are atomic per file, create-only without an expected
+version, and guarded replacements otherwise. Normal permissions are preserved, not
+ACLs or xattrs. Linked, non-owned, special and read-only targets are refused. This
+is optimistic conflict detection, not a cross-file transaction or universal CAS.
+A shared mutation ledger fences both process and file writes. Search uses rg for
+ignore-aware discovery but opens content through os.Root with bounded output/time.
+
+An independent launchd job owns deployment because a process cannot reliably finish
+its own restart. Immutable releases and an atomic selection symlink separate builds
+from the live executable. Preflight runs full tests and starts the candidate on a
+separate port. An authenticated /admin/maintenance endpoint applies the same bearer,
+Host and Origin checks as /mcp and freezes new mutations only when the manager is
+idle. Generation-fenced 60-second expiry avoids permanent freeze after updater death.
+A new server ID and exact candidate metadata are required before reporting success;
+otherwise restore the verified previous release. Manual stop wins over restart.
+
+This single-process design has a brief restart outage and loses in-memory session
+and retry state; it does not migrate active PTYs. Busy updates must not terminate
+useful work. Legacy adoption lacks the fence and requires one explicit idle window.
+Tool metadata and instructions determine Refresh tools, not binary version alone.

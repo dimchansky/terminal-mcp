@@ -3,14 +3,17 @@
 A small Go service that gives an MCP client live local processes and terminal
 sessions, rather than a single blocking `execute(command)` call.
 
-**Status:** source implementation with executed Linux process-core/security tests.
-The complete SDK/PTY build has **not** been executed in the delivery environment;
-read [TEST_REPORT.md](TEST_REPORT.md) before treating this as a validated release.
-No prebuilt binaries are included.
+**Version 0.2:** terminal sessions, version-guarded file tools and supervised
+macOS updates. See [Development tools and service operations](docs/DEVELOPMENT.md)
+for the new API and safe self-update workflow. The original delivery report remains
+historical; run `./scripts/check.sh` for the current revision.
 
 ## What is included
 
-- Seven tools: start, read, write, signal, resize, list, and close.
+- Twelve tools: seven terminal tools plus file_read, file_edit, file_write, file_search, file_list.
+- Auto-close after exit and bounded completion waits for one-shot commands.
+- Version-checked atomic single-file edits, batch line reads, and bounded search.
+- Optional macOS LaunchAgent with preflight, independent restart worker and rollback.
 - Pipes with separate stdout/stderr, or a real PTY with a rendered text screen.
 - Continuous bounded output capture, independent byte cursors, explicit gaps.
 - Bounded observation and input waits; signals never wait behind a reading call.
@@ -36,12 +39,10 @@ go mod tidy
 
 `check.sh` verifies formatting, runs all tests with the race detector, runs `go
 vet`, and builds `bin/terminal-mcp`. It does not install a service or change your
-shell configuration. A native C toolchain is needed for `-race`.
+shell configuration. A native C toolchain is needed for `-race`; Python 3 runs controller tests. Only file_search also requires ripgrep (rg).
 
-The archive has no fabricated `go.sum`: module downloads were unavailable during
-creation. The first `go mod tidy` resolves the pinned graph and generates the real
-checksum file; review and commit the resulting `go.mod`/`go.sum` before publishing.
-Keep normal Go checksum verification enabled. Dependencies are not vendored.
+The repository contains the verified go.sum generated during native builds.
+Keep checksum verification enabled. Dependencies are pinned, not vendored.
 
 For a plain build after dependency resolution:
 
@@ -409,7 +410,7 @@ Example local MCP host configuration (the host must support this schema):
 }
 ```
 
-The same seven tools are exposed. No HTTP token is needed. Diagnostics stay on
+The same twelve tools are exposed. No HTTP token is needed. Diagnostics stay on
 stderr; stdout is reserved for MCP. This is simpler to launch but **not** the mode
 for keeping sessions alive when the owning host/tunnel shuts down the server.
 
@@ -423,7 +424,7 @@ versions. Do not turn the endpoint into ad-hoc REST routes.
 2. Start a process using a new operation ID.
 3. Read using `next_cursor`; examine both process state and `output_done`.
 4. Send exact input, explicit keys, or a signal as needed.
-5. Close sessions that are no longer needed. Output is retained for a bounded time.
+5. Prefer `close_on_exit: true` for one-shot commands; otherwise close your sessions explicitly. Output remains available within retention limits.
 
 Start an ordinary build/test process:
 
