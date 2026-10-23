@@ -262,23 +262,41 @@ func applyEdits(data []byte, edits []Edit) ([]byte, int, string, error) {
 		start, end int
 		new        string
 		old        string
+		index      int
 	}
 	source := string(data)
 	spans := []span{}
-	for _, e := range edits {
+	for i, e := range edits {
 		start := strings.Index(source, e.OldText)
-		if start < 0 || strings.Contains(source[start+1:], e.OldText) {
-			return nil, 0, "", fmt.Errorf("old_text must match exactly once")
+		matches := 0
+		if start >= 0 {
+			matches = 1
+			for offset := start + 1; offset < len(source); {
+				next := strings.Index(source[offset:], e.OldText)
+				if next < 0 {
+					break
+				}
+				matches++
+				offset += next + 1
+			}
 		}
-		spans = append(spans, span{start, start + len(e.OldText), e.NewText, e.OldText})
+		if matches == 0 {
+			return nil, 0, "", fmt.Errorf("edit[%d]: old_text not found; read the file again", i+1)
+		}
+		if matches != 1 {
+			return nil, 0, "", fmt.Errorf("edit[%d]: old_text matches %d locations; use a longer unique fragment", i+1, matches)
+		}
+		spans = append(spans, span{start: start, end: start + len(e.OldText), new: e.NewText, old: e.OldText, index: i + 1})
 	}
 	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
 	var b, preview strings.Builder
 	pos := 0
+	previous := 0
 	for _, s := range spans {
 		if s.start < pos {
-			return nil, 0, "", fmt.Errorf("edits overlap in the original content")
+			return nil, 0, "", fmt.Errorf("edit[%d] overlaps edit[%d]", s.index, previous)
 		}
+		previous = s.index
 		b.WriteString(source[pos:s.start])
 		b.WriteString(s.new)
 		pos = s.end

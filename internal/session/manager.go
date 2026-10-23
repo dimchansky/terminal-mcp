@@ -93,7 +93,7 @@ func (m *Manager) get(id string) (*Session, error) {
 	s := m.sessions[id]
 	m.mu.Unlock()
 	if s == nil {
-		return nil, fmt.Errorf("session_not_found_or_expired")
+		return nil, fmt.Errorf("session_not_found_or_expired: session is unavailable; it may have expired or the server may have restarted; call terminal_list to inspect current sessions")
 	}
 	return s, nil
 }
