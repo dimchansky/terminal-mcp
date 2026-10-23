@@ -97,9 +97,23 @@ privileges are needed. It manages terminal-mcp, NOT tunnel-client: keep the tunn
 running independently. The initial installation adopts an already working server
 at 127.0.0.1:8090 using ~/.config/terminal-mcp/token and this repository as file root.
 
-### First installation
+### Makefile shortcuts and first installation
 
-Save the known-working binary BEFORE rebuilding it. Never overwrite the backup.
+Use `make help` for available targets. `make check` tests and builds; `make build`
+only builds the binary without touching the running service. `make update` uses
+the same tested supervisor workflow as `python3 scripts/service.py update`;
+`make status`, `make start`, and `make stop` delegate to the controller.
+`make logs-service` tails stderr diagnostics, not a per-MCP-call audit.
+
+For a fresh installation (no existing server on 127.0.0.1:8090), first create
+the HTTP token according to README, then run `make install`. It tests, builds,
+preflights and registers the user LaunchAgent. Repeating `make install` while
+registered and running does not restart it. If intentionally stopped, it stays
+stopped; use `make start`. Following `make uninstall`, `make install` restores
+registration from retained configuration and binary releases without rebuilding.
+
+An existing manually launched server cannot be silently adopted by `make install`.
+For the initial transition only, save its known-working binary BEFORE rebuilding.
 Find the old listener PID with `lsof -nP -iTCP:8090 -sTCP:LISTEN`. Finish active
 managed jobs, then run from this repository:
 
@@ -146,18 +160,29 @@ tools in the ChatGPT plugin after deployment. Implementation-only updates with
 unchanged metadata need no refresh. Until refreshed, the model may still see old
 signatures even though the server has the new implementation.
 
-### Intentional stop and resume
+### Intentional stop and registration removal
 
 ```sh
-python3 scripts/service.py stop
-python3 scripts/service.py start
+make stop       # Stop without removing registration
+make start      # Start a registered service
+make uninstall  # Stop and remove LaunchAgent registration
+make install    # Register again using retained state
 ```
 
-Stop records an explicit marker, disables and unloads the agent. KeepAlive and
-updates will not override it. Start explicitly reenables service. A plain kill
-is considered a crash and launchd restarts it; use the stop command for deliberate
-shutdown. A user LaunchAgent requires the logged-in GUI domain, not a system boot
-daemon, and it does not keep sessions alive across logout or a machine crash.
+`make stop` records an explicit marker, disables and unloads the agent. KeepAlive
+and updates will not override it. `make start` explicitly reenables a registered
+service; if unregistered, use `make install`. A plain kill is considered a crash
+and launchd restarts it.
+
+`make uninstall` refuses a pending update. It records an explicit stop, unloads
+the agent, verifies launchd no longer has the job, then deletes ONLY its plist
+registration (not tokens, configuration, immutable releases, logs or update jobs).
+It is idempotent; a failed bootout preserves the plist for recovery. Never invoke
+uninstall from the same service's MCP terminal session: the connection will be
+interrupted. The tunnel-client runs independently and is not uninstalled.
+
+A user LaunchAgent requires the logged-in GUI domain, not a system boot daemon,
+and it does not keep sessions alive across logout or a machine crash.
 
 State: ~/Library/Application Support/LocalTerminalMCP (private permissions).
 Agent: ~/Library/LaunchAgents/com.dimchansky.terminal-mcp.plist.

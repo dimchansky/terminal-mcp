@@ -50,7 +50,35 @@ For a plain build after dependency resolution:
 go build -o bin/terminal-mcp ./cmd/terminal-mcp
 ```
 
-## Run: HTTP is the recommended mode
+## macOS: Makefile and LaunchAgent
+
+For an independent background service, use these targets from the project root:
+
+```sh
+make check         # Tests, go vet and build
+make install       # Register and start the user LaunchAgent; repeat is harmless
+make status        # Service health and last update result
+make update        # Validate and roll out changes with rollback support
+make stop          # Intentionally stop, keeping registration
+make start         # Restart a registered service
+make uninstall     # Stop and remove LaunchAgent registration, retaining data
+make logs-service  # Tail server diagnostics (not an MCP operation audit)
+```
+
+`make build` only builds `bin/terminal-mcp`; it never replaces the live deployed
+binary. `make install` is idempotent for an already loaded agent. On a fresh
+machine it requires an existing token file (generated below), runs full checks,
+and preflights the candidate before registration. After `make uninstall`, another
+`make install` restores the saved registration and starts the service. Neither
+command deletes the bearer token, stored releases, configuration or logs.
+
+If another server is already listening on port 8090 and has not been registered,
+`make install` refuses to take it over. Follow the explicit one-time adoption
+procedure in [Development tools and service operations](docs/DEVELOPMENT.md).
+Do not run `make uninstall` from a session hosted by the service being removed.
+This LaunchAgent manages terminal-mcp only; keep `tunnel-client` running separately.
+
+## Run: HTTP manually (alternative to LaunchAgent)
 
 Start the service independently of your MCP client/tunnel:
 

@@ -336,9 +336,102 @@ def queue(config, adopt_pid, previous_binary=None):
         'refresh_tools_required': fingerprint != previous_fingerprint}))
 
 
+def install_service(config):
+    """Register or recover the user agent without replacing a running process."""
+    if (STATE / 'pending').exists():
+        raise RuntimeError('update pending; inspect status before installing')
+    if not Path(config['token_file']).is_file():
+        raise RuntimeError('token file missing: ' + config['token_file'])
+    if PLIST.exists():
+        saved = plistlib.loads(PLIST.read_bytes())
+        if saved.get('Label') != LABEL or saved.get('ProgramArguments') != plist(config)['ProgramArguments']:
+            raise RuntimeError('existing LaunchAgent plist differs; refusing to overwrite it')
+        if stopped():
+            print('Already registered but manually stopped; use start to resume.')
+            return
+        if launch('print', TARGET, check=False).returncode == 0:
+            print('Already registered and loaded; no changes made.')
+            return
+    elif launch('print', TARGET, check=False).returncode == 0:
+        raise RuntimeError('launchd job exists without the expected plist; refusing takeover')
+    else:
+        # A fresh registration must not silently replace another local server.
+        with socket.socket() as sock:
+            if sock.connect_ex(('127.0.0.1', int(config['listen'].rsplit(':', 1)[1]))) == 0:
+                raise RuntimeError('port already in use; use explicit --adopt-pid migration')
+        preflight(config, str((STATE / 'current').resolve(strict=True)), full=False)
+
+    was_stopped = stopped()
+    created = not PLIST.exists()
+    try:
+        if created:
+            atomic(PLIST, plistlib.dumps(plist(config)))
+        (STATE / 'stopped').unlink(missing_ok=True)
+        launch('enable', TARGET)
+        launch('bootstrap', DOMAIN, str(PLIST))
+        ready = wait_ready(config)
+    except Exception:
+        launch('disable', TARGET, check=False)
+        launch('bootout', TARGET, check=False)
+        if created and launch('print', TARGET, check=False).returncode != 0:
+            PLIST.unlink(missing_ok=True)
+        if was_stopped:
+            atomic(STATE / 'stopped', b'explicit manual stop\n')
+        raise
+    print(json.dumps({'status': 'installed', 'server_id': ready['server_id']}))
+
+
+def uninstall_service():
+    """Remove launchd registration, retaining configuration, releases and logs."""
+    if (STATE / 'pending').exists():
+        raise RuntimeError('update pending; refuse uninstall until it completes')
+    loaded = launch('print', TARGET, check=False).returncode == 0
+    if not PLIST.exists():
+        if loaded:
+            raise RuntimeError('launchd job exists without its managed plist; refusing to remove it')
+        if (STATE / 'config.json').exists():
+            atomic(STATE / 'stopped', b'explicit manual stop\n')
+        print('Already unregistered; no files removed.')
+        return
+    saved = plistlib.loads(PLIST.read_bytes())
+    if saved.get('Label') != LABEL:
+        raise RuntimeError('unrecognized LaunchAgent plist; refusing removal')
+    atomic(STATE / 'stopped', b'explicit manual stop\n')
+    launch('disable', TARGET, check=False)
+    launch('bootout', TARGET, check=False)
+    if launch('print', TARGET, check=False).returncode == 0:
+        raise RuntimeError('launchd job is still loaded; plist retained for recovery')
+    PLIST.unlink()
+    print('LaunchAgent unregistered. Configuration, token, releases and logs retained.')
+
+
+def fresh_install(config):
+    """First install with no prior managed service or existing listener."""
+    if PLIST.exists() or (STATE / 'current').exists() or launch('print', TARGET, check=False).returncode == 0:
+        raise RuntimeError('existing service state detected; refusing fresh install')
+    with socket.socket() as sock:
+        if sock.connect_ex(('127.0.0.1', int(config['listen'].rsplit(':', 1)[1]))) == 0:
+            raise RuntimeError('port already in use; use explicit --adopt-pid migration')
+    if not Path(config['token_file']).is_file():
+        raise RuntimeError('token file missing: ' + config['token_file'])
+    env = dict(os.environ, PATH=config['path'])
+    subprocess.run(['./scripts/check.sh'], cwd=config['project'], env=env, check=True)
+    candidate = release(Path(config['project']) / 'bin/terminal-mcp')
+    preflight(config, candidate)
+    try:
+        activate(candidate)
+        save(STATE / 'config.json', config)
+        install_service(config)
+    except Exception:
+        if not PLIST.exists() and launch('print', TARGET, check=False).returncode != 0:
+            (STATE / 'config.json').unlink(missing_ok=True)
+            (STATE / 'current').unlink(missing_ok=True)
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'update', 'status', 'start', 'stop', '_worker'])
+    parser.add_argument('action', choices=['install', 'uninstall', 'update', 'status', 'start', 'stop', '_worker'])
     parser.add_argument('manifest', nargs='?')
     parser.add_argument('--adopt-pid', type=int, default=0)
     parser.add_argument('--previous-binary', type=Path)
@@ -356,7 +449,8 @@ def main():
         print('Stopped. Automatic update/restart will not override this; use start explicitly.')
         return
     if args.action == 'status':
-        result = {'manually_stopped': stopped(), 'launchd_loaded': launch('print', TARGET, check=False).returncode == 0}
+        result = {'registered': PLIST.exists(), 'manually_stopped': stopped(),
+                  'launchd_loaded': launch('print', TARGET, check=False).returncode == 0}
         if (STATE / 'latest.json').exists():
             job_id = load(STATE / 'latest.json')['job_id']
             result['update'] = load(STATE / 'jobs' / job_id / 'status.json')
@@ -370,24 +464,34 @@ def main():
         return
     with open(STATE / 'controller.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if args.action == 'install':
+        if args.action == 'uninstall':
+            uninstall_service()
+        elif args.action == 'install':
             if (STATE / 'config.json').exists():
-                raise RuntimeError('already configured; use update or start')
-            project = str(Path(__file__).resolve().parent.parent)
-            config = dict(project=project, listen='127.0.0.1:8090',
-                token_file=str(Path.home() / '.config/terminal-mcp/token'),
-                path=os.environ.get('PATH', '/usr/bin:/bin'))
-            if args.adopt_pid <= 1:
-                raise RuntimeError('initial adoption requires --adopt-pid for the running server')
-            save(STATE / 'config.json', config)
-            try:
-                queue(config, args.adopt_pid, args.previous_binary)
-            except Exception:
-                (STATE / 'config.json').unlink(missing_ok=True)
-                raise
+                if args.adopt_pid or args.previous_binary:
+                    raise RuntimeError('already configured; adoption is for first installation only')
+                install_service(load(STATE / 'config.json'))
+            else:
+                project = str(Path(__file__).resolve().parent.parent)
+                config = dict(project=project, listen='127.0.0.1:8090',
+                    token_file=str(Path.home() / '.config/terminal-mcp/token'),
+                    path=os.environ.get('PATH', '/usr/bin:/bin'))
+                if args.adopt_pid:
+                    save(STATE / 'config.json', config)
+                    try:
+                        queue(config, args.adopt_pid, args.previous_binary)
+                    except Exception:
+                        (STATE / 'config.json').unlink(missing_ok=True)
+                        raise
+                elif args.previous_binary:
+                    raise RuntimeError('--previous-binary requires --adopt-pid')
+                else:
+                    fresh_install(config)
         else:
             config = load(STATE / 'config.json')
             if args.action == 'start':
+                if not PLIST.exists():
+                    raise RuntimeError('LaunchAgent not registered; use install')
                 (STATE / 'stopped').unlink(missing_ok=True)
                 launch('enable', TARGET)
                 if launch('print', TARGET, check=False).returncode != 0:
