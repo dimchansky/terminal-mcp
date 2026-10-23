@@ -10,6 +10,29 @@ import (
 	"testing"
 )
 
+func TestFullCommandArgumentExceedsOldMetadataLimit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "audit.jsonl")
+	log, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := strings.Repeat("x", 64000)
+	if err := log.Write(Event{RequestID: RequestID(), Tool: "terminal_start", Phase: "start", Args: map[string]any{"argv": []string{"/bin/sh", "-c", command}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), command) {
+		t.Fatalf("full command truncated or unavailable: %v", err)
+	}
+}
+
 func TestEventsPrivateAndMetadataOnly(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {

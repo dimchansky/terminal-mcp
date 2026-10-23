@@ -1,4 +1,4 @@
-// Package audit records bounded, metadata-only MCP tool execution events.
+// Package audit records bounded local MCP tool invocation events.
 package audit
 
 import (
@@ -27,6 +27,10 @@ type Event struct {
 	Status     string `json:"status,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
+	Args       any    `json:"args,omitempty"`
+	Replayed   bool   `json:"replayed,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Process    any    `json:"process,omitempty"`
 }
 
 // Log writes one bounded JSON line per event, serializing concurrent calls.
@@ -108,8 +112,10 @@ func (l *Log) Write(e Event) error {
 		return err
 	}
 	line = append(line, '\n')
-	if len(line) > 4096 {
-		return errors.New("audit event exceeds 4096 bytes")
+	// Terminal command/PTY input is intentionally logged in full. The tool
+	// transport bounds a request, and a single event must fit one log file.
+	if int64(len(line)) > maxFileBytes {
+		return errors.New("audit event exceeds maximum file size")
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()

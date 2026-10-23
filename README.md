@@ -62,7 +62,7 @@ make update        # Validate and roll out changes with rollback support
 make stop          # Intentionally stop, keeping registration
 make start         # Restart a registered service
 make uninstall     # Stop and remove LaunchAgent registration, retaining data
-make logs          # Follow metadata-only MCP tool audit events
+make logs          # Follow detailed MCP tool audit events
 make logs-service  # Follow server diagnostics
 ```
 
@@ -81,16 +81,25 @@ This LaunchAgent manages terminal-mcp only; keep `tunnel-client` running separat
 
 ## Audit trail and file-root configuration
 
-The service records MCP **tool invocations** (start/finish, tool name, status,
-duration and generated request ID) to a private, size-rotated JSONL file:
+The service records MCP **tool invocations** (start/finish, tool name, complete
+terminal command arguments, session context, status, duration and generated
+request ID) to a private, size-rotated JSONL file:
 
 `~/Library/Application Support/LocalTerminalMCP/audit.jsonl`
 
 Use `make logs` to follow events (`make logs-service` for operational errors).
 The log has 4 MiB per file plus three archives, with 0600 permissions in the
-private 0700 state directory. The audit intentionally omits command arguments,
-file content, stdout/stderr, bearer tokens and other tool inputs. It records
-dispatched tools, not every unauthenticated or malformed HTTP request. A shared
+private 0700 state directory. All arguments of terminal_start, including argv,
+cwd, env and execution options, are recorded. terminal_write records exactly what
+was sent (text, keys or base64 data); read, signal, resize and close records include
+session_id and options. File operations record path(s), search queries, line ranges,
+create/replace mode, expected version and content/edit byte counts, but not file
+contents or edit fragments. The audit does not duplicate stdout/stderr.
+
+Commands or PTY input that themselves contain secrets or embedded file content
+will be recorded verbatim: this is intentional for this owner-controlled server.
+It records dispatched tools, not every unauthenticated or malformed HTTP request.
+A shared
 bearer token cannot identify which remote person called a tool. If the audit
 cannot record the *start* of a tool call, the server refuses to execute it;
 an end-of-call write failure is reported in diagnostics rather than turning an
@@ -103,9 +112,11 @@ tamper-proof nor fsync-per-event.
 
 Keys: `project` (LaunchAgent working directory), `listen` (HTTP endpoint),
 `token_file` (a *path*, not the token itself), and `path` (child executable PATH).
-On macOS HTTP mode you may additionally set `file_root` to an **absolute** directory
-in this JSON file. If omitted, file tools use `project` via the server working
-directory; an explicit `--file-root` CLI argument overrides it. To apply a new
+For this personal service, `file_root` defaults to `/` at installation, allowing
+file tools to address any accessible absolute path. The configured value can be
+changed to another **absolute** directory; the server's fallback if the key is
+missing is the working directory (`project`). An explicit `--file-root` CLI
+argument overrides it. To apply a new
 `file_root`, edit `config.json` (preserving valid JSON and file permissions) and
 run `make update` from the project. The controller preflights the new root before
 switching the managed server. The tool schemas/descriptions may change when the

@@ -6,7 +6,7 @@ GO ?= go
 .PHONY: help build check install uninstall update status start stop logs logs-service
 
 help:
-	@printf '%s\n' 'make build        Build the Go binary (does not restart the service)' 'make check        Run all checks and build' 'make install      Register/start LaunchAgent (idempotent)' 'make uninstall    Unregister/stop LaunchAgent; preserve state and logs' 'make update       Verify, build, and safely update the running service' 'make status       Show service and update status' 'make start        Resume a registered, stopped service' 'make stop         Stop service without automatic restart' 'make logs        Follow MCP tool audit events (metadata only)' 'make logs-service Tail service diagnostics'
+	@printf '%s\n' 'make build        Build the Go binary (does not restart the service)' 'make check        Run all checks and build' 'make install      Register/start LaunchAgent (idempotent)' 'make uninstall    Unregister/stop LaunchAgent; preserve state and logs' 'make update       Verify, build, and safely update the running service' 'make status       Show service and update status' 'make start        Resume a registered, stopped service' 'make stop         Stop service without automatic restart' 'make logs        Follow detailed MCP tool audit events' 'make logs-service Tail service diagnostics'
 
 build:
 	@mkdir -p bin

@@ -476,7 +476,8 @@ def main():
                 project = str(Path(__file__).resolve().parent.parent)
                 config = dict(project=project, listen='127.0.0.1:8090',
                     token_file=str(Path.home() / '.config/terminal-mcp/token'),
-                    path=os.environ.get('PATH', '/usr/bin:/bin'))
+                    path=os.environ.get('PATH', '/usr/bin:/bin'),
+                    file_root='/')
                 if args.adopt_pid:
                     save(STATE / 'config.json', config)
                     try:

@@ -105,9 +105,10 @@ User-managed configuration lives at:
 
 `project` sets the launchd working directory and remains the default file root;
 `listen`, `token_file` and `path` control HTTP binding, authentication-file
-location and subprocess PATH. To read or edit files outside this project using
-MCP `file_*` tools, add an absolute `file_root` string to the JSON config. For
-example, set `"file_root": "/Users/dimchansky/Work/go/src/github.com/dimchansky"`.
+location and subprocess PATH. For this personal MCP, new installations set
+`"file_root": "/"` so file_* tools can address all accessible absolute paths.
+The current owner's service uses the same setting. Change it to another absolute
+path in config.json to restrict the file tools again.
 The repository root, not the chosen file_root, remains the service working
 directory. Run `make update` after editing; preflight validates the new setting
 before switching the live process. A path error prevents the rollout. Do not
@@ -116,8 +117,10 @@ unrestricted shell execution uses the service account privileges regardless.
 
 The audit log uses `~/Library/Application Support/LocalTerminalMCP/audit.jsonl`
 under the private state directory (0600; 4 MiB plus three archives). It records
-start/finish tool invocations, outcomes and durations, but not raw arguments or
-output. The audit cannot attribute calls to a person while all callers use one
+start/finish events, exact terminal_start argv/cwd/env/options and terminal_write
+input, plus session IDs and outcomes. File tools log targeted paths, ranges,
+search parameters, action types and byte counts, excluding file contents, edit
+strings and output. The audit cannot attribute calls to a person while all callers use one
 bearer token. It is not a tamper-proof journal; disk failure after an action
 cannot be undone. `make logs` follows the rotated filename and
 `make logs-service` shows runtime diagnostics. Preflight instances explicitly
@@ -130,7 +133,8 @@ only builds the binary without touching the running service. `make update` uses
 the same tested supervisor workflow as `python3 scripts/service.py update`;
 `make status`, `make start`, and `make stop` delegate to the controller.
 `make logs` follows the bounded JSONL MCP tool audit; `make logs-service` tails
-stderr diagnostics. The audit records tool names and results, never raw inputs.
+stderr diagnostics. Terminal arguments are recorded verbatim, including values
+that may be sensitive if sent as command arguments; the journal is local-only.
 
 For a fresh installation (no existing server on 127.0.0.1:8090), first create
 the HTTP token according to README, then run `make install`. It tests, builds,
