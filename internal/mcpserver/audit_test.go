@@ -16,7 +16,11 @@ import (
 )
 
 func TestAuditToolCallsWithoutRawArguments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "audit.jsonl")
 	writer, err := audit.Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +77,11 @@ func TestAuditToolCallsWithoutRawArguments(t *testing.T) {
 }
 
 func TestAuditStartWriteFailurePreventsToolExecution(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "audit.jsonl")
 	writer, err := audit.Open(path)
 	if err != nil {
 		t.Fatal(err)

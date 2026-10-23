@@ -11,7 +11,11 @@ import (
 )
 
 func TestEventsPrivateAndMetadataOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "audit.jsonl")
 	log, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +84,11 @@ func TestRefusesPublicDirectoryAndSymlink(t *testing.T) {
 }
 
 func TestConcurrentCallsRotateWithBoundedBackups(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "audit.jsonl")
 	log, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
