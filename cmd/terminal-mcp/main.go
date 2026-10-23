@@ -172,10 +172,19 @@ func openAudit(requestedPath, transport string) *audit.Log {
 	return recorder
 }
 
-// serveHTTP owns the listener and returns after the HTTP server stops.
-// On cancellation it first stops managed processes, then drains HTTP requests.
+// serveHTTP owns the listener and session manager.
+// On cancellation it stops accepting connections, lets admitted HTTP requests
+// finish for up to five seconds, then stops any remaining managed processes.
 func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string) error {
-	defer func() { _ = listener.Close() }() // Shutdown also closes the listener.
+	return serveHTTPWithTimeout(ctx, manager, server, listener, token, 5*time.Second)
+}
+
+// serveHTTPWithTimeout makes timeout behavior testable without a five-second
+// sleep in every failure-path test. The shutdown deadline bounds HTTP draining,
+// not the independent process-termination grace inside manager.Close.
+func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration) error {
+	defer func() { _ = listener.Close() }()
+	defer manager.Close()
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.HTTP(server))
 	mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
@@ -183,6 +192,9 @@ func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server
 	if err != nil {
 		return err
 	}
+	// Cancellation signals the listener to drain. It must not cancel already
+	// admitted tool calls before they can return a result to the client.
+	requestBase := context.WithoutCancel(ctx)
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -190,33 +202,31 @@ func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
+		BaseContext:       func(net.Listener) context.Context { return requestBase },
 	}
 	logger := log.New(os.Stderr, "terminal-mcp: ", log.LstdFlags)
 	logger.Printf("listening at http://%s/mcp (full local user privileges)", listener.Addr())
 	done := make(chan error, 1)
 	go func() { done <- httpServer.Serve(listener) }()
 	select {
-	case err := <-done:
-		if errors.Is(err, http.ErrServerClosed) {
+	case serveErr := <-done:
+		if errors.Is(serveErr, http.ErrServerClosed) {
 			return nil
 		}
-		return err
+		return serveErr
 	case <-ctx.Done():
-		manager.Close()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdown); err != nil {
-			_ = httpServer.Close()
-			serveErr := <-done
-			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				return errors.Join(err, serveErr)
-			}
-			return err
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		cancel()
+		var closeErr error
+		if shutdownErr != nil {
+			// Deadline exceeded: interrupt requests that did not finish.
+			closeErr = httpServer.Close()
 		}
-		if err := <-done; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+		serveErr := <-done
+		if errors.Is(serveErr, http.ErrServerClosed) {
+			serveErr = nil
 		}
-		return nil
+		return errors.Join(shutdownErr, closeErr, serveErr)
 	}
 }

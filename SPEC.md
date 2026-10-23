@@ -35,9 +35,11 @@ The Go executable provides HTTP or stdio transport. It contains the session mana
 
 Startup uses a dedicated `flag.FlagSet`. The server accepts an explicit
 `context.Context` for cancellation; the executable subscribes to SIGINT and
-SIGTERM. HTTP shutdown stops managed processes before it drains HTTP requests
-within a bounded deadline. If the drain deadline expires, the server closes
-remaining connections and reports the error.
+SIGTERM. HTTP shutdown stops accepting new connections and gives already
+accepted requests up to five seconds to finish. Request contexts are not
+cancelled merely by the shutdown signal. If the drain deadline expires, the
+server closes remaining HTTP connections and reports the error. Managed
+processes are closed after HTTP draining; their cleanup has its own bound.
 
 ```text
 MCP client
