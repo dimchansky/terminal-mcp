@@ -70,6 +70,20 @@ files. Twelve repeated race-enabled CLI test runs with random test order passed
 on macOS. The measured statement coverage of `cmd/terminal-mcp` increased from
 13.3% to 71.1% (`go test -cover ./cmd/terminal-mcp`).
 
+On 2026-10-24, tests first reproduced a cancelled in-flight MCP request on HTTP
+shutdown. The server now drains admitted HTTP requests before closing managed
+processes. A real-listener test covers successful drain; another covers forced
+close when the drain deadline expires. HTTP handler tests use
+`httptest.NewUnstartedServer`. A regression test confirms the authorization
+`RoundTripper` does not modify the caller's request.
+
+The SIGTERM E2E test now builds and runs the actual `terminal-mcp` executable,
+not a copied signal handler inside a Go test helper. It uses a loopback port
+assigned by the OS, discovers the address from the service log, starts a managed
+child, sends SIGTERM, verifies the child exits, and checks complete JSONL audit
+records after process shutdown. Its cleanup also handles premature test failure.
+Ten repeated race-enabled runs passed on local macOS.
+
 The file-tool regression tests now cover external changes before a no-op replacement, external inode replacement, concurrent file creation, cleanup of temporary files after a conflict, symlinks outside the configured root, and operations after manager shutdown. They also check that `file_search` does not report nonexistent empty lines in empty files or after a trailing newline. Both defects were reproduced before the fixes.
 
 The MCP audit feedback test starts a temporary server and issues a real MCP command, a missing-session read, partial file reads, an ambiguous edit, limited search, a 115000-byte read, and an oversized schema-rejected read. After each call, it waits for the corresponding JSONL event. On shutdown, it checks event pairs by request ID and verifies that file bodies were not written to the audit. Run it with `make audit-feedback`; it is also part of `make check`.

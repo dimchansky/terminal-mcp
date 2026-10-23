@@ -7,16 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -269,112 +265,6 @@ func TestRunWithContextStdioNoAuditRequired(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("stdio did not stop")
-	}
-}
-
-func TestCLIHelperProcess(t *testing.T) {
-	if os.Getenv("TERMINAL_MCP_TEST_HELPER") != "1" {
-		return
-	}
-	args := os.Args
-	for i, arg := range args {
-		if arg == "--" {
-			args = args[i+1:]
-			break
-		}
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := runWithContext(ctx, args, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "helper:", err)
-		os.Exit(2)
-	}
-	os.Exit(0)
-}
-
-func TestCLISIGTERMStopsProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process-level integration test")
-	}
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := reserved.Addr().String()
-	_ = reserved.Close()
-
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte(testToken), 0600); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$", "--",
-		"--transport=http", "--listen="+address, "--file-root="+t.TempDir(),
-		"--audit-file=off", "--token-file="+tokenFile)
-	cmd.Env = append(os.Environ(), "TERMINAL_MCP_TEST_HELPER=1")
-	stderrFile, err := os.CreateTemp(t.TempDir(), "helper-stderr-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = stderrFile.Close() }()
-	cmd.Stderr = stderrFile
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waited := make(chan error, 1)
-	finished := make(chan struct{})
-	go func() { waited <- cmd.Wait(); close(finished) }()
-	t.Cleanup(func() {
-		select {
-		case <-finished:
-		default:
-			_ = cmd.Process.Kill()
-			select {
-			case <-finished:
-			case <-time.After(5 * time.Second):
-			}
-		}
-	})
-	stderrText := func() string { data, _ := os.ReadFile(stderrFile.Name()); return string(data) }
-	deadline := time.Now().Add(8 * time.Second)
-	connected := false
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			connected = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !connected {
-		t.Fatalf("helper never started listener: %s", stderrText())
-	}
-	client := connectHTTP(t, context.Background(), address)
-	list := mcpList(t, context.Background(), client)
-	started := mcpCall[session.ActionResult](t, context.Background(), client, "terminal_start", session.StartArgs{
-		ServerID: list.ServerID, OperationID: "sigterm-managed-child",
-		Argv: []string{"/bin/sleep", "60"}, Mode: "pipes", WaitMS: 0,
-	})
-	if started.Receipt.Status != "applied" || started.Observation == nil {
-		t.Fatalf("could not launch child for SIGTERM test: %+v", started)
-	}
-	childPID := started.Observation.Session.PID
-	if err := client.Close(); err != nil {
-		t.Fatalf("close MCP client before SIGTERM: %v", err)
-	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-waited:
-		if err != nil {
-			t.Fatalf("helper failed on SIGTERM: %v; %s", err, stderrText())
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatalf("helper did not stop after SIGTERM; %s", stderrText())
-	}
-	if childPID <= 1 || !errors.Is(syscall.Kill(childPID, 0), syscall.ESRCH) {
-		t.Fatalf("managed child PID %d survived SIGTERM shutdown", childPID)
 	}
 }
 
