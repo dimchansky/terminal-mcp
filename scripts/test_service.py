@@ -94,6 +94,23 @@ class ServiceTests(unittest.TestCase):
         request.assert_called_once_with(self.config, '/admin/maintenance',
                                         {'server_id': 'old-server', 'action': 'begin'})
 
+    def test_restart_gate_handles_legacy_server_schema(self):
+        def legacy_call(config, name, arguments):
+            if arguments:
+                raise RuntimeError('validating root: unexpected additional properties ["include_closed"]')
+            return {'server_id': 'old-server', 'sessions': []}
+        with patch.object(service, 'call', side_effect=legacy_call) as call, \
+             patch.object(service, 'request', return_value={}):
+            self.assertTrue(service.acquire_gate(self.config, 'old-server', 0))
+        self.assertEqual([c.args[2] for c in call.call_args_list],
+                         [{'include_closed': True}, {}])
+
+    def test_restart_gate_does_not_mask_other_errors(self):
+        with patch.object(service, 'call', side_effect=RuntimeError('authentication failed')) as call:
+            with self.assertRaisesRegex(RuntimeError, 'authentication failed'):
+                service.acquire_gate(self.config, 'old-server', 0)
+        self.assertEqual(call.call_count, 1)
+
     def test_busy_gate_does_not_stop_or_switch(self):
         path = self.manifest()
         with patch.object(service, 'acquire_gate', side_effect=RuntimeError('active sessions')), \
