@@ -70,11 +70,12 @@ make test-go
 make test-service
 make build
 make check-core
+make audit-feedback
 make lint
 make vulncheck
 ```
 
-`make check-core` repeats selected Go race tests three times. It also runs `go vet` on those packages.
+`make check-core` repeats selected Go race tests three times. It also runs `go vet` on those packages. `make audit-feedback` checks MCP responses against a temporary JSONL audit log using a real SDK client and isolated server.
 
 `make lint` uses the checks in `.golangci.yml` and needs `golangci-lint` v2.15.0 installed. `make vulncheck` uses a pinned `govulncheck` v1.9.0 through `go run`. They also run in GitHub Actions. Neither tool is required for `make check` or for managed service updates.
 

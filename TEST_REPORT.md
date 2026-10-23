@@ -72,6 +72,8 @@ on macOS. The measured statement coverage of `cmd/terminal-mcp` increased from
 
 The file-tool regression tests now cover external changes before a no-op replacement, external inode replacement, concurrent file creation, cleanup of temporary files after a conflict, symlinks outside the configured root, and operations after manager shutdown. They also check that `file_search` does not report nonexistent empty lines in empty files or after a trailing newline. Both defects were reproduced before the fixes.
 
+The MCP audit feedback test starts a temporary server and issues a real MCP command, a missing-session read, partial file reads, an ambiguous edit, limited search, a 115000-byte read, and an oversized schema-rejected read. After each call, it waits for the corresponding JSONL event. On shutdown, it checks event pairs by request ID and verifies that file bodies were not written to the audit. Run it with `make audit-feedback`; it is also part of `make check`.
+
 On 2026-10-24, `golangci-lint v2.15.0` and `staticcheck` reported no issues on the local macOS checkout. The lint configuration limits checks to relevant correctness, resource handling, and error-handling rules. The local `govulncheck v1.9.0` scan reported no vulnerabilities after upgrading `golang.org/x/sys` to v0.44.0. This upgrade also removes a previously reported, unreachable Windows-only advisory (GO-2026-5024) without raising the Go 1.25 minimum version.
 
 A separate `gosec v2.30.0` review reported 11 potential issues. These concern
