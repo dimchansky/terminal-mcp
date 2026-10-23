@@ -191,11 +191,11 @@ The file tools do not add file content or edit text to the audit. The audit does
 
 **Commands can contain secrets.** The audit records command arguments and terminal input exactly as supplied.
 
-The audit files have mode `0600`. The state directory has private permissions. The active file is limited to 4 MiB. The server keeps up to three rotated files.
+The auditor makes each timestamp before it queues an event. One worker writes queued JSONL events in order. The queue holds at most 1,024 events and 8 MiB of encoded data. MCP tool calls do not wait for disk writes. If the queue fills, new audit events can be lost; the worker reports the total in diagnostics. On shutdown, the auditor processes all accepted events, syncs the file, and closes it. A disk error does not stop any MCP tool call.
 
-The audit records tool callbacks. It does not identify a specific person when callers share one bearer token. It is not a tamper-proof record.
+The audit files have mode `0600`. The state directory has private permissions. The active file is limited to 4 MiB. The server keeps up to three rotated files. On startup, the auditor removes a partial final JSONL line left by an interrupted write.
 
-If the audit cannot write the start event, the server does not run the tool. A failure to write the finish event does not undo an action.
+The audit records tool callbacks. It does not identify a specific person when callers share one bearer token. It is not a tamper-proof record. If the audit cannot open on startup, the server continues without it and reports the failure in diagnostics. A normal shutdown can wait for a slow disk because accepted events must be processed.
 
 The server writes diagnostic messages to `stderr.log`. Use `make logs-service` to read them.
 

@@ -86,7 +86,7 @@ func TestAuditToolCallsWithCommandArguments(t *testing.T) {
 	}
 }
 
-func TestAuditStartWriteFailurePreventsToolExecution(t *testing.T) {
+func TestAuditUnavailableDoesNotPreventToolExecution(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -112,8 +112,12 @@ func TestAuditStartWriteFailurePreventsToolExecution(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "terminal_list", Arguments: map[string]any{}})
-	if err == nil && (result == nil || !result.IsError) {
-		t.Fatal("tool ran without an audit writer")
+	list := call[session.ListResult](t, context.Background(), client, "terminal_list", struct{}{})
+	started := call[session.ActionResult](t, context.Background(), client, "terminal_start", session.StartArgs{
+		ServerID: list.ServerID, OperationID: "audit-unavailable-run", Argv: []string{"/usr/bin/true"},
+		CloseOnExit: true, WaitFor: "completion", WaitMS: 2000,
+	})
+	if started.Receipt.Status != "applied" {
+		t.Fatalf("audit failure prevented execution: %+v", started)
 	}
 }

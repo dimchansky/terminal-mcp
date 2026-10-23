@@ -5,7 +5,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -52,7 +52,6 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, name, description string,
 	mcp.AddTool(s, &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{
 		ReadOnlyHint: readOnly, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld,
 	}}, func(ctx context.Context, _ *mcp.CallToolRequest, input I) (*mcp.CallToolResult, O, error) {
-		var zero O
 		if recorder == nil {
 			out, err := fn(ctx, input)
 			return nil, out, err
@@ -60,10 +59,8 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, name, description string,
 		id := audit.RequestID()
 		start := time.Now()
 		args, inputSessionID := auditArguments(any(input))
-		if err := recorder.Write(audit.Event{RequestID: id, Tool: name, Phase: "start", Args: args, SessionID: inputSessionID}); err != nil {
-			// Refuse to act if we cannot record the beginning of an invocation.
-			log.Printf("audit start failure: %v", err)
-			return nil, zero, fmt.Errorf("audit log unavailable; tool not executed")
+		if err := recorder.Write(audit.NewEvent(audit.Event{RequestID: id, Tool: name, Phase: "start", Args: args, SessionID: inputSessionID})); err != nil && !errors.Is(err, audit.ErrQueueFull) {
+			log.Printf("audit start failure (tool still executes): %v", err)
 		}
 		out, err := fn(ctx, input)
 		finish := audit.Event{RequestID: id, Tool: name, Phase: "finish", Status: "ok", SessionID: inputSessionID, DurationMS: time.Since(start).Milliseconds()}
@@ -96,9 +93,8 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, name, description string,
 				}
 			}
 		}
-		if err := recorder.Write(finish); err != nil {
-			// Do not alter an already executed action or encourage an unsafe retry.
-			log.Printf("audit finish failure: %v", err)
+		if err := recorder.Write(audit.NewEvent(finish)); err != nil && !errors.Is(err, audit.ErrQueueFull) {
+			log.Printf("audit finish failure (tool result unchanged): %v", err)
 		}
 		return nil, out, err
 	})

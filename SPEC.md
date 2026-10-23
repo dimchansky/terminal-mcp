@@ -436,11 +436,15 @@ The audit records file paths, ranges, search terms, versions, edit counts, and c
 
 The audit does not copy stdout or stderr. It also does not record every rejected HTTP request or invalid MCP tool schema.
 
-The audit keeps one active file and at most three rotated files. Each file has a 4 MiB size limit and private permissions.
+The caller sets the event timestamp before enqueue. Each tool sends a complete event to the auditor. The caller encodes the event and submits it to a bounded, nonblocking queue. One goroutine writes accepted events to JSONL in queue order. The queue has at most 1,024 events and 8 MiB of encoded data.
 
-The server refuses a tool action if it cannot write the start event. A finish-write failure does not change an already executed action.
+If the queue is full, the auditor drops the incoming event. It records the loss count in diagnostics. Audit errors never prevent tool execution. If audit initialization fails, the server starts without auditing and reports the error. The service must restart after the cause is fixed to enable audit logging again.
 
-The audit is not tamper-proof. A crash can cause loss of recent events because each record does not use an individual `fsync`.
+`Close()` stops new submissions, processes all accepted events, syncs the active file, and closes it. Disk errors are reported in diagnostics. A persistent disk stall can delay shutdown because `Close()` waits for the worker.
+
+The audit keeps one active file and at most three rotated files. Each file has a 4 MiB size limit and private permissions. A partial write is truncated to the previous complete record when possible. The next startup also removes an incomplete final JSONL line.
+
+The audit is not tamper-proof. A crash can lose queued or recently written events. There is no `fsync` for each event.
 
 In stdio mode, auditing is off by default. A direct `--audit-file` argument can set a path or disable auditing with `off`.
 

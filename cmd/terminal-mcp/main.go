@@ -86,13 +86,19 @@ func run() error {
 	}
 	if path != "" && path != "off" {
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return fmt.Errorf("prepare audit directory: %w", err)
+			log.Printf("audit unavailable; server will continue without audit: %v", err)
+		} else {
+			recorder, err = audit.Open(path)
+			if err != nil {
+				log.Printf("audit unavailable; server will continue without audit: %v", err)
+			} else {
+				defer func() {
+					if err := recorder.Close(); err != nil {
+						log.Printf("audit shutdown: %v", err)
+					}
+				}()
+			}
 		}
-		recorder, err = audit.Open(path)
-		if err != nil {
-			return fmt.Errorf("open audit log: %w", err)
-		}
-		defer recorder.Close()
 	}
 	server := mcpserver.NewWithAudit(manager, recorder, files)
 	if *transport == "stdio" {
