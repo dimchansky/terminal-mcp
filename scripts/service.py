@@ -303,7 +303,7 @@ def queue(config, adopt_pid, previous_binary=None):
         if launch('print', TARGET, check=False).returncode != 0:
             raise RuntimeError('managed service not loaded; use start, not update')
     env = dict(os.environ, PATH=config['path'])
-    subprocess.run(['./scripts/check.sh'], cwd=config['project'], env=env, check=True)
+    subprocess.run(['make', '-C', config['project'], 'check'], env=env, check=True)
     candidate = release(Path(config['project']) / 'bin/terminal-mcp')
     fingerprint = preflight(config, candidate)
     if adopt_pid:
@@ -416,7 +416,7 @@ def fresh_install(config):
     if not Path(config['token_file']).is_file():
         raise RuntimeError('token file missing: ' + config['token_file'])
     env = dict(os.environ, PATH=config['path'])
-    subprocess.run(['./scripts/check.sh'], cwd=config['project'], env=env, check=True)
+    subprocess.run(['make', '-C', config['project'], 'check'], env=env, check=True)
     candidate = release(Path(config['project']) / 'bin/terminal-mcp')
     preflight(config, candidate)
     try:

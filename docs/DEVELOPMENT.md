@@ -128,7 +128,10 @@ disable audit output to avoid test noise in the production file.
 
 ### Makefile shortcuts and first installation
 
-Use `make help` for available targets. `make check` tests and builds; `make build`
+Use `make help` for available targets. `make check` sequentially runs `fmt-check`,
+`test-go`, `test-service`, and `build`. Use `make check-core` for three repeated
+race-test runs on the original process/security packages. Check orchestration is
+in the Makefile; there are no standalone check shell scripts. `make build`
 only builds the binary without touching the running service. `make update` uses
 the same tested supervisor workflow as `python3 scripts/service.py update`;
 `make status`, `make start`, and `make stop` delegate to the controller.
@@ -154,7 +157,7 @@ python3 scripts/service.py install --adopt-pid <LISTENER_PID> --previous-binary 
 ```
 
 The saved binary is preflighted on a separate loopback port and its tool metadata
-must match the running server. The controller then runs the full check script,
+must match the running server. The controller then runs `make check`,
 stages a new immutable binary, and preflights process/auto-cleanup, file listing
 and discovery. Only then is an independent launchd update job submitted.
 The first handover from version 0.1 has no maintenance fence: use an idle window

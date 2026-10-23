@@ -6,7 +6,7 @@ sessions, rather than a single blocking `execute(command)` call.
 **Version 0.2:** terminal sessions, version-guarded file tools and supervised
 macOS updates. See [Development tools and service operations](docs/DEVELOPMENT.md)
 for the new API and safe self-update workflow. The original delivery report remains
-historical; run `./scripts/check.sh` for the current revision.
+historical; run `make check` for the current revision.
 
 ## What is included
 
@@ -34,12 +34,16 @@ On a machine with Go 1.25+ and access to the Go module proxy:
 
 ```sh
 go mod tidy
-./scripts/check.sh
+make check
 ```
 
-`check.sh` verifies formatting, runs all tests with the race detector, runs `go
-vet`, and builds `bin/terminal-mcp`. It does not install a service or change your
-shell configuration. A native C toolchain is needed for `-race`; Python 3 runs controller tests. Only file_search also requires ripgrep (rg).
+`make check` checks Go formatting, verifies modules, runs Go race tests and
+`go vet`, runs the Python controller tests, and builds `bin/terminal-mcp`.
+Use `make fmt-check`, `make test-go`, `make test-service`, or `make check-core`
+(three race-test repetitions for the original process/security packages) when
+only one check is needed. These targets do not install or restart the service.
+A native C toolchain is needed for `-race`; Python 3 remains a dependency of the
+LaunchAgent controller and its tests. Only `file_search` requires ripgrep (`rg`).
 
 The repository contains the verified go.sum generated during native builds.
 Keep checksum verification enabled. Dependencies are pinned, not vendored.
@@ -611,14 +615,17 @@ SPEC.md                  Architecture, decisions, guarantees and limits
 TEST_REPORT.md           Actual validation status of this archive
 internal/session/        Process lifecycle, journal, retry ledger, tests
 internal/terminal/       Real PTY, emulator, terminal keys, tests
-internal/mcpserver/      Seven typed tools and SDK integration tests
+internal/mcpserver/      Twelve typed tools and SDK integration tests
 internal/httpguard/      Loopback/bearer/Host/Origin boundary and tests
+internal/audit/          Bounded audit journal for MCP tool actions
 cmd/terminal-mcp/        CLI and transport lifetime
-scripts/check.sh         Complete native verification and build
-scripts/check-core.sh    Dependency-free process/security verification only
+Makefile                 Build, format check, test and service tasks
+scripts/service.py       launchd deployment and rollback controller
+scripts/test_*.py        Python controller tests
 .github/workflows/       Native Linux/macOS verification when pushed to GitHub
 ```
 
 No browser UI, Windows support, screen diffing, unsolicited notifications, shell
-integration hooks, persistent logs or crash recovery are implemented. These are
+integration hooks or crash recovery are implemented. A bounded MCP audit log is
+available, but active process sessions cannot be reconstructed after a crash. These are
 explicit exclusions, not hidden TODOs in the core control loop.

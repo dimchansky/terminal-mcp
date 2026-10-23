@@ -18,4 +18,4 @@ jobs:
           go-version: '1.25.x'
           cache: false
       - run: go mod tidy
-      - run: ./scripts/check.sh
+      - run: make check

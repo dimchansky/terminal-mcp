@@ -84,6 +84,7 @@ class RegistrationTests(unittest.TestCase):
             sock.return_value.__enter__.return_value.connect_ex.return_value = 1
             service.fresh_install(self.config)
         run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ['make', '-C', str(self.project), 'check'])
         self.assertTrue(self.agent.exists())
         self.assertEqual(service.load(self.state / 'config.json'), self.config)
         self.assertTrue((self.state / 'current/terminal-mcp').exists())

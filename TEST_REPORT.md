@@ -1,5 +1,10 @@
 # Validation report
 
+> Historical initial source-delivery report. The `scripts/check.sh` and
+> `scripts/check-core.sh` references below describe the original archive;
+> both scripts have since been replaced by `make check` and `make check-core`.
+> The historical test outcomes are retained unchanged.
+
 Prepared on 2026-10-23 for this source archive.
 
 ## Release status
