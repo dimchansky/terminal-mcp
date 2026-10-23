@@ -231,8 +231,17 @@ one because mutations are deduplicated by operation ID.
 
 ### `terminal_list`
 
-No required arguments. Returns server identity, limits and retained session
-summaries. It is the bootstrap/recovery operation, not a destructive attach.
+No required arguments. By default (`include_closed: false`), returns server
+identity, limits, counts for all retained sessions, and summaries of unclosed
+sessions. Set `include_closed: true` to include retained closed sessions for
+inspection. This filter does not delete data or change expiration; closed
+sessions remain readable by session_id within retention limits. `counts.running`
+counts processes without observed exit (including closure in progress),
+`counts.exited_unclosed` counts exited sessions not manually/automatically closed,
+and `counts.closed_retained` counts retained closed sessions. Counts describe all
+retained sessions regardless of the filter; while closure is in progress, running
+and closed-retained categories can overlap. It is the bootstrap/recovery operation,
+not a destructive attach.
 Summaries omit argv/cwd to bound the list response even when processes were started
 with large arguments. A read returns full launch metadata; CWD and argv describe
 the launched process, not dynamically discovered shell state.

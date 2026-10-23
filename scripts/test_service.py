@@ -83,6 +83,17 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual((self.state / 'current').readlink(), self.state / 'old')
         self.assertEqual(restart.call_count, 2)
 
+    def test_restart_gate_requests_full_session_list(self):
+        with patch.object(service, 'call', return_value={
+            'server_id': 'old-server', 'sessions': [], 'counts': {
+                'running': 0, 'exited_unclosed': 0, 'closed_retained': 3,
+            },
+        }) as call, patch.object(service, 'request', return_value={}) as request:
+            self.assertTrue(service.acquire_gate(self.config, 'old-server', 0))
+        call.assert_called_once_with(self.config, 'terminal_list', {'include_closed': True})
+        request.assert_called_once_with(self.config, '/admin/maintenance',
+                                        {'server_id': 'old-server', 'action': 'begin'})
+
     def test_busy_gate_does_not_stop_or_switch(self):
         path = self.manifest()
         with patch.object(service, 'acquire_gate', side_effect=RuntimeError('active sessions')), \

@@ -18,6 +18,15 @@ cancelled read never kills the process. Auto-close preserves retained output and
 exit status, does not require a reader, and does not consume another mutation ID.
 For PTY, exit means the launched shell exits, not that one command inside it ends.
 
+## Listing sessions
+
+`terminal_list` with `{}` returns only unclosed sessions and counts of all
+retained sessions (`running`, `exited_unclosed`, `closed_retained`). Pass
+`{"include_closed":true}` to inspect closed retained sessions. Filtering does
+not delete or shorten their stored output; `terminal_read` by ID still works.
+The supervised updater requests the full list before a restart so that it cannot
+miss active sessions during cleanup.
+
 ## Files: five synchronous tools, no terminal session
 
 The executable exposes twelve tools. `--file-root` defaults to the server working

@@ -192,7 +192,7 @@ def acquire_gate(config, expected, adopt_pid):
     while time.monotonic() < end:
         if stopped():
             raise RuntimeError('manually stopped')
-        state = call(config, 'terminal_list', {})
+        state = call(config, 'terminal_list', {'include_closed': True})
         if state['server_id'] != expected:
             raise RuntimeError('server changed since update preparation; refusing stale restart')
         active = [s for s in state['sessions'] if s['process_state'] != 'exited' or not s['output_done']]

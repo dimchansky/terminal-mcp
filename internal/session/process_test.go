@@ -458,7 +458,7 @@ func TestActiveLimitAndRetainedEviction(t *testing.T) {
 	readToEnd(t, m, id)
 	id2 := startHelper(t, m, "second", "both")
 	readToEnd(t, m, id2)
-	list, _ := m.List(context.Background())
+	list, _ := m.List(context.Background(), ListArgs{})
 	if len(list.Sessions) != 1 || list.Sessions[0].SessionID != id2 {
 		t.Fatal("completed sessions not bounded")
 	}
@@ -572,7 +572,7 @@ func TestListDoesNotEchoLargeArguments(t *testing.T) {
 	if err != nil || r.Receipt.Status != "applied" {
 		t.Fatalf("start: %#v %v", r, err)
 	}
-	list, err := m.List(context.Background())
+	list, err := m.List(context.Background(), ListArgs{})
 	if err != nil {
 		t.Fatal(err)
 	}

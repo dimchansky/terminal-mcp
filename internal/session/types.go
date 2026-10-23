@@ -194,12 +194,24 @@ type Summary struct {
 	OutputDone   bool   `json:"output_done"`
 }
 
+// ListArgs controls which retained sessions appear in the returned list.
+type ListArgs struct {
+	IncludeClosed bool `json:"include_closed,omitempty" jsonschema:"Include retained closed sessions in sessions (default false). Counts always include all retained sessions."`
+}
+
+type SessionCounts struct {
+	Running        int `json:"running"`
+	ExitedUnclosed int `json:"exited_unclosed"`
+	ClosedRetained int `json:"closed_retained"`
+}
+
 type ListResult struct {
-	Draining       bool      `json:"draining"`
-	ServerID       string    `json:"server_id"`
-	Limits         Limits    `json:"limits"`
-	Sessions       []Summary `json:"sessions"`
-	Modes          []string  `json:"modes"`
-	Keys           []string  `json:"keys"`
-	OperationsUsed int       `json:"operations_used"`
+	Counts         SessionCounts `json:"counts"`
+	Draining       bool          `json:"draining"`
+	ServerID       string        `json:"server_id"`
+	Limits         Limits        `json:"limits"`
+	Sessions       []Summary     `json:"sessions"`
+	Modes          []string      `json:"modes"`
+	Keys           []string      `json:"keys"`
+	OperationsUsed int           `json:"operations_used"`
 }

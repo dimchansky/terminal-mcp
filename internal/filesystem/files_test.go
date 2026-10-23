@@ -25,7 +25,7 @@ func fixture(t *testing.T) (*Manager, string, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(m.Close)
-	list, err := host.List(context.Background())
+	list, err := host.List(context.Background(), session.ListArgs{})
 	if err != nil {
 		t.Fatal(err)
 	}

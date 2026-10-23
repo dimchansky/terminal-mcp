@@ -98,7 +98,7 @@ func (m *Manager) get(id string) (*Session, error) {
 	return s, nil
 }
 
-func (m *Manager) List(context.Context) (ListResult, error) {
+func (m *Manager) List(_ context.Context, args ListArgs) (ListResult, error) {
 	m.mu.Lock()
 	m.pruneLocked()
 	out := ListResult{ServerID: m.id, Limits: m.limits, Sessions: make([]Summary, 0, len(m.sessions)), Modes: []string{"pipes"}, Keys: supportedKeys()}
@@ -108,10 +108,20 @@ func (m *Manager) List(context.Context) (ListResult, error) {
 	for _, s := range m.sessions {
 		s.mu.Lock()
 		state := "running"
-		if s.exit != nil {
+		if s.exit == nil {
+			out.Counts.Running++
+		} else {
 			state = "exited"
+			if !s.closed {
+				out.Counts.ExitedUnclosed++
+			}
 		}
-		out.Sessions = append(out.Sessions, Summary{SessionID: s.id, Mode: s.mode, PID: s.cmd.Process.Pid, ProcessState: state, Closed: s.closed, OutputDone: s.outputDone})
+		if s.closed {
+			out.Counts.ClosedRetained++
+		}
+		if args.IncludeClosed || !s.closed {
+			out.Sessions = append(out.Sessions, Summary{SessionID: s.id, Mode: s.mode, PID: s.cmd.Process.Pid, ProcessState: state, Closed: s.closed, OutputDone: s.outputDone})
+		}
 		s.mu.Unlock()
 	}
 	m.mu.Unlock()

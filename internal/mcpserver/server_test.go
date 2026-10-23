@@ -106,6 +106,18 @@ func TestInMemoryToolContract(t *testing.T) {
 	if output.String() != "hello" {
 		t.Fatalf("output: %q", output.String())
 	}
+	closed := call[session.ActionResult](t, ctx, cs, "terminal_close", session.CloseArgs{ServerID: list.ServerID, OperationID: "close-1", SessionID: first.Receipt.SessionID})
+	if closed.Receipt.Status != "applied" {
+		t.Fatalf("close: %+v", closed)
+	}
+	defaultList := call[session.ListResult](t, ctx, cs, "terminal_list", struct{}{})
+	if len(defaultList.Sessions) != 0 || defaultList.Counts.ClosedRetained != 1 {
+		t.Fatalf("default list should hide closed session: %+v", defaultList)
+	}
+	fullList := call[session.ListResult](t, ctx, cs, "terminal_list", session.ListArgs{IncludeClosed: true})
+	if len(fullList.Sessions) != 1 || fullList.Sessions[0].SessionID != first.Receipt.SessionID || !fullList.Sessions[0].Closed {
+		t.Fatalf("full list should retain closed session: %+v", fullList)
+	}
 }
 
 type bearerTransport struct {
@@ -217,7 +229,7 @@ func TestFileToolsAndCompletionOverMCP(t *testing.T) {
 func TestMaintenanceEndpointContract(t *testing.T) {
 	manager := session.New(nil)
 	defer manager.Close()
-	state, err := manager.List(context.Background())
+	state, err := manager.List(context.Background(), session.ListArgs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +257,7 @@ func TestMaintenanceEndpointContract(t *testing.T) {
 func TestPTYAutoCloseKeepsScreen(t *testing.T) {
 	manager := session.New(terminal.Start)
 	defer manager.Close()
-	list, _ := manager.List(context.Background())
+	list, _ := manager.List(context.Background(), session.ListArgs{})
 	result, err := manager.Start(context.Background(), session.StartArgs{
 		ServerID: list.ServerID, OperationID: "pty-complete", Mode: "pty",
 		Argv:        []string{"/bin/sh", "-c", "printf rendered"},

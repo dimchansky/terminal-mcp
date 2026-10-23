@@ -118,7 +118,7 @@ func TestDrainRefusesActiveAndBlocksNewMutations(t *testing.T) {
 	if _, err = m.Start(context.Background(), StartArgs{ServerID: m.id, OperationID: "blocked", Argv: []string{"/bin/true"}}); err == nil {
 		t.Fatal("new mutation during drain")
 	}
-	list, err := m.List(context.Background())
+	list, err := m.List(context.Background(), ListArgs{})
 	if err != nil || !list.Draining {
 		t.Fatalf("%+v %v", list, err)
 	}

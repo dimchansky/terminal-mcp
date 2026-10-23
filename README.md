@@ -340,12 +340,14 @@ plugin. First test discovery and a read-only call:
 
 ```text
 Use the Local Terminal MCP plugin only. Call terminal_list with {} and report
-its server_id and current sessions. Do not run shell commands yet.
+its server_id, unclosed sessions, and session counts. Do not run shell commands yet.
+Use include_closed=true only when inspecting retained closed sessions.
 ```
 
-Confirm that discovery exposes all seven tools:
-`terminal_start`, `terminal_read`, `terminal_write`, `terminal_signal`,
-`terminal_resize`, `terminal_list`, and `terminal_close`.
+Confirm that discovery exposes all twelve tools: `terminal_start`,
+`terminal_read`, `terminal_write`, `terminal_signal`, `terminal_resize`,
+`terminal_list`, `terminal_close`, `file_read`, `file_edit`, `file_write`,
+`file_search`, and `file_list`.
 
 Then perform a harmless process-execution check, approving the call if prompted:
 
