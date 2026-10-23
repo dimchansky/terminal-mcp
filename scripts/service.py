@@ -149,7 +149,8 @@ def preflight(config, candidate, full=True):
     probe = dict(config, listen='127.0.0.1:' + str(port))
     with tempfile.TemporaryFile() as logs:
         process = subprocess.Popen([str(Path(candidate) / 'terminal-mcp'),
-            '--listen=' + probe['listen'], '--token-file=' + config['token_file']],
+            '--listen=' + probe['listen'], '--token-file=' + config['token_file'],
+            '--audit-file=off'],
             cwd=config['project'], stdin=subprocess.DEVNULL, stdout=logs, stderr=logs,
             start_new_session=True, env={'PATH': config['path'], 'HOME': str(Path.home())})
         try:

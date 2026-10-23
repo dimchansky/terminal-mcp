@@ -3,10 +3,10 @@
 PYTHON ?= python3
 GO ?= go
 
-.PHONY: help build check install uninstall update status start stop logs-service
+.PHONY: help build check install uninstall update status start stop logs logs-service
 
 help:
-	@printf '%s\n' 'make build        Build the Go binary (does not restart the service)' 'make check        Run all checks and build' 'make install      Register/start LaunchAgent (idempotent)' 'make uninstall    Unregister/stop LaunchAgent; preserve state and logs' 'make update       Verify, build, and safely update the running service' 'make status       Show service and update status' 'make start        Resume a registered, stopped service' 'make stop         Stop service without automatic restart' 'make logs-service Tail the service diagnostic log (not an MCP audit log)'
+	@printf '%s\n' 'make build        Build the Go binary (does not restart the service)' 'make check        Run all checks and build' 'make install      Register/start LaunchAgent (idempotent)' 'make uninstall    Unregister/stop LaunchAgent; preserve state and logs' 'make update       Verify, build, and safely update the running service' 'make status       Show service and update status' 'make start        Resume a registered, stopped service' 'make stop         Stop service without automatic restart' 'make logs        Follow MCP tool audit events (metadata only)' 'make logs-service Tail service diagnostics'
 
 build:
 	@mkdir -p bin
@@ -33,5 +33,8 @@ start:
 stop:
 	$(PYTHON) scripts/service.py stop
 
+logs:
+	@tail -n 100 -F "$$HOME/Library/Application Support/LocalTerminalMCP/audit.jsonl"
+
 logs-service:
-	@tail -n 100 -f "$$HOME/Library/Application Support/LocalTerminalMCP/stderr.log"
+	@tail -n 100 -F "$$HOME/Library/Application Support/LocalTerminalMCP/stderr.log"

@@ -356,7 +356,31 @@ The command does not intercept user-program control characters as server signals
 
 The stdio server exits when its transport ends and performs the same cleanup.
 Diagnostics do not contain input, output, tokens, or full environment values.
-No log file is created automatically; program output can contain secrets.
+In HTTP mode a bounded metadata-only audit is created automatically under a
+private user state directory. Stdout/stderr are not persisted by this audit;
+program output can contain secrets.
+
+### Audit log: operational guarantees and boundaries
+
+All dispatched MCP tool callbacks write a start record before executing their
+function, and a finish record with status and elapsed time afterward. A generated
+request_id links the two. Tool name and (where available) generated session_id
+are the only operation metadata: arguments, credentials, file contents and command
+output are never serialized into audit events. Successful mutations whose *finish*
+record fails are not changed into retryable errors. A *start* logging failure
+rejects execution. This is not a forensic-grade tamper-proof log or an identity
+system; rejected authentication, invalid tool schemas and MCP discovery requests
+are outside this initial audit. A single shared bearer token identifies no
+individual caller. JSONL writes are synchronous under a mutex, with up to four
+4 MiB files (active and three rotated archives), mode 0600, and no fsync on each
+call. Crash loss of the most recent entries remains possible. The preflight
+candidate disables auditing so probe calls do not pollute the production log.
+
+In macOS HTTP mode, the optional file_root key in the existing user-private
+config.json sets the file-access root, with --file-root taking precedence. The
+controller does not hand-edit the launchd plist; the new root is read on start,
+validated during preflight, and activated by a managed update. It does not change
+shell process permissions or sandbox them.
 
 ## 12. Verification requirements
 

@@ -12,10 +12,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"terminalmcp/internal/audit"
 	"terminalmcp/internal/filesystem"
 	"terminalmcp/internal/httpguard"
 	"terminalmcp/internal/mcpserver"
@@ -34,7 +37,8 @@ func run() error {
 	transport := flag.String("transport", "http", "http (independent process) or stdio (owned by the MCP host)")
 	listen := flag.String("listen", "127.0.0.1:8090", "HTTP literal loopback address")
 	tokenFile := flag.String("token-file", "", "0600 file holding the HTTP bearer token; otherwise use TERMINAL_MCP_TOKEN")
-	fileRoot := flag.String("file-root", ".", "Root directory for file tools (default: service working directory)")
+	fileRoot := flag.String("file-root", "", "Root directory for file tools (overrides configured file_root)")
+	auditFile := flag.String("audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
@@ -46,12 +50,51 @@ func run() error {
 	defer stop()
 	manager := session.New(terminal.Start)
 	defer manager.Close()
-	files, err := filesystem.New(manager, *fileRoot)
+	configPath := ""
+	if runtime.GOOS == "darwin" && *transport == "http" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		configPath = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "config.json")
+	}
+	configuredRoot, err := fileRootFromConfig(*fileRoot, configPath)
+	if err != nil {
+		return err
+	}
+	files, err := filesystem.New(manager, configuredRoot)
 	if err != nil {
 		return err
 	}
 	defer files.Close()
-	server := mcpserver.New(manager, files)
+	var recorder *audit.Log
+	path := *auditFile
+	if path == "" && *transport == "http" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		if runtime.GOOS == "darwin" {
+			path = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl")
+		} else {
+			base := os.Getenv("XDG_STATE_HOME")
+			if base == "" {
+				base = filepath.Join(home, ".local", "state")
+			}
+			path = filepath.Join(base, "terminal-mcp", "audit.jsonl")
+		}
+	}
+	if path != "" && path != "off" {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return fmt.Errorf("prepare audit directory: %w", err)
+		}
+		recorder, err = audit.Open(path)
+		if err != nil {
+			return fmt.Errorf("open audit log: %w", err)
+		}
+		defer recorder.Close()
+	}
+	server := mcpserver.NewWithAudit(manager, recorder, files)
 	if *transport == "stdio" {
 		err := server.Run(ctx, &mcp.StdioTransport{MaxLineLength: httpguard.MaxBody})
 		if errors.Is(err, context.Canceled) {

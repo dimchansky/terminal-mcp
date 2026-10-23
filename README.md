@@ -62,7 +62,8 @@ make update        # Validate and roll out changes with rollback support
 make stop          # Intentionally stop, keeping registration
 make start         # Restart a registered service
 make uninstall     # Stop and remove LaunchAgent registration, retaining data
-make logs-service  # Tail server diagnostics (not an MCP operation audit)
+make logs          # Follow metadata-only MCP tool audit events
+make logs-service  # Follow server diagnostics
 ```
 
 `make build` only builds `bin/terminal-mcp`; it never replaces the live deployed
@@ -77,6 +78,45 @@ If another server is already listening on port 8090 and has not been registered,
 procedure in [Development tools and service operations](docs/DEVELOPMENT.md).
 Do not run `make uninstall` from a session hosted by the service being removed.
 This LaunchAgent manages terminal-mcp only; keep `tunnel-client` running separately.
+
+## Audit trail and file-root configuration
+
+The service records MCP **tool invocations** (start/finish, tool name, status,
+duration and generated request ID) to a private, size-rotated JSONL file:
+
+`~/Library/Application Support/LocalTerminalMCP/audit.jsonl`
+
+Use `make logs` to follow events (`make logs-service` for operational errors).
+The log has 4 MiB per file plus three archives, with 0600 permissions in the
+private 0700 state directory. The audit intentionally omits command arguments,
+file content, stdout/stderr, bearer tokens and other tool inputs. It records
+dispatched tools, not every unauthenticated or malformed HTTP request. A shared
+bearer token cannot identify which remote person called a tool. If the audit
+cannot record the *start* of a tool call, the server refuses to execute it;
+an end-of-call write failure is reported in diagnostics rather than turning an
+already executed mutation into a misleading retryable failure. The log is neither
+tamper-proof nor fsync-per-event.
+
+**Current service configuration** is stored in:
+
+`~/Library/Application Support/LocalTerminalMCP/config.json`
+
+Keys: `project` (LaunchAgent working directory), `listen` (HTTP endpoint),
+`token_file` (a *path*, not the token itself), and `path` (child executable PATH).
+On macOS HTTP mode you may additionally set `file_root` to an **absolute** directory
+in this JSON file. If omitted, file tools use `project` via the server working
+directory; an explicit `--file-root` CLI argument overrides it. To apply a new
+`file_root`, edit `config.json` (preserving valid JSON and file permissions) and
+run `make update` from the project. The controller preflights the new root before
+switching the managed server. The tool schemas/descriptions may change when the
+root changes; click Refresh tools if the update status requests it. If validation
+fails, restore the previous config setting and retry. This is not a sandbox for
+shell commands; the root applies only to `file_*` tools.
+
+`--audit-file=/absolute/path` overrides the audit location for direct launches;
+`--audit-file=off` disables it (stdio defaults to no audit). The supervised
+LaunchAgent uses the default state directory. Do not hand-edit the generated
+LaunchAgent plist: its configuration is managed by `service.py`.
 
 ## Run: HTTP manually (alternative to LaunchAgent)
 
