@@ -68,6 +68,8 @@ files. Twelve repeated race-enabled CLI test runs with random test order passed
 on macOS. The measured statement coverage of `cmd/terminal-mcp` increased from
 13.3% to 71.1% (`go test -cover ./cmd/terminal-mcp`).
 
+The file-tool regression tests now cover external changes before a no-op replacement, external inode replacement, concurrent file creation, cleanup of temporary files after a conflict, symlinks outside the configured root, and operations after manager shutdown. They also check that `file_search` does not report nonexistent empty lines in empty files or after a trailing newline. Both defects were reproduced before the fixes.
+
 GitHub Actions runs `make check` on macOS and Ubuntu.
 
 The last CI run verified before this documentation update was:

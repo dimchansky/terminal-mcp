@@ -382,7 +382,7 @@ File writes preserve normal permission bits. They do not preserve ACLs or extend
 
 The server refuses unsupported targets, such as linked, special, non-owned, and read-only files.
 
-A version check detects an old snapshot. It is not a complete OS-wide compare-and-swap operation.
+A version check detects an old snapshot. The server checks the snapshot again before returning success for a no-op replacement. It also checks before publishing a changed file. An external writer can still change a file after this final check; there is no OS-wide compare-and-swap operation.
 
 One-file publication is atomic. There is no transaction across several files.
 
@@ -408,7 +408,7 @@ The server uses `rg` for file discovery. It reads matching file content through 
 
 The default is literal text search. `regex: true` uses Go regular expressions on individual lines.
 
-The default result limit is 100. The maximum is 500. The search has a five-second time limit and a bounded output budget.
+The default result limit is 100. The maximum is 500. The search has a five-second time limit and a bounded output budget. An empty file has no searchable lines. A trailing newline does not create an extra empty line.
 
 ## 10. Local HTTP security
 

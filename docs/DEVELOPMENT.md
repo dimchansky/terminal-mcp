@@ -196,7 +196,7 @@ The server writes one file atomically. It preserves normal permission bits. It d
 
 The server refuses special, non-owned, read-only, symlink, and hard-linked targets for mutation.
 
-The version check detects an out-of-date file. It does not give an OS-wide transaction across concurrent writers.
+The version check detects an out-of-date file. The server checks the original snapshot again before returning a successful no-op edit or publishing a replacement. Concurrent external changes detected at this check cause a version conflict. This is not an OS-wide transaction: a writer can still modify the target after the final check.
 
 ### List files with `file_list`
 
@@ -229,7 +229,7 @@ The default search is literal text. Set `regex: true` to use Go regular expressi
 
 The tool uses `rg` to find candidate files. It opens file content through `os.Root`.
 
-The search has a five-second time limit. It returns bounded output and reports truncated or skipped results.
+The search has a five-second time limit. It returns bounded output and reports truncated or skipped results. Empty files have no lines. A final newline does not create a phantom empty line for regular-expression matches.
 
 The default result limit is 100. The maximum is 500. Install ripgrep before you use this tool.
 

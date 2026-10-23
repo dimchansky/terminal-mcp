@@ -134,7 +134,9 @@ func (m *Manager) Search(ctx context.Context, a SearchArgs) (SearchResult, error
 	if err != nil {
 		return out, err
 	}
-	dir.Close()
+	if err := dir.Close(); err != nil {
+		return out, fmt.Errorf("close search directory: %w", err)
+	}
 	rg, err := exec.LookPath("rg")
 	if err != nil {
 		return out, fmt.Errorf("ripgrep (rg) is required for ignore-aware file discovery; install it or use terminal tools")
@@ -181,7 +183,12 @@ func (m *Manager) Search(ctx context.Context, a SearchArgs) (SearchResult, error
 			skipped++
 			continue
 		}
-		for i, line := range strings.Split(string(data), "\n") {
+		if len(data) == 0 {
+			continue
+		}
+		// A final newline terminates the last line. It does not create another line.
+		lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+		for i, line := range lines {
 			matches := strings.Contains(line, a.Pattern)
 			if re != nil {
 				matches = re.MatchString(line)

@@ -4,6 +4,7 @@ package filesystem
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,118 @@ func mustRead(t *testing.T, m *Manager, path string) FileRead {
 	}
 	return r.Files[0]
 }
+
+func TestNoOpReplacementRejectsConcurrentExternalChange(t *testing.T) {
+	m, dir, _ := fixture(t)
+	path := put(t, dir, "target.txt", "original")
+	relative, err := m.relative(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := version([]byte("original"))
+	receipt, err := m.replace(relative, path, before, func(data []byte) ([]byte, int, string, error) {
+		// A different program changes the same file after validation.
+		if err := os.WriteFile(path, []byte("external"), 0640); err != nil {
+			t.Fatal(err)
+		}
+		// The requested mutation does not change the observed snapshot.
+		return append([]byte(nil), data...), 0, "", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "version_conflict") {
+		t.Fatalf("accepted a stale no-op replacement: receipt=%+v, err=%v", receipt, err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || string(content) != "external" {
+		t.Fatalf("external change was overwritten: %q, %v", content, err)
+	}
+}
+
+func TestNoOpReplacementRejectsExternalRenameWithIdenticalText(t *testing.T) {
+	m, dir, _ := fixture(t)
+	path := put(t, dir, "same.txt", "same")
+	rel, err := m.relative(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.replace(rel, path, version([]byte("same")), func(data []byte) ([]byte, int, string, error) {
+		other := put(t, dir, "replacement.txt", "same")
+		if err := os.Rename(other, path); err != nil {
+			t.Fatal(err)
+		}
+		return append([]byte(nil), data...), 0, "", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "version_conflict") {
+		t.Fatalf("external inode replacement was not detected: %v", err)
+	}
+}
+
+func TestNoOpReplacementWithoutExternalChange(t *testing.T) {
+	m, dir, _ := fixture(t)
+	path := put(t, dir, "same.txt", "same")
+	rel, err := m.relative(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.replace(rel, path, version([]byte("same")), func(data []byte) ([]byte, int, string, error) {
+		return append([]byte(nil), data...), 0, "", nil
+	})
+	if err != nil || got.Version != version([]byte("same")) || got.Bytes != 4 {
+		t.Fatalf("unchanged no-op should succeed: %+v %v", got, err)
+	}
+}
+
+func TestExternalCreationDoesNotClobberOrLeaveTemp(t *testing.T) {
+	m, dir, _ := fixture(t)
+	path := filepath.Join(dir, "new.txt")
+	rel, err := m.relative(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.replace(rel, path, "", func([]byte) ([]byte, int, string, error) {
+		if err := os.WriteFile(path, []byte("external"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return []byte("mine"), 0, "", nil
+	})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("concurrent creation not rejected: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "external" {
+		t.Fatalf("external file was overwritten: %q %v", data, err)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".terminal-mcp-*.tmp"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("failed creation left temporary files: %v %v", leftovers, err)
+	}
+}
+
+func TestExternalModificationBeforePublicationDoesNotClobber(t *testing.T) {
+	m, dir, _ := fixture(t)
+	path := put(t, dir, "existing.txt", "before")
+	rel, err := m.relative(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.replace(rel, path, version([]byte("before")), func([]byte) ([]byte, int, string, error) {
+		if err := os.WriteFile(path, []byte("external"), 0640); err != nil {
+			t.Fatal(err)
+		}
+		return []byte("mine"), 0, "", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "version_conflict") {
+		t.Fatalf("concurrent mutation not rejected: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "external" {
+		t.Fatalf("external change was overwritten: %q %v", data, err)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".terminal-mcp-*.tmp"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("failed replacement left temporary files: %v %v", leftovers, err)
+	}
+}
+
 func TestReadRangesVersionsAndBudgets(t *testing.T) {
 	m, dir, _ := fixture(t)
 	path := put(t, dir, "a.txt", "one\r\ntwo\r\nthree")

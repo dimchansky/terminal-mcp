@@ -295,6 +295,21 @@ func applyEdits(data []byte, edits []Edit) ([]byte, int, string, error) {
 	return result, len(edits), p, nil
 }
 
+// verifySnapshot checks that a file still contains the version used to
+// compute a replacement. Another process can still write after this check.
+func verifySnapshot(parent *os.Root, name string, original os.FileInfo, expected string) error {
+	current, readInfo, readErr := readText(parent, name)
+	if readErr != nil {
+		return fmt.Errorf("version_conflict: cannot reread file: %w", readErr)
+	}
+	leaf, statErr := parent.Lstat(name)
+	if statErr != nil || !leaf.Mode().IsRegular() || !os.SameFile(original, readInfo) ||
+		!os.SameFile(readInfo, leaf) || original.Mode() != readInfo.Mode() || version(current) != expected {
+		return fmt.Errorf("version_conflict: file changed before replacement")
+	}
+	return nil
+}
+
 func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]byte, int, string, error)) (FileReceipt, error) {
 	result := FileReceipt{Path: path}
 	parent, err := m.root.OpenRoot(filepath.Dir(rel))
@@ -342,7 +357,7 @@ func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]
 	}
 	result.Version, result.Bytes, result.Edits, result.Preview = version(after), len(after), count, preview
 	if exists && string(before) == string(after) {
-		return result, nil
+		return result, verifySnapshot(parent, name, info, expected)
 	}
 	var id [16]byte
 	if _, err = rand.Read(id[:]); err != nil {
@@ -368,12 +383,10 @@ func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]
 		return result, err
 	}
 	if exists {
-		current, curInfo, e := readText(parent, name)
-		leaf, le := parent.Lstat(name)
-		if e != nil || le != nil || !leaf.Mode().IsRegular() || !os.SameFile(info, curInfo) || info.Mode() != curInfo.Mode() || version(current) != expected {
-			return result, fmt.Errorf("version_conflict: file changed before replacement")
+		if err := verifySnapshot(parent, name, info, expected); err != nil {
+			return result, err
 		}
-		// shortcut: external writers can race this final check; use separate worktrees for concurrent editors.
+		// External writers can race the last check; use separate worktrees for concurrent editors.
 		err = parent.Rename(temp, name)
 	} else {
 		// Link publishes a complete inode without overwriting a concurrently created destination.
