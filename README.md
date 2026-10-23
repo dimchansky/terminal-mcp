@@ -1,341 +1,292 @@
 # Local Terminal MCP
 
-A small Go service that gives an MCP client live local processes and terminal
-sessions, rather than a single blocking `execute(command)` call.
+Local Terminal MCP is a Go service. It lets an MCP client start, read, and control local processes. It also gives clients access to local text files.
 
-**Version 0.2:** terminal sessions, version-guarded file tools and supervised
-macOS updates. See [Development tools and service operations](docs/DEVELOPMENT.md)
-for the new API and safe self-update workflow. The original delivery report remains
-historical; run `make check` for the current revision.
+**This service is not a sandbox.** Tools run with the permissions of the service user. Give access only to trusted clients.
 
-## What is included
+## Start here
 
-- Twelve tools: seven terminal tools plus file_read, file_edit, file_write, file_search, file_list.
-- Auto-close after exit and bounded completion waits for one-shot commands.
-- Version-checked atomic single-file edits, batch line reads, and bounded search.
-- Optional macOS LaunchAgent with preflight, independent restart worker and rollback.
-- Pipes with separate stdout/stderr, or a real PTY with a rendered text screen.
-- Continuous bounded output capture, independent byte cursors, explicit gaps.
-- Bounded observation and input waits; signals never wait behind a reading call.
-- Retry keys and server-instance fencing; retries do not duplicate accepted input.
-- Loopback HTTP with token/Host/Origin checks, plus optional stdio.
-- An English architecture/contract document: [SPEC.md](SPEC.md).
+- [Build and check](#build-and-check) — Build the server and run tests.
+- [Run as a macOS service](#run-as-a-macos-service) — Use a LaunchAgent to keep the server running.
+- [Connect through Secure MCP Tunnel](#connect-through-secure-mcp-tunnel) — Connect ChatGPT to the local server.
+- [Use the tools](#use-the-tools) — Start a process and read its output.
+- [Configuration and logs](#configuration-and-logs) — Set the file root and inspect MCP actions.
+- [Specification](SPEC.md) — Read the behavior and limits of each tool.
+- [Development guide](docs/DEVELOPMENT.md) — Read the complete file-tool and update procedures.
+- [Validation report](TEST_REPORT.md) — See the verified checks and their limits.
 
-**Platform:** macOS or Linux. **Compiler:** Go 1.25 or newer. Direct dependencies
-are pinned in `go.mod`: the official MCP Go SDK, `creack/pty`, `vt10x`, and `x/sys`.
+The server supports macOS and Linux. It needs Go 1.25 or later.
 
-There is intentionally no command allowlist. Processes run with the service user's
-permissions. This is not a sandbox. Do not give an untrusted model/client access to
-an account containing secrets or systems it must not control.
+The macOS service controller needs Python 3 and `launchd`. The core Go server does not use Python. The `file_search` tool needs `rg` (ripgrep).
 
-## Build and verify
+## What the server does
 
-On a machine with Go 1.25+ and access to the Go module proxy:
+The server provides 12 MCP tools.
+
+| Tool | Function |
+| --- | --- |
+| `terminal_list` | Get the current `server_id`, session counts, and unclosed sessions. |
+| `terminal_start` | Start a process and get a `session_id`. |
+| `terminal_read` | Read process output without consuming it. |
+| `terminal_write` | Send text, bytes, or keys to a process. |
+| `terminal_signal` | Send a signal to a local process or group. |
+| `terminal_resize` | Change the size of a PTY. |
+| `terminal_close` | Close a session. |
+| `file_read` | Read UTF-8 text with line numbers and a file version. |
+| `file_edit` | Replace exact text after a version check. |
+| `file_write` | Create a file or replace a file with a version check. |
+| `file_search` | Search file content with bounded results. |
+| `file_list` | List the entries in one directory. |
+
+The server supports two process modes:
+
+- `pipes` keeps stdout and stderr separate. Use this mode for builds and tests.
+- `pty` provides a terminal, interactive input, and a text screen.
+
+A process can continue after the MCP client disconnects. The server requests process termination when it closes a session. A restart removes in-memory session state.
+
+Each mutating action uses an `operation_id`. The server uses this ID to prevent duplicate execution in one server instance.
+
+## Build and check
+
+From the repository root, run:
 
 ```sh
 go mod tidy
 make check
 ```
 
-`make check` checks Go formatting, verifies modules, runs Go race tests and
-`go vet`, runs the Python controller tests, and builds `bin/terminal-mcp`.
-Use `make fmt-check`, `make test-go`, `make test-service`, or `make check-core`
-(three race-test repetitions for the original process/security packages) when
-only one check is needed. These targets do not install or restart the service.
-A native C toolchain is needed for `-race`; Python 3 remains a dependency of the
-LaunchAgent controller and its tests. Only `file_search` requires ripgrep (`rg`).
+`make check` runs four targets in this order:
 
-The repository contains the verified go.sum generated during native builds.
-Keep checksum verification enabled. Dependencies are pinned, not vendored.
+1. `fmt-check` checks Go source formatting.
+2. `test-go` verifies modules, runs Go race tests, and runs `go vet`.
+3. `test-service` runs Python tests for the macOS service controller.
+4. `build` creates `bin/terminal-mcp`.
 
-For a plain build after dependency resolution:
+Use one target when you do not need a full check:
 
 ```sh
-go build -o bin/terminal-mcp ./cmd/terminal-mcp
+make fmt-check
+make test-go
+make test-service
+make build
+make check-core
 ```
 
-## macOS: Makefile and LaunchAgent
+`make check-core` repeats selected Go race tests three times. It also runs `go vet` on those packages.
 
-For an independent background service, use these targets from the project root:
+These targets do not stop or restart the MCP server. A native C toolchain is necessary for the Go race detector.
 
-```sh
-make check         # Tests, go vet and build
-make install       # Register and start the user LaunchAgent; repeat is harmless
-make status        # Service health and last update result
-make update        # Validate and roll out changes with rollback support
-make stop          # Intentionally stop, keeping registration
-make start         # Restart a registered service
-make uninstall     # Stop and remove LaunchAgent registration, retaining data
-make logs          # Follow detailed MCP tool audit events
-make logs-service  # Follow server diagnostics
-```
+## Run as a macOS service
 
-`make build` only builds `bin/terminal-mcp`; it never replaces the live deployed
-binary. `make install` is idempotent for an already loaded agent. On a fresh
-machine it requires an existing token file (generated below), runs full checks,
-and preflights the candidate before registration. After `make uninstall`, another
-`make install` restores the saved registration and starts the service. Neither
-command deletes the bearer token, stored releases, configuration or logs.
+A user LaunchAgent can keep the server running without an open Terminal window. The service controller manages the server, not `tunnel-client`.
 
-If another server is already listening on port 8090 and has not been registered,
-`make install` refuses to take it over. Follow the explicit one-time adoption
-procedure in [Development tools and service operations](docs/DEVELOPMENT.md).
-Do not run `make uninstall` from a session hosted by the service being removed.
-This LaunchAgent manages terminal-mcp only; keep `tunnel-client` running separately.
+### 1. Create the local token
 
-## Audit trail and file-root configuration
-
-The service records MCP **tool invocations** (start/finish, tool name, complete
-terminal command arguments, session context, status, duration and generated
-request ID) to a private, size-rotated JSONL file:
-
-`~/Library/Application Support/LocalTerminalMCP/audit.jsonl`
-
-Use `make logs` to follow events (`make logs-service` for operational errors).
-The log has 4 MiB per file plus three archives, with 0600 permissions in the
-private 0700 state directory. All arguments of terminal_start, including argv,
-cwd, env and execution options, are recorded. terminal_write records exactly what
-was sent (text, keys or base64 data); read, signal, resize and close records include
-session_id and options. File operations record path(s), search queries, line ranges,
-create/replace mode, expected version and content/edit byte counts, but not file
-contents or edit fragments. The audit does not duplicate stdout/stderr.
-
-Commands or PTY input that themselves contain secrets or embedded file content
-will be recorded verbatim: this is intentional for this owner-controlled server.
-It records dispatched tools, not every unauthenticated or malformed HTTP request.
-A shared
-bearer token cannot identify which remote person called a tool. If the audit
-cannot record the *start* of a tool call, the server refuses to execute it;
-an end-of-call write failure is reported in diagnostics rather than turning an
-already executed mutation into a misleading retryable failure. The log is neither
-tamper-proof nor fsync-per-event.
-
-**Current service configuration** is stored in:
-
-`~/Library/Application Support/LocalTerminalMCP/config.json`
-
-Keys: `project` (LaunchAgent working directory), `listen` (HTTP endpoint),
-`token_file` (a *path*, not the token itself), and `path` (child executable PATH).
-For this personal service, `file_root` defaults to `/` at installation, allowing
-file tools to address any accessible absolute path. The configured value can be
-changed to another **absolute** directory; the server's fallback if the key is
-missing is the working directory (`project`). An explicit `--file-root` CLI
-argument overrides it. To apply a new
-`file_root`, edit `config.json` (preserving valid JSON and file permissions) and
-run `make update` from the project. The controller preflights the new root before
-switching the managed server. The tool schemas/descriptions may change when the
-root changes; click Refresh tools if the update status requests it. If validation
-fails, restore the previous config setting and retry. This is not a sandbox for
-shell commands; the root applies only to `file_*` tools.
-
-`--audit-file=/absolute/path` overrides the audit location for direct launches;
-`--audit-file=off` disables it (stdio defaults to no audit). The supervised
-LaunchAgent uses the default state directory. Do not hand-edit the generated
-LaunchAgent plist: its configuration is managed by `service.py`.
-
-## Run: HTTP manually (alternative to LaunchAgent)
-
-Start the service independently of your MCP client/tunnel:
+Run these commands once:
 
 ```sh
 umask 077
 mkdir -p "$HOME/.config/terminal-mcp"
-# Run this generation step once; do not overwrite a token in use.
 test -e "$HOME/.config/terminal-mcp/token" || \
   openssl rand -hex 32 > "$HOME/.config/terminal-mcp/token"
 chmod 600 "$HOME/.config/terminal-mcp/token"
+```
 
+Do not replace a token that a running client uses.
+
+### 2. Install and check the service
+
+From the repository root, run:
+
+```sh
+make install
+make status
+```
+
+The installer checks the code, builds a binary, and tests that binary before it registers the LaunchAgent.
+
+If the LaunchAgent already runs, `make install` does not restart it. If the service has a manual stop marker, use `make start` to start it.
+
+**Do not use `make install` to take control of an unrelated process on port 8090.** If a manual server already runs, use the [one-time adoption procedure](docs/DEVELOPMENT.md#one-time-adoption-of-a-manual-server).
+
+### 3. Control the service
+
+| Command | Result |
+| --- | --- |
+| `make status` | Show registration, health, and the last update result. |
+| `make update` | Check, build, test, and update the running server. |
+| `make stop` | Stop the server. Keep the registration and stop marker. |
+| `make start` | Start a registered service. |
+| `make uninstall` | Stop the server and remove its LaunchAgent registration. |
+| `make install` | Register the service again from retained state. |
+| `make logs` | Follow detailed MCP tool actions. |
+| `make logs-service` | Follow server diagnostics. |
+
+`make uninstall` keeps the configuration, token, logs, and stored releases. Do not run it from a terminal session hosted by this server.
+
+The updater runs in a separate launchd job. It waits for active commands to finish. It also checks the new server after the restart.
+
+**An update causes a short connection interruption.** It does not transfer live terminal sessions to the new server.
+
+If the update fails after activation, the controller tries to restore the previous binary. A manual stop takes priority over automatic recovery.
+
+## Configuration and logs
+
+### Service configuration
+
+The macOS controller reads this file:
+
+```text
+~/Library/Application Support/LocalTerminalMCP/config.json
+```
+
+The configuration can contain these keys:
+
+| Key | Function |
+| --- | --- |
+| `project` | Set the service working directory. |
+| `listen` | Set the local HTTP address. The installed default is `127.0.0.1:8090`. |
+| `token_file` | Give the path to the local bearer token. |
+| `path` | Set the PATH environment variable for the server and child processes. |
+| `file_root` | Set the root directory for `file_*` tools. |
+
+For a new macOS installation, the controller sets `file_root` to `/`. This permits file tools to access any path allowed by the user's OS permissions.
+
+If `file_root` is absent, the Go server uses its working directory. A direct `--file-root` argument overrides the configured value.
+
+To change `file_root`:
+
+1. Open `config.json`.
+2. Set `file_root` to an absolute directory path.
+3. Save valid JSON.
+4. Run `make update`.
+5. Run `make status`.
+
+The updater checks the new root before it restarts the service. If tool metadata changes, the update status tells you to select **Refresh tools** in ChatGPT.
+
+**Do not edit the generated LaunchAgent plist.** The controller does not provide a general live-edit function for `listen`, `project`, or `token_file`.
+
+File-root limits apply to the five `file_*` tools. They do not restrict shell commands.
+
+### Audit log
+
+The server writes MCP tool-call events to:
+
+```text
+~/Library/Application Support/LocalTerminalMCP/audit.jsonl
+```
+
+Run `make logs` to read new events.
+
+The audit records:
+
+- The tool name, start and finish times, result, and `request_id`.
+- Complete `terminal_start` arguments, including `argv`, `cwd`, `env`, and execution options.
+- `terminal_write` input, including text, keys, and base64 data.
+- `session_id` and options for terminal read, signal, resize, and close operations.
+- File paths, line ranges, search terms, action types, versions, and byte counts for file operations.
+
+The file tools do not add file content or edit text to the audit. The audit does not copy stdout or stderr.
+
+**Commands can contain secrets.** The audit records command arguments and terminal input exactly as supplied.
+
+The audit files have mode `0600`. The state directory has private permissions. The active file is limited to 4 MiB. The server keeps up to three rotated files.
+
+The audit records tool callbacks. It does not identify a specific person when callers share one bearer token. It is not a tamper-proof record.
+
+If the audit cannot write the start event, the server does not run the tool. A failure to write the finish event does not undo an action.
+
+The server writes diagnostic messages to `stderr.log`. Use `make logs-service` to read them.
+
+## Run HTTP manually
+
+Use this method when you do not want a LaunchAgent.
+
+First, build the binary and create the local token as shown above. Then run:
+
+```sh
 ./bin/terminal-mcp \
   --listen=127.0.0.1:8090 \
   --token-file="$HOME/.config/terminal-mcp/token"
 ```
 
-Endpoint: `http://127.0.0.1:8090/mcp`. Clients must send:
+The MCP endpoint is `http://127.0.0.1:8090/mcp`.
 
-```text
-Authorization: Bearer <contents of the token file>
-```
+The server accepts only a loopback bind address. It checks the HTTP Host, Origin, and bearer token. Do not remove these checks to repair a connection problem.
 
-The endpoint deliberately rejects browser Origin headers, requests with a different
-Host, non-loopback binding, and requests over 1 MiB. There is no CORS or built-in
-OAuth authorization server. Use the **same literal IP and port** in the client URL;
-`localhost` is not interchangeable with the configured Host check.
-
-Sessions survive MCP client disconnects and tunnel restarts while this process is
-alive. Keep it running in a terminal or under your normal launchd/systemd setup.
-Graceful SIGINT/SIGTERM shuts down sessions. Stopping the model's read call does
-**not** stop its child process. Use `terminal_signal` or `terminal_close` instead.
-
-### Verify the MCP endpoint with curl
-
-You can use `curl` to verify that the HTTP server is running, authentication works, and MCP tools are available — without configuring an MCP client or tunnel.
-
-The following request lists the tools exposed by the server:
+Use this command to check local tool discovery:
 
 ```sh
-curl -sS -N \
-  'http://127.0.0.1:8090/mcp' \
+curl -sS -N 'http://127.0.0.1:8090/mcp' \
   -H "Authorization: Bearer $(cat "$HOME/.config/terminal-mcp/token")" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/list",
-    "params": {}
-  }'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A successful response contains a JSON-RPC result with a `tools` array describing the available tools and their input schemas.
+The response must contain a JSON-RPC result with a `tools` array.
 
-The request connects directly to the local HTTP endpoint; no tunnel credentials or external services are required.
+For direct launches, `--file-root` sets the file-tool root. The `--audit-file` option sets the audit path. Use `--audit-file=off` to disable this audit.
 
-### OpenAI Secure MCP Tunnel
+## Connect through Secure MCP Tunnel
 
-This connects **this repository's `terminal-mcp` server** to ChatGPT Web without
-publishing its HTTP endpoint on the internet. You do not need `uvx`, a Python
-shell server, a public IP address, or router port forwarding.
-
-There are two local processes; keep both running:
+The local server does not need a public IP address or an open router port. The separate `tunnel-client` establishes an outbound connection to OpenAI.
 
 ```text
-ChatGPT Web
-    |
-OpenAI-hosted Secure MCP Tunnel
-    |
-    | tunnel-client establishes the outbound connection to OpenAI
-    v
-Your computer: tunnel-client                  [terminal B]
-    |
-    | HTTP + local Authorization header
-    v
-Your computer: http://127.0.0.1:8090/mcp       [terminal A]
-    |
-terminal-mcp -> local processes / PTY sessions
+ChatGPT
+   |
+OpenAI Secure MCP Tunnel
+   |
+tunnel-client (your computer)
+   |
+http://127.0.0.1:8090/mcp
+   |
+terminal-mcp (your computer)
 ```
 
-The steps below use environment variables rather than a YAML profile. No
-`tunnel-client init` command is necessary for this setup.
+### 1. Install the tunnel client
 
-#### 1. Build and start the local MCP server
-
-Follow [Build and verify](#build-and-verify), then
-[Run: HTTP is the recommended mode](#run-http-is-the-recommended-mode).
-Keep `terminal-mcp` running in **terminal A**, with its token file at
-`~/.config/terminal-mcp/token`.
-
-Use the [curl check above](#verify-the-mcp-endpoint-with-curl) to confirm that the
-local endpoint responds and lists the tools. Resolve local connection or token
-errors before configuring the tunnel. The MCP URL for the rest of this guide is
-exactly `http://127.0.0.1:8090/mcp`.
-
-#### 2. Install the official `tunnel-client`
-
-On **macOS with Homebrew**, use OpenAI's official tap:
+On macOS, use Homebrew:
 
 ```sh
 brew install openai/tools/tunnel-client
-```
-
-If it is already installed, update it instead:
-
-```sh
-brew update
-brew upgrade openai/tools/tunnel-client
-```
-
-OpenAI currently recommends Homebrew on macOS: manually downloaded release ZIPs
-are not notarized and may be blocked by Gatekeeper. Do not disable Gatekeeper or
-remove quarantine attributes to work around that; use the supported package.
-
-For **Linux**, download the matching architecture's client bundle from the
-[official releases](https://github.com/openai/tunnel-client/releases/latest), or
-use the download offered on the Platform Tunnels page. Extract the bundle and
-add the directory containing `tunnel-client` to your `PATH`. Keep any bundled
-companion files beside it rather than copying only the executable. Select a
-client binary bundle, not GitHub's source-code archive.
-
-Verify the installation:
-
-```sh
 tunnel-client --version
-tunnel-client help quickstart
 ```
 
-The [upstream installation instructions](https://github.com/openai/tunnel-client#install-with-homebrew)
-are the reference if packaging changes.
+For Linux, get the correct bundle from the [official tunnel-client releases](https://github.com/openai/tunnel-client/releases/latest). Keep the files from the bundle together.
 
-#### 3. Create a tunnel in OpenAI Platform
+### 2. Create the tunnel and a runtime key
 
-Open [Platform -> Organization -> Tunnels](https://platform.openai.com/settings/organization/tunnels).
-Select the intended Platform organization. For a personal account, use that
-account's personal Platform organization.
+Open [OpenAI Platform Tunnels](https://platform.openai.com/settings/organization/tunnels). Select the correct organization and ChatGPT workspace.
 
-Create a tunnel with a recognizable name, such as `Local Terminal MCP`. Include
-the Platform organization and associate the **ChatGPT workspace in which you
-will use it**. Copy the complete returned `tunnel_id`; do not shorten it or
-replace it with the tunnel's display name. Some IDs include a namespace; keep
-that too.
+Create a tunnel. Keep the complete tunnel ID, including any namespace.
 
-Association with a Platform organization alone does not necessarily make the
-tunnel visible in your ChatGPT workspace. Check the tunnel's associations before
-continuing.
+The runtime key and its owner need **Tunnels Read + Use** permissions. Create a restricted runtime key from the [Platform API keys page](https://platform.openai.com/settings/organization/api-keys).
 
-Tunnel permissions are organization-level, not just project permissions:
+Keep these values separate:
 
-| Task | Required tunnel permissions |
+| Value | Use |
 | --- | --- |
-| Create or edit a tunnel | **Read + Manage** |
-| Run `tunnel-client` | **Read + Use**, for the runtime key's principal and the key itself |
-| Select/use the tunnel in ChatGPT | **Read + Use**, for the operator |
+| Tunnel ID | Identify the tunnel for the client and ChatGPT. |
+| Runtime API key | Authenticate `tunnel-client` to OpenAI. |
+| Local bearer token | Authenticate `tunnel-client` to `terminal-mcp`. |
 
-If you see **Tunnels access required**, check the organization selector and ask
-an owner or permissions administrator for the appropriate role. The relevant
-pages are [Organization roles](https://platform.openai.com/settings/organization/people/roles)
-and [Organization groups](https://platform.openai.com/settings/organization/people/groups).
-Account/workspace policies still apply; installing the client does not grant
-access. See the [official permissions guide](https://github.com/openai/tunnel-client/blob/master/docs/permissions.md).
+Do not put these secrets in the repository or in a model prompt.
 
-#### 4. Create a restricted runtime API key
+### 3. Start the tunnel client
 
-In the same Platform organization, open
-[Runtime API keys](https://platform.openai.com/settings/organization/api-keys).
-Create a **Restricted** key with Tunnels **Read + Use**. The user or service
-account behind that key must also have those permissions for this tunnel.
-
-Use this key for `CONTROL_PLANE_API_KEY`. Do **not** use an admin API key or a key
-with unrestricted permissions for the long-running client. Creating the tunnel
-through the Platform UI does not require you to create an `OPENAI_ADMIN_KEY`.
-
-Keep these three values separate:
-
-| Value | Where it comes from | Where it is used |
-| --- | --- | --- |
-| `CONTROL_PLANE_TUNNEL_ID` | Platform Tunnels page | Selects the same tunnel in the local client and ChatGPT; it is an identifier, not a password |
-| `CONTROL_PLANE_API_KEY` | Platform Runtime API keys | Authenticates `tunnel-client` to OpenAI; it is a secret |
-| Local token in `~/.config/terminal-mcp/token` | Generated in the HTTP startup instructions | Authenticates requests from `tunnel-client` to `terminal-mcp`; it is a different secret |
-
-Do not paste either secret into ChatGPT, commit it, or put it in a command you
-ask the model to run. Perform credential setup yourself, in a separate terminal
-from the server. A full-access shell can still read files and secrets accessible
-to its OS user; this credential separation does not turn the server into a sandbox.
-
-#### 5. Configure and start the tunnel client
-
-Open **terminal B** on the same computer, under an account that can read the
-local token file. The following interactive input works in Bash or zsh. Enter
-the runtime API key at the prompt, not as a literal in shell history:
+Open a separate local terminal. Enter the restricted runtime API key without putting it in shell history:
 
 ```sh
-# Disable shell tracing before handling credentials.
 set +x
-printf 'Paste the tunnel runtime API key (hidden), then press Enter: '
+printf 'Runtime API key: '
 read -r -s CONTROL_PLANE_API_KEY
 printf '\n'
 export CONTROL_PLANE_API_KEY
 ```
 
-Next, replace the tunnel-ID placeholder with the complete ID from step 3 and run:
+Set the remaining environment variables:
 
 ```sh
 export CONTROL_PLANE_TUNNEL_ID='YOUR_COMPLETE_TUNNEL_ID'
@@ -345,213 +296,106 @@ export MCP_EXTRA_HEADERS='Authorization: env:TERMINAL_MCP_LOCAL_AUTH'
 export HEALTH_LISTEN_ADDR='127.0.0.1:8091'
 
 tunnel-client doctor --explain
-```
-
-If the checks succeed, start the client in that **same terminal**:
-
-```sh
 tunnel-client run
 ```
 
-`MCP_SERVER_URL` selects HTTP mode and points to the server already running in
-terminal A. It is equivalent to passing
-`--mcp.server-url=http://127.0.0.1:8090/mcp`; do not also configure a stdio command
-for the same channel.
+The `MCP_EXTRA_HEADERS` value is an environment-variable reference. Do not replace it with the literal token.
 
-`MCP_EXTRA_HEADERS` injects the local bearer credential on the hop to
-`terminal-mcp`. The single-quoted `env:TERMINAL_MCP_LOCAL_AUTH` is intentional:
-it is a secret reference that `tunnel-client` resolves, not the token itself.
-This header is not the runtime API key used to authenticate to OpenAI.
-Connector-forwarded headers take precedence over these local static headers;
-do not configure a conflicting `Authorization` header in ChatGPT.
+Port 8090 belongs to `terminal-mcp`. Port 8091 belongs to the tunnel client's local health listener.
 
-Port **8090** is the terminal server; port **8091** is the tunnel client's local
-health/admin listener. In a **third terminal**, check the latter:
+In another terminal, run:
 
 ```sh
 curl -fsS http://127.0.0.1:8091/healthz
 curl -fsS http://127.0.0.1:8091/readyz
 ```
 
-Open [the local tunnel admin UI](http://127.0.0.1:8091/ui) to inspect the connection.
-Keep this listener on loopback. A healthy/ready client is a prerequisite, not
-proof that ChatGPT can discover and call this server; perform the next steps.
+You can open the [local tunnel client UI](http://127.0.0.1:8091/ui) to examine connection status.
 
-These exports apply only to the current shell and its child processes. In a new
-terminal, repeat the credential input and exports before restarting the client.
-If you already use tunnel-client profiles/configuration, check for conflicting
-settings; this recipe assumes no other MCP binding or header overrides.
+### 4. Add the connection in ChatGPT
 
-#### 6. Add the tunnel in ChatGPT Web
+In the applicable ChatGPT workspace, add a custom MCP server through the tunnel. Select the tunnel ID from step 2.
 
-Keep **both local processes running** during discovery and subsequent tool calls.
-In the intended ChatGPT workspace:
+For this setup, choose **No authentication** for the custom MCP server. The tunnel client already supplies the local bearer token. Do not put your runtime key in the ChatGPT server-authentication field.
 
-1. Open **Plugins**, select **+**, then **Add custom MCP server**.
-2. Name it `Local Terminal MCP`. A suitable description is
-   `Manage local processes and interactive terminals on my computer.`
-3. Under **Connection**, select **Tunnel**, then choose the tunnel from step 3
-   or paste its complete `tunnel_id`.
-4. For **Authentication**, select **No authentication** for this configuration.
-   Do not choose OAuth: this server does not implement an OAuth authorization
-   server. Do not enter your OpenAI runtime API key as a server credential.
-5. Review the risk warning, select **I understand and want to continue**, and
-   choose **Create as a plugin**.
-6. Review the discovered tools, then install the resulting plugin from your
-   personal plugins or workspace before using it in a conversation.
+Review and enable the 12 MCP tools. The UI can change. Refer to the [custom MCP server guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for current steps.
 
-**Why "No authentication" does not disable local protection:** it means ChatGPT
-will not perform a separate OAuth flow for this MCP server. OpenAI still checks
-tunnel access, and the local `tunnel-client` supplies the bearer token required
-by `terminal-mcp`. Leave the server's `--token-file` protection enabled. This is
-one shared local service credential, not per-ChatGPT-user authorization; grant
-access only to users who may control this computer.
+**A healthy tunnel does not prove that ChatGPT can use the tools.** Make a real tool call to confirm the connection.
 
-Do not enter `http://127.0.0.1:8090/mcp` as a public Server URL in ChatGPT. That
-address is used by the local tunnel client; ChatGPT identifies the connection
-by its tunnel ID.
+### 5. Test from ChatGPT
 
-UI labels and availability can change. The current reference is
-[Add custom MCP server](https://developers.openai.com/api/docs/guides/custom-mcp-server).
-If the tunnel is missing, check its workspace association and your **Read + Use**
-permissions before changing the local server.
+Ask ChatGPT to call `terminal_list` with `{}`. Check the returned `server_id` and session counts.
 
-#### 7. Verify a real tool call from ChatGPT
-
-Open a new conversation, type `@`, and select the installed `Local Terminal MCP`
-plugin. First test discovery and a read-only call:
-
-```text
-Use the Local Terminal MCP plugin only. Call terminal_list with {} and report
-its server_id, unclosed sessions, and session counts. Do not run shell commands yet.
-Use include_closed=true only when inspecting retained closed sessions.
-```
-
-Confirm that discovery exposes all twelve tools: `terminal_start`,
-`terminal_read`, `terminal_write`, `terminal_signal`, `terminal_resize`,
-`terminal_list`, `terminal_close`, `file_read`, `file_edit`, `file_write`,
-`file_search`, and `file_list`.
-
-Then perform a harmless process-execution check, approving the call if prompted:
-
-```text
-Using Local Terminal MCP, first call terminal_list to obtain the current
-server_id. Start argv ["/bin/pwd"] in pipes mode with a fresh operation_id and
-wait_ms 1000. Read that session as needed until the process has exited and
-output_done is true. Report its working directory and exit status. Do not read
-other files or run additional programs.
-```
-
-Only a successful tool call from ChatGPT verifies the complete path. If tools
-are missing or disabled, inspect the plugin's tool settings and workspace
-policy. After changing server metadata, refresh the connection and test in a
-new conversation. See [Connect and test your plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt).
-
-#### Troubleshooting and daily use
-
-| Symptom | What to check |
-| --- | --- |
-| Client cannot authenticate to OpenAI, or polling returns 401/403 | Runtime key, target organization/tunnel, and **Read + Use** on both the key and its principal. Do not substitute the local token or an admin key. |
-| Local `/mcp` returns 401 | Match `TERMINAL_MCP_LOCAL_AUTH` to the token file used by the running server, including `Bearer `. Check `MCP_EXTRA_HEADERS` and conflicting forwarded/discovery headers. |
-| Local `/mcp` rejects Host or Origin | Use exactly `127.0.0.1:8090`, not `localhost`; do not send an `Origin` header. Keep the server's checks enabled. |
-| Connection refused, or `/readyz` fails | Check that both processes are still running, that the local URL/ports match, and inspect `doctor --explain`, client logs and `/ui`. |
-| Tunnel exists in Platform but is absent in ChatGPT | Check the selected ChatGPT workspace, tunnel associations and operator permissions. New resources/permission changes can take time to propagate. |
-| Plugin connects but only some tools can be called | Review discovered tool metadata, enablement/confirmation settings and workspace policy; refresh the connection and try a new conversation. |
-| A downloaded macOS binary is blocked | Install with `brew install openai/tools/tunnel-client`; do not bypass Gatekeeper. |
-
-For normal use, start `terminal-mcp` first, then `tunnel-client`; reuse the same
-tunnel ID, runtime key and local token. Restarting only the tunnel does not stop
-terminal sessions while `terminal-mcp` remains alive. Stopping `terminal-mcp`
-itself shuts down its sessions. Keep the computer awake and connected while
-ChatGPT is using it.
-
-**Validation status:** this procedure is based on this project's HTTP setup and
-the official documentation checked on 2026-10-23. It is **not an executed
-ChatGPT/tunnel integration test**. Do not remove authentication to work around
-an integration error.
-
-Upstream references: [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels),
-[client onboarding](https://github.com/openai/tunnel-client/blob/master/docs/onboarding.md),
-and [client configuration](https://github.com/openai/tunnel-client/blob/master/docs/configuration.md).
-
-### Optional stdio
-
-For a host that launches an MCP executable directly:
-
-```sh
-./bin/terminal-mcp --transport=stdio
-```
-
-Example local MCP host configuration (the host must support this schema):
+Then start a harmless process:
 
 ```json
 {
-  "mcpServers": {
-    "terminal": {
-      "command": "/absolute/path/to/terminal-mcp",
-      "args": ["--transport=stdio"]
-    }
-  }
-}
-```
-
-The same twelve tools are exposed. No HTTP token is needed. Diagnostics stay on
-stderr; stdout is reserved for MCP. This is simpler to launch but **not** the mode
-for keeping sessions alive when the owning host/tunnel shuts down the server.
-
-## Tools and workflow
-
-These are MCP **tool argument objects**, not standalone HTTP requests. Let an MCP
-client/the official SDK handle initialization, JSON-RPC framing, and protocol
-versions. Do not turn the endpoint into ad-hoc REST routes.
-
-1. Call `terminal_list` with `{}` and retain its `server_id`.
-2. Start a process using a new operation ID.
-3. Read using `next_cursor`; examine both process state and `output_done`.
-4. Send exact input, explicit keys, or a signal as needed.
-5. Prefer `close_on_exit: true` for one-shot commands; otherwise close your sessions explicitly. Output remains available within retention limits.
-
-Start an ordinary build/test process:
-
-```json
-{
-  "server_id": "<from terminal_list>",
-  "operation_id": "tests-1",
-  "argv": ["go", "test", "./...", "-v"],
-  "cwd": "/absolute/path/to/project",
+  "server_id": "<server_id>",
+  "operation_id": "first-command-1",
+  "argv": ["/bin/pwd"],
   "mode": "pipes",
+  "close_on_exit": true,
+  "wait_for": "completion",
   "wait_ms": 1000
 }
 ```
 
-`terminal_start` returns an action **receipt** and an optional **observation**.
-Inspect `receipt.status` before interpreting the output. A response timeout is not
-proof that a start/input action failed: repeat the *identical action and operation
-ID*. A changed `server_id` means the previous outcome must be investigated, not
-blindly resubmitted under the new ID.
+Check `receipt.status` and the process exit code. Use `terminal_read` if the process has not finished.
 
-Read incrementally:
+If the tools change, select **Refresh tools** in ChatGPT. If the local endpoint works but the plugin fails, check tunnel permissions and workspace association.
+
+For more information, see [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and the [tunnel-client configuration guide](https://github.com/openai/tunnel-client/blob/master/docs/configuration.md).
+
+## Use the tools
+
+### Start a process
+
+Call `terminal_list` first. Copy its current `server_id`.
+
+Use a new `operation_id` for each mutating action:
 
 ```json
 {
-  "session_id": "<receipt.session_id>",
-  "cursor": "<previous observation.next_cursor>",
+  "server_id": "<server_id>",
+  "operation_id": "go-tests-1",
+  "argv": ["go", "test", "./..."],
+  "cwd": "/absolute/project",
+  "mode": "pipes",
+  "close_on_exit": true,
+  "wait_for": "completion",
+  "wait_ms": 1000
+}
+```
+
+`terminal_start` returns a receipt and, when available, an observation. A wait timeout does not stop the process.
+
+### Read the result
+
+Use the `session_id` from the receipt. Pass `next_cursor` to the next read:
+
+```json
+{
+  "session_id": "<session_id>",
+  "cursor": "<previous_next_cursor>",
+  "wait_for": "completion",
   "wait_ms": 1000,
   "max_bytes": 16384
 }
 ```
 
-Each event has a stream name and either UTF-8 `text` or exact `bytes_base64`.
-Advance the cursor even when `return_reason` is `limit`. `gap` is explicit data
-loss from retention, not an empty result. `until` is an optional literal substring
-searched in the bounded returned window; it is not a whole-log regular expression.
+Check `exit`, `output_done`, `has_more`, and `gap`. A gap means that some output is no longer available.
 
-For a persistent interactive shell, start `argv: ["/bin/zsh", "-i"]`,
-`mode: "pty"`, `rows: 24`, `cols: 120`. Then call `terminal_write`:
+If a mutation response is lost, use the **same** `operation_id` and the **same** effect arguments. Do not replay it with a new `server_id`.
+
+### Use an interactive shell
+
+Start a PTY with `argv: ["/bin/zsh", "-i"]`, `mode: "pty"`, `rows: 24`, and `cols: 120`.
+
+Then send input:
 
 ```json
 {
-  "server_id": "<current server_id>",
+  "server_id": "<server_id>",
   "operation_id": "input-1",
   "session_id": "<session_id>",
   "input": [{"text": "pwd"}, {"key": "ENTER"}],
@@ -559,73 +403,62 @@ For a persistent interactive shell, start `argv: ["/bin/zsh", "-i"]`,
 }
 ```
 
-Interrupt the foreground terminal job by writing `[{"key":"CTRL_C"}]`, or use
-`terminal_signal` with `signal: "INT", target: "foreground"` for an explicit local
-OS signal. For pipes use `target: "group"` or `"process"`. Ctrl+C and OS signals
-are not identical in raw mode or when interacting with a remote SSH session.
+Send `CTRL_C` as a terminal key, or use `terminal_signal` with `signal: "INT"`. These actions are not equivalent in every terminal mode.
 
-For an interactive screen:
+Use `terminal_read` with `view: "screen"` to get a text screen. The screen is not an image. An interactive shell can remain active after a command finishes.
 
-```json
-{"session_id":"<session_id>","view":"screen","max_bytes":65536}
-```
+### Work with files
 
-The snapshot includes text cells, dimensions, cursor, alternate-screen state and a
-revision. It is not an image and does not advance the raw event cursor. Use the
-observation's `session.end_cursor` when waiting for newly emitted terminal output.
+Use `file_read` to obtain the file version. Use that version in `file_edit` or a guarded `file_write`.
 
-`terminal_resize` assigns `rows`/`cols` and requires an operation ID.
-`terminal_close` requires an operation ID and optionally `grace_ms` (0..2000).
-Pipe stdin can be closed using `terminal_write` with `close_stdin: true`.
-
-### What completion does and does not mean
-
-A direct `go test` process has an observable exit status. An interactive shell can
-stay alive after many commands; no prompt/quiet-period heuristic is claimed to be
-an exact command-completion signal. `running` includes a process that is stopped
-or waiting for input. `output_done` can precede exit if a program closes its output.
-
-A session starts its own process group, not a universal process-tree sandbox.
-Descendants that escape the group **or outlive an already-observed leader exit**
-may survive termination. After observing leader exit, the service avoids sending
-signals to a remembered numeric group that could later be reused. Use an external
-OS supervisor/container when strict descendant containment is required.
+Omit `expected_version` only when you want to create a new file. File tools enforce size and text-format limits. See the [development guide](docs/DEVELOPMENT.md#3-file-tools) for exact limits.
 
 ## Limits and recovery
 
-Defaults are returned by `terminal_list`: 32 active sessions, 128 retained completed
-sessions (one-hour retention), 1 MiB/2048-event journals, 16 KiB default reads,
-64 KiB read/input cap, 10-second observation limit, 1-second input deadline,
-80x200 maximum terminal dimensions, and 16,384 mutation IDs per server lifetime.
-Session lists are compact; `terminal_read` returns launch argv/cwd and detail.
+`terminal_list` reports the current limits. Default values include:
 
-At ledger capacity, new mutations are refused rather than forgetting retry keys
-and risking duplicate commands. Read/list and existing-key retries continue to
-work. Stop the service locally when a controlled restart is needed. The service
-has no disk journal and cannot reconstruct live PTYs after a crash.
+| Resource | Default |
+| --- | --- |
+| Active sessions | 32 |
+| Retained completed sessions | 128, for up to 1 hour |
+| Output journal | 1 MiB and 2,048 events per session |
+| Default and maximum read size | 16 KiB and 64 KiB |
+| Maximum input size | 64 KiB |
+| Maximum observation wait | 10 seconds |
+| Maximum PTY size | 80 rows by 200 columns |
+| Mutation receipts | 16,384 per server instance |
 
-A partial write reports bytes accepted by the OS; it does not promise the target
-program consumed them. Do not retry a partial write with a new key without deciding
-what the target process actually needs.
+A terminal session is not a complete process-tree container. A child process can survive after its leader exits.
 
-## Repository layout
+The server keeps sessions and mutation receipts in memory. A restart loses this state. The audit log remains on disk, but it cannot restore processes.
 
-```text
-SPEC.md                  Architecture, decisions, guarantees and limits
-TEST_REPORT.md           Actual validation status of this archive
-internal/session/        Process lifecycle, journal, retry ledger, tests
-internal/terminal/       Real PTY, emulator, terminal keys, tests
-internal/mcpserver/      Twelve typed tools and SDK integration tests
-internal/httpguard/      Loopback/bearer/Host/Origin boundary and tests
-internal/audit/          Bounded audit journal for MCP tool actions
-cmd/terminal-mcp/        CLI and transport lifetime
-Makefile                 Build, format check, test and service tasks
-scripts/service.py       launchd deployment and rollback controller
-scripts/test_*.py        Python controller tests
-.github/workflows/       Native Linux/macOS verification when pushed to GitHub
+## Optional stdio mode
+
+Use stdio when an MCP host starts and owns the server process:
+
+```sh
+./bin/terminal-mcp --transport=stdio
 ```
 
-No browser UI, Windows support, screen diffing, unsolicited notifications, shell
-integration hooks or crash recovery are implemented. A bounded MCP audit log is
-available, but active process sessions cannot be reconstructed after a crash. These are
-explicit exclusions, not hidden TODOs in the core control loop.
+Stdio uses the same tools. It does not need an HTTP token. When the server process exits, it also closes its managed sessions.
+
+## Source layout
+
+```text
+Makefile                 Build, tests, and service commands
+cmd/terminal-mcp/        CLI and transport
+internal/session/        Process lifecycle, output, and mutation receipts
+internal/terminal/       PTY, keys, and text screen
+internal/filesystem/     File operations and root restrictions
+internal/mcpserver/      MCP tools and integration tests
+internal/httpguard/      HTTP authentication and request checks
+internal/audit/          Tool-call audit events and rotation
+scripts/service.py       macOS service and update controller
+scripts/test_*.py        Controller tests
+SPEC.md                  Behavior specification
+docs/DEVELOPMENT.md      Detailed operational procedures
+TEST_REPORT.md           Validation report
+.github/workflows/       macOS and Linux CI checks
+```
+
+The project does not include a browser UI, Windows support, or live-session recovery after a crash.

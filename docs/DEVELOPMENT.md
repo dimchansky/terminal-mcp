@@ -1,228 +1,431 @@
-# Development tools and supervised updates (0.2)
+# Development and Service Procedures
 
-## One-shot processes without manual cleanup
+This guide describes file tools, terminal workflows, and macOS service operations. Read [README.md](../README.md) for setup and tunnel connection steps. Read [SPEC.md](../SPEC.md) for behavior guarantees.
 
-Obtain `server_id` with `terminal_list`, then use `terminal_start` with
-`close_on_exit: true`, `wait_for: "completion"`, and a bounded `wait_ms`.
-Defaults remain false and `output` for existing clients.
+Use the names of MCP fields exactly as the tool schemas define them.
 
-```json
-{"server_id":"<current>","operation_id":"test-1","argv":["go","test","./..."],"cwd":"/absolute/project","close_on_exit":true,"wait_for":"completion","wait_ms":1000}
+## 1. Check the source
+
+From the repository root, run:
+
+```sh
+make check
 ```
 
-Completion waits for process exit AND output drain, plus automatic cleanup when
-requested. Output limits, gaps and the absolute deadline can return earlier;
-continue `terminal_read` with `next_cursor` and `wait_for: "completion"`.
-Inspect exit status, `has_more`, `gap` and `output_incomplete`. A deadline or
-cancelled read never kills the process. Auto-close preserves retained output and
-exit status, does not require a reader, and does not consume another mutation ID.
-For PTY, exit means the launched shell exits, not that one command inside it ends.
+The target runs these steps in order:
 
-## Listing sessions
+1. `make fmt-check` checks Go formatting.
+2. `make test-go` runs module checks, race tests, and `go vet`.
+3. `make test-service` runs the Python service-controller tests.
+4. `make build` creates `bin/terminal-mcp`.
 
-`terminal_list` with `{}` returns only unclosed sessions and counts of all
-retained sessions (`running`, `exited_unclosed`, `closed_retained`). Pass
-`{"include_closed":true}` to inspect closed retained sessions. Filtering does
-not delete or shorten their stored output; `terminal_read` by ID still works.
-The supervised updater requests the full list before a restart so that it cannot
-miss active sessions during cleanup.
+To repeat the core race tests three times, run:
 
-## Files: five synchronous tools, no terminal session
-
-The executable exposes twelve tools. `--file-root` defaults to the server working
-directory. File paths must be absolute and within this root; Go `os.Root` enforces
-traversal-safe access. This does not sandbox the unrestricted shell.
-
-### file_read
-
-```json
-{"files":[{"path":"/absolute/project/main.go","start_line":10,"end_line":80}],"max_bytes":16384}
+```sh
+make check-core
 ```
 
-Read 1..8 file ranges with one-based inclusive line numbers. Default 200 lines,
-maximum 1000 per range; shared returned text budget defaults to 16 KiB, max 64 KiB.
-Responses include numbered lines, `version: "sha256:..."` for the WHOLE file,
-`next_line`, explicit truncation, and per-file errors. Text retains original line
-endings. Supported files are ordinary UTF-8, no NUL, up to 2 MiB. Binary files,
-devices, FIFOs and oversized files are refused. A line too large for the remaining
-budget returns an explicit error; use the terminal for unusual/minified files.
+These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu.
 
-### file_edit
+The Go server does not need Python at runtime. The macOS service controller uses Python 3 and standard-library modules.
+
+## 2. Terminal workflow
+
+### Start a short command
+
+1. Call `terminal_list({})`.
+2. Copy its `server_id`.
+3. Call `terminal_start` with a new `operation_id`.
+
+For example:
 
 ```json
-{"server_id":"<current>","operation_id":"edit-1","path":"/absolute/project/main.go","expected_version":"sha256:<from-read>","edits":[{"old_text":"exact old fragment","new_text":"replacement"}]}
+{
+  "server_id": "<current>",
+  "operation_id": "test-1",
+  "argv": ["go", "test", "./..."],
+  "cwd": "/absolute/project",
+  "mode": "pipes",
+  "close_on_exit": true,
+  "wait_for": "completion",
+  "wait_ms": 1000
+}
 ```
 
-Require the observed whole-file version. Each of 1..32 exact replacements must
-match once, without overlap, against the same original snapshot. No fuzzy or
-whitespace-normalized matching. A mismatch rejects the entire edit. Combined
-replacement input is limited to 64 KiB. The receipt reports old/new versions and
-a bounded human-readable preview, not an applyable unified diff.
+The receipt reports the submission result. The observation reports output and process state.
 
-### file_write
+`wait_ms` limits observation time only. A timeout does not stop the process.
 
-Arguments: `server_id`, `operation_id`, `path`, `content`, optional
-`expected_version`. Omitting the version means CREATE ONLY; an existing file is
-never silently overwritten. Replacing an existing file requires its version.
-Content is UTF-8 up to 64 KiB; parent directories must exist. No newline conversion.
+`wait_for: "completion"` waits for process exit and output drain. With `close_on_exit: true`, it also waits for session cleanup.
 
-Publication is atomic for ONE file. Normal permissions are retained, but ACLs and
-extended attributes are NOT preserved; do not edit files relying on them through
-this API. Read-only, non-owned, symlink and hard-linked targets are refused.
-There is no cross-file transaction. Version checks detect stale edits but are not
-an OS-wide compare-and-swap against an editor saving concurrently. Coordinate
-writers or use separate worktrees.
+The observation can return early because of a deadline, journal gap, or output limit.
 
-File mutations share the server-instance fence and bounded retry ledger with
-terminal mutations. After a lost response, reuse the same key and arguments.
-A changed server ID requires investigation, not automatic replay.
+If the process is still active, call `terminal_read`:
 
-### file_list and file_search
+```json
+{
+  "session_id": "<session_id>",
+  "cursor": "<previous_next_cursor>",
+  "wait_for": "completion",
+  "wait_ms": 1000,
+  "max_bytes": 16384
+}
+```
 
-`file_list`: directory `path`, optional basename `glob` (Go filepath.Match),
-`limit` default 200/max 1000. One directory, including hidden/ignored entries;
-symlinks are shown without traversal. Narrow the query when truncated.
+Inspect `exit`, `output_done`, `output_incomplete`, `has_more`, and `gap`. A completed process can have incomplete output.
 
-`file_search`: directory `path`, `pattern`, optional `regex`, `glob`, `hidden`,
-`max_results` default 100/max 500. Literal per-line matching by default; regex
-uses Go syntax. Installed `rg` provides ignore-aware path discovery, while file
-content is opened through `os.Root`. No shell interpolation. Search is bounded
-by 5 seconds and 64 KiB returned text; skipped files and truncation are reported.
-Only search requires ripgrep (`brew install ripgrep` on macOS).
+### Inspect sessions
 
-## macOS: a server independent of the Terminal window
+`terminal_list({})` shows unclosed sessions. It also gives counts for all retained sessions.
 
-`scripts/service.py` uses Python 3 standard library and per-user launchd. No root
-privileges are needed. It manages terminal-mcp, NOT tunnel-client: keep the tunnel
-running independently. The initial installation adopts an already working server
-at 127.0.0.1:8090 using ~/.config/terminal-mcp/token and this repository as file root.
+Use `{"include_closed": true}` to see closed sessions. This does not change retention or remove output.
 
-### Service configuration and file access root
+A closed session remains readable by `session_id` until its retention period ends.
 
-User-managed configuration lives at:
+### Run an interactive shell
 
-`~/Library/Application Support/LocalTerminalMCP/config.json`
+Use `mode: "pty"` and start an interactive shell such as `/bin/zsh -i`.
 
-`project` sets the launchd working directory and remains the default file root;
-`listen`, `token_file` and `path` control HTTP binding, authentication-file
-location and subprocess PATH. For this personal MCP, new installations set
-`"file_root": "/"` so file_* tools can address all accessible absolute paths.
-The current owner's service uses the same setting. Change it to another absolute
-path in config.json to restrict the file tools again.
-The repository root, not the chosen file_root, remains the service working
-directory. Run `make update` after editing; preflight validates the new setting
-before switching the live process. A path error prevents the rollout. Do not
-change the managed plist directly. This is a filesystem tool boundary only;
-unrestricted shell execution uses the service account privileges regardless.
+Set `rows` and `cols`. To send text, use `terminal_write`:
 
-The audit log uses `~/Library/Application Support/LocalTerminalMCP/audit.jsonl`
-under the private state directory (0600; 4 MiB plus three archives). It records
-start/finish events, exact terminal_start argv/cwd/env/options and terminal_write
-input, plus session IDs and outcomes. File tools log targeted paths, ranges,
-search parameters, action types and byte counts, excluding file contents, edit
-strings and output. The audit cannot attribute calls to a person while all callers use one
-bearer token. It is not a tamper-proof journal; disk failure after an action
-cannot be undone. `make logs` follows the rotated filename and
-`make logs-service` shows runtime diagnostics. Preflight instances explicitly
-disable audit output to avoid test noise in the production file.
+```json
+{
+  "server_id": "<current>",
+  "operation_id": "input-1",
+  "session_id": "<session_id>",
+  "input": [{"text": "pwd"}, {"key": "ENTER"}],
+  "wait_ms": 500
+}
+```
 
-### Makefile shortcuts and first installation
+A PTY screen is a text view, not an image. Request `view: "screen"` with `terminal_read`.
 
-Use `make help` for available targets. `make check` sequentially runs `fmt-check`,
-`test-go`, `test-service`, and `build`. Use `make check-core` for three repeated
-race-test runs on the original process/security packages. Check orchestration is
-in the Makefile; there are no standalone check shell scripts. `make build`
-only builds the binary without touching the running service. `make update` uses
-the same tested supervisor workflow as `python3 scripts/service.py update`;
-`make status`, `make start`, and `make stop` delegate to the controller.
-`make logs` follows the bounded JSONL MCP tool audit; `make logs-service` tails
-stderr diagnostics. Terminal arguments are recorded verbatim, including values
-that may be sensitive if sent as command arguments; the journal is local-only.
+The shell can stay active after a command finishes. The shell exit code does not report every command's exit code.
 
-For a fresh installation (no existing server on 127.0.0.1:8090), first create
-the HTTP token according to README, then run `make install`. It tests, builds,
-preflights and registers the user LaunchAgent. Repeating `make install` while
-registered and running does not restart it. If intentionally stopped, it stays
-stopped; use `make start`. Following `make uninstall`, `make install` restores
-registration from retained configuration and binary releases without rebuilding.
+### Retry an action
 
-An existing manually launched server cannot be silently adopted by `make install`.
-For the initial transition only, save its known-working binary BEFORE rebuilding.
-Find the old listener PID with `lsof -nP -iTCP:8090 -sTCP:LISTEN`. Finish active
-managed jobs, then run from this repository:
+Every mutation needs a unique `operation_id`. If a response is lost, retry with the same ID and effect arguments.
+
+Do not replace an old `server_id` automatically. First check whether the earlier action had an effect.
+
+A partial input write reports bytes accepted by the operating system. It does not guarantee that the child program processed them.
+
+## 3. File tools
+
+The five file tools use Go `os.Root`. Each file path must be absolute and inside the configured `file_root`.
+
+On a new macOS installation, the controller sets `file_root` to `/`. The tools can access paths allowed by the service user's OS permissions.
+
+If `file_root` is absent, the Go server uses its working directory. A direct `--file-root` argument takes priority.
+
+**The file root is not a shell sandbox.** Commands started through `terminal_start` use the service user's OS permissions.
+
+### Read text with `file_read`
+
+Use one to eight `files` entries:
+
+```json
+{
+  "files": [
+    {"path": "/absolute/project/main.go", "start_line": 10, "end_line": 80}
+  ],
+  "max_bytes": 16384
+}
+```
+
+Line numbers start at one. Start and end lines are inclusive.
+
+The default line window has 200 lines. The maximum has 1,000 lines per file.
+
+The response gives each line number, a file version, and a `next_line` value when needed.
+
+The `version` value is a SHA-256 digest of the complete file. It is not a digest of the selected lines.
+
+The file must contain UTF-8 text without NUL bytes. The maximum file size is 2 MiB.
+
+The default response-text budget is 16 KiB. The maximum is 64 KiB.
+
+The tool refuses binary, special, and oversized files. Use a terminal command when the file tools cannot handle a file.
+
+### Edit text with `file_edit`
+
+First, call `file_read` to get the current version.
+
+Then submit exact replacements:
+
+```json
+{
+  "server_id": "<current>",
+  "operation_id": "edit-1",
+  "path": "/absolute/project/main.go",
+  "expected_version": "sha256:<from-file-read>",
+  "edits": [
+    {"old_text": "exact old text", "new_text": "new text"}
+  ]
+}
+```
+
+The server applies all edits to one original snapshot.
+
+Each `old_text` value must match exactly once. Edits must not overlap. A version mismatch or ambiguous match stops the operation before a write.
+
+The maximum is 32 edits. Combined edit text cannot exceed 64 KiB.
+
+The receipt gives the old and new versions. It also includes a bounded preview.
+
+### Create or replace a file with `file_write`
+
+To create a new file, omit `expected_version`:
+
+```json
+{
+  "server_id": "<current>",
+  "operation_id": "create-1",
+  "path": "/absolute/project/new.txt",
+  "content": "example\n"
+}
+```
+
+If the file exists, this request fails.
+
+To replace an existing file, provide its current `expected_version`.
+
+The maximum content size is 64 KiB. The parent directory must exist.
+
+The server writes one file atomically. It preserves normal permission bits. It does not preserve ACLs or extended attributes.
+
+The server refuses special, non-owned, read-only, symlink, and hard-linked targets for mutation.
+
+The version check detects an out-of-date file. It does not give an OS-wide transaction across concurrent writers.
+
+### List files with `file_list`
+
+Provide the directory path:
+
+```json
+{"path": "/absolute/project", "glob": "*.go", "limit": 200}
+```
+
+The tool lists one directory. It includes hidden files unless the glob excludes them.
+
+The default limit is 200 entries. The maximum is 1,000.
+
+The tool reports symlinks without following them.
+
+### Search text with `file_search`
+
+Provide a directory and search pattern:
+
+```json
+{
+  "path": "/absolute/project",
+  "pattern": "CloseOnExit",
+  "glob": "*.go",
+  "max_results": 100
+}
+```
+
+The default search is literal text. Set `regex: true` to use Go regular expressions on each line.
+
+The tool uses `rg` to find candidate files. It opens file content through `os.Root`.
+
+The search has a five-second time limit. It returns bounded output and reports truncated or skipped results.
+
+The default result limit is 100. The maximum is 500. Install ripgrep before you use this tool.
+
+### File mutation limits
+
+File mutations use the same `server_id` and mutation ledger as terminal mutations.
+
+Use the same `operation_id` for an identical retry. Do not ignore a version conflict or a changed server ID.
+
+File writes are atomic for one file only. There is no multi-file transaction.
+
+## 4. macOS service configuration
+
+The user LaunchAgent runs independently of the Terminal window. It manages `terminal-mcp` only.
+
+The controller is `scripts/service.py`. Use Makefile targets for normal operations.
+
+### State and settings
+
+The configuration file is:
+
+```text
+~/Library/Application Support/LocalTerminalMCP/config.json
+```
+
+| Key | Purpose |
+| --- | --- |
+| `project` | Working directory for the managed process. |
+| `listen` | Local HTTP address. |
+| `token_file` | Path to the bearer token file. |
+| `path` | Executable search path for the service. |
+| `file_root` | Root for the file tools. |
+
+The new-installation value of `file_root` is `/`.
+
+To change this value, edit `config.json` and set an absolute path. Then run `make update`.
+
+The updater tests the candidate and its file root before it changes the active binary. A path error stops the update.
+
+Do not edit the generated LaunchAgent plist. The controller does not provide general live reconfiguration for `project`, `listen`, or `token_file`.
+
+The state directory is private. The controller does not include the bearer-token value in launch arguments or the plist.
+
+### Install the service
+
+Create the bearer token as shown in [README.md](../README.md#run-as-a-macos-service).
+
+Then run:
+
+```sh
+make install
+make status
+```
+
+A new installation runs `make check`, stores the tested binary, and registers the LaunchAgent.
+
+If the agent already runs, `make install` makes no changes. If it has a manual stop marker, use `make start`.
+
+### One-time adoption of a manual server
+
+Use this procedure only when an older server already listens on port 8090.
+
+1. Save the known-working binary before you rebuild it.
+2. Find the listener PID.
+3. Finish active managed jobs.
+4. Run the adoption command.
 
 ```sh
 test -e bin/terminal-mcp.previous || cp -p bin/terminal-mcp bin/terminal-mcp.previous
-python3 scripts/service.py install --adopt-pid <LISTENER_PID> --previous-binary bin/terminal-mcp.previous
+lsof -nP -iTCP:8090 -sTCP:LISTEN
+python3 scripts/service.py install \
+  --adopt-pid <LISTENER_PID> \
+  --previous-binary bin/terminal-mcp.previous
 ```
 
-The saved binary is preflighted on a separate loopback port and its tool metadata
-must match the running server. The controller then runs `make check`,
-stages a new immutable binary, and preflights process/auto-cleanup, file listing
-and discovery. Only then is an independent launchd update job submitted.
-The first handover from version 0.1 has no maintenance fence: use an idle window
-and avoid concurrent commands. The old PID is checked again before signalling it.
+Replace `<LISTENER_PID>` with the PID from the previous command.
 
-### Update from a tool call on the server being updated
+The controller tests the saved binary on a separate port. Its tool metadata must match the running server.
+
+The first adoption of a legacy server might not have a maintenance fence. Use an idle period for this step.
+
+### Update the server from its own MCP connection
+
+Run this command from the repository root:
 
 ```sh
-python3 scripts/service.py update
-python3 scripts/service.py status
+make update
 ```
 
-The update command returns a job ID and persistent status-file path. It is NOT
-success until status is `applied` and the MCP endpoint is healthy. The worker is
-owned by launchd, not the old MCP process group. It waits for the requesting
-command and other managed jobs to finish. Then it acquires an authenticated
-maintenance fence, preventing new mutations while changing the service.
-Busy updates abort without stopping jobs. A 60-second generation-fenced lease
-unfreezes the old server if the updater dies before restarting it.
+The command checks the code and submits an independent launchd update job. It returns a job ID and status-file path.
 
-The worker atomically selects an immutable release, restarts the agent, checks a
-new server ID and matching metadata, and records success. Readiness/metadata
-failure triggers restoration of the previous release. Builds never overwrite the
-live deployed executable. A manual stop marker overrides restart and rollback.
-
-This is a supervised restart with a BRIEF OUTAGE, NOT zero-downtime migration.
-Live PTYs, retained output, retry receipts and session IDs do not migrate between
-processes. Get the new server ID; never silently replay old actions against it.
-Prepare output you need before requesting an update.
-
-`refresh_tools_required` compares actual schemas, descriptions, annotations and
-server instructions; binary version alone is ignored. When true, click Refresh
-tools in the ChatGPT plugin after deployment. Implementation-only updates with
-unchanged metadata need no refresh. Until refreshed, the model may still see old
-signatures even though the server has the new implementation.
-
-### Intentional stop and registration removal
+**A queued job is not a successful update.** Check the result:
 
 ```sh
-make stop       # Stop without removing registration
-make start      # Start a registered service
-make uninstall  # Stop and remove LaunchAgent registration
-make install    # Register again using retained state
+make status
 ```
 
-`make stop` records an explicit marker, disables and unloads the agent. KeepAlive
-and updates will not override it. `make start` explicitly reenables a registered
-service; if unregistered, use `make install`. A plain kill is considered a crash
-and launchd restarts it.
+The update is complete when the status is `applied` and the MCP endpoint is healthy.
 
-`make uninstall` refuses a pending update. It records an explicit stop, unloads
-the agent, verifies launchd no longer has the job, then deletes ONLY its plist
-registration (not tokens, configuration, immutable releases, logs or update jobs).
-It is idempotent; a failed bootout preserves the plist for recovery. Never invoke
-uninstall from the same service's MCP terminal session: the connection will be
-interrupted. The tunnel-client runs independently and is not uninstalled.
+The update worker:
 
-A user LaunchAgent requires the logged-in GUI domain, not a system boot daemon,
-and it does not keep sessions alive across logout or a machine crash.
+1. Waits for active managed jobs to finish.
+2. Acquires a maintenance fence. This blocks new mutations.
+3. Selects the tested binary and restarts the LaunchAgent.
+4. Checks the new server ID and expected tool metadata.
+5. Reports success or attempts rollback.
 
-State: ~/Library/Application Support/LocalTerminalMCP (private permissions).
-Agent: ~/Library/LaunchAgents/com.dimchansky.terminal-mcp.plist.
-The live executable is current/terminal-mcp inside the state directory, selected
-from releases/<sha256>/. Logs are stdout.log, stderr.log and jobs/<id>/worker.log.
-Token values are not placed in plists or command arguments. Completed update
-records/releases remain available for diagnosis; no automatic pruning is claimed.
-If the updater itself is killed, inspect the job and pending marker locally before
-starting another update. Never clear pending while its worker may still be alive.
+The maintenance fence expires after 60 seconds if the update process fails before restart.
+
+If an active session prevents the update, the controller reports failure without stopping that session.
+
+The update causes a short connection interruption. It does not move live PTYs, output journals, or mutation receipts to the new process.
+
+Get the new `server_id` after restart. Never repeat an old mutation with the new ID without first checking its outcome.
+
+The controller sets `refresh_tools_required` when tool schemas, descriptions, annotations, or server instructions change.
+
+If that value is true, select **Refresh tools** in ChatGPT after the successful update.
+
+### Stop or remove registration
+
+Use:
+
+```sh
+make stop
+make start
+make uninstall
+make install
+```
+
+`make stop` records a manual stop and unloads the service. Launchd does not override this stop.
+
+`make start` resumes a registered service.
+
+`make uninstall` stops the server and removes its LaunchAgent registration. It keeps the configuration, bearer token, releases, logs, and update records.
+
+Do not run `make uninstall` from a terminal session on the server you want to remove.
+
+`make uninstall` refuses a pending update. If launchd cannot unload the job, the controller keeps its plist for recovery.
+
+## 5. Audit and diagnostics
+
+Use:
+
+```sh
+make logs
+make logs-service
+```
+
+`make logs` follows the MCP tool-call audit. `make logs-service` follows server diagnostic messages.
+
+The audit file is:
+
+```text
+~/Library/Application Support/LocalTerminalMCP/audit.jsonl
+```
+
+The active file is at most 4 MiB. The server keeps up to three rotated files.
+
+Each event contains a `request_id` and a `phase` value. The phases are `start` and `finish`.
+
+The audit records exact `terminal_start` arguments and `terminal_write` input. It also records `session_id` for actions on an existing session.
+
+For file tools, it records paths, ranges, search values, action types, and byte counts. It does not record file content or edit strings.
+
+The audit does not save stdout or stderr. It can still contain secrets if a model sends them as command arguments or terminal input.
+
+The audit is not a tamper-proof record. It does not identify individual callers that use one shared bearer token.
+
+The controller disables auditing for temporary preflight instances. This keeps test calls out of the service audit.
+
+## 6. Files used by launchd
+
+The main paths are:
+
+| Path | Purpose |
+| --- | --- |
+| `~/Library/LaunchAgents/com.dimchansky.terminal-mcp.plist` | LaunchAgent registration. |
+| `~/Library/Application Support/LocalTerminalMCP/config.json` | Saved service configuration. |
+| `~/Library/Application Support/LocalTerminalMCP/current` | Link to the selected binary release. |
+| `~/Library/Application Support/LocalTerminalMCP/releases/` | Immutable release directories. |
+| `~/Library/Application Support/LocalTerminalMCP/audit.jsonl` | MCP tool audit. |
+| `~/Library/Application Support/LocalTerminalMCP/stderr.log` | Server diagnostics. |
+| `~/Library/Application Support/LocalTerminalMCP/jobs/<id>/status.json` | Update result. |
+| `~/Library/Application Support/LocalTerminalMCP/jobs/<id>/worker.log` | Update-worker diagnostics. |
+
+The controller retains completed job records and releases. It does not automatically remove old records.
+
+If an update worker stops unexpectedly, inspect the status and pending marker. Do not delete `pending` while a worker can still run.
+
+A user LaunchAgent operates in the logged-in GUI domain. It is not a system boot daemon.
+
+## 7. Validation
+
+Run `make check` before a change. Run `make update` to test and install that change.
+
+Check `make status` after an update. Inspect `make logs-service` if the server does not become healthy.
+
+Use [TEST_REPORT.md](../TEST_REPORT.md) for the verification evidence and remaining limits.

@@ -1,97 +1,123 @@
-# Validation report
+# Validation Report
 
-> Historical initial source-delivery report. The `scripts/check.sh` and
-> `scripts/check-core.sh` references below describe the original archive;
-> both scripts have since been replaced by `make check` and `make check-core`.
-> The historical test outcomes are retained unchanged.
+| Item | Value |
+| --- | --- |
+| Date | 2026-10-23 |
+| Project | Local Terminal MCP |
+| Platforms | macOS and Linux |
+| Status | Local checks and the last verified CI run passed. |
 
-Prepared on 2026-10-23 for this source archive.
+This report describes checks that were executed. It separates verified behavior from behavior that has not received a full test.
 
-## Release status
+## 1. Test commands
 
-**The complete application has not been compiled or integration-tested in the
-creation environment.** This is a source delivery, not a verified binary release.
-The process core and HTTP trust-boundary packages were genuinely built and tested;
-that does not validate the third-party adapters.
-
-The available compiler was `go1.23.2 linux/amd64`. The pinned official MCP SDK
-requires Go 1.25. Attempts to fetch the newer toolchain/dependencies failed because
-outbound network/DNS access from the build container was unavailable. No dependency
-source was replaced with a fake implementation, and no successful full-build or
-full-suite result is claimed.
-
-## Checks actually executed
-
-| Check | Scope | Result |
-|---|---|---|
-| Native tests with the race detector, three repetitions | `internal/session`, standard library only | PASS |
-| Native tests with the race detector, three repetitions | `internal/httpguard`, standard library only | PASS |
-| `go vet` | Those same two packages | PASS |
-| Compile-only tests for Linux arm64 | Those same two packages | PASS |
-| Compile-only tests for Darwin amd64 | Those same two packages | PASS |
-| Compile-only tests for Darwin arm64 | Those same two packages | PASS |
-| `gofmt -l` | All supplied Go source/tests | No unformatted files |
-| `sh -n` | Both check scripts | PASS |
-| Full `go test ./...` with the installed compiler | Entire module | BLOCKED: Go 1.25 required |
-
-There are 32 top-level test functions in `internal/session` (including the subprocess
-helper entry point) and 4 in `internal/httpguard`. All were run three times by
-`scripts/check-core.sh`. Its actual verbose output is in `CORE_TEST_RESULTS.txt`.
-Compiler/platform and compile-only results are in `BUILD_STATUS.txt`.
-
-The native process tests start real OS subprocesses, not just mocks. They exercise
-separate output streams, exit status, retries/concurrent duplicates, server epoch
-rejection, cancellation without termination, read deadlines during continuous
-output, interruption while reads wait, backpressured/partial stdin writes,
-stdin EOF, runtime limits, buffer gaps, inherited-descriptor drain deadlines,
-environment/PATH/cwd behavior, active/retained limits, expired receipt replay,
-large-argument list bounds, and invalid cursor/input/session-ID rejection.
-
-HTTP boundary tests exercise loopback validation, Host/Origin rejection,
-authentication including duplicate headers, body-size bounds, and token file
-permissions. These are tests of the real middleware, not of ChatGPT.
-
-## Tests supplied but NOT executed here
-
-- Five PTY/emulator tests: screen overwrite and split UTF-8, application cursor keys,
-  alternate screen and terminal replies, bounded reply storage, real PTY sizing and
-  Ctrl+C, and interruptible PTY read closure. Several behaviors share one test.
-- Two official-SDK tests: in-memory discovery/call/schema behavior, and HTTP client
-  disconnect/reconnect while retaining a process, using the authentication wrapper.
-- The full `scripts/check.sh` path (module verification, all race tests, full vet,
-  and application build).
-- The included GitHub Actions Linux/macOS workflow. It is configuration, not a
-  workflow that has already run.
-
-No live macOS test, real ChatGPT/Secure MCP Tunnel test, stdio-host end-to-end test,
-long-duration soak, terminal conformance suite, or vulnerability scan was performed.
-No Windows support is claimed.
-
-## Required next verification on a networked machine
+Run all source checks with:
 
 ```sh
-go mod tidy
-./scripts/check.sh
+make check
 ```
 
-Use Go 1.25 or newer and a native C toolchain for the race detector. `go mod tidy`
-must generate real module sums; none were invented or copied from an unrelated
-build. The direct dependency versions are pinned, but the resolved graph/checksum
-file was not produced in this environment. Review and commit that result before
-publishing a release.
+This command runs the following checks in order:
 
-Then test the actual ChatGPT/tunnel route, including a multi-minute command,
-incremental output, input, interruption, and tunnel restart. A passing local SDK
-test would still not establish hosted-client behavior.
+| Target | Check |
+| --- | --- |
+| `fmt-check` | Check Go formatting. |
+| `test-go` | Verify modules. Run all Go tests with `-race`. Run `go vet`. |
+| `test-service` | Run Python tests for the macOS service controller. |
+| `build` | Build `bin/terminal-mcp`. |
 
-## Known implementation boundaries, not test claims
+For repeated core checks, run:
 
-- Sessions and receipts are memory-only. Restarting the daemon invalidates its
-  server ID; stale mutations are rejected, not recovered.
-- Cleanup is bounded best effort. Descendants can survive an early leader exit or
-  escape its process group; no universal process-tree containment is provided.
-- Terminal snapshots support conventional text-terminal behavior, not all modern
-  graphics/Unicode/keyboard extensions.
-- Mutation ledger capacity is finite and does not silently evict old keys.
-- Arbitrary commands have the service user's full permissions; authentication is
-  not a sandbox.
+```sh
+make check-core
+```
+
+This target runs selected Go race tests three times. It also runs `go vet` on the selected packages.
+
+The Makefile is the standard entry point for builds and tests. The previous `scripts/check.sh` and `scripts/check-core.sh` files were removed.
+
+Python is necessary for the current macOS service controller and its tests. The Go server has no Python runtime dependency.
+
+## 2. Verified source and CI checks
+
+On 2026-10-23, the full `make check` command passed on a local macOS machine.
+
+The local check included:
+
+- Go module verification.
+- All Go tests with the race detector.
+- `go vet`.
+- 22 Python controller tests.
+- A successful Go build.
+
+The same machine also passed `make check-core`. It ran the selected race tests three times.
+
+GitHub Actions runs `make check` on macOS and Ubuntu.
+
+The last CI run verified before this documentation update was:
+
+| Item | Result |
+| --- | --- |
+| Commit | `bd28a42` |
+| Workflow run | [39982268892](https://github.com/dimchansky/terminal-mcp/actions/runs/39982268892) |
+| macOS job | PASS |
+| Ubuntu job | PASS |
+
+This table is a dated result. Check the [GitHub Actions page](https://github.com/dimchansky/terminal-mcp/actions) for the status of later commits.
+
+## 3. Verified local MCP behavior
+
+Real tool calls on the local macOS server confirmed these behaviors:
+
+- `terminal_list` returned the server ID and session counts.
+- The default session list excluded closed sessions.
+- `include_closed: true` returned retained closed sessions.
+- `file_list` listed the root directory `/`.
+- `file_read` read `/etc/hosts` with `file_root: "/"`.
+- A short terminal process completed and closed its session.
+- The audit recorded terminal command arguments and session input.
+- The audit recorded file paths without saving file content.
+
+A managed `make update` also succeeded from an MCP terminal session.
+
+The controller reported `status: "applied"` and a healthy new server ID. This test confirms a supervised restart, not zero-downtime migration.
+
+The unit tests cover additional results, including mutation retries, cancellation, terminal I/O, version checks, audit rotation, and update rollback.
+
+A unit test result is not proof of every real-world failure condition.
+
+## 4. Limits of this evidence
+
+The tests do not prove these behaviors:
+
+- Restoration of live processes after a server crash. The server does not provide this feature.
+- Complete termination of all descendant processes.
+- Complete support for modern terminal graphics and all Unicode display cases.
+- Durability of every audit event after power loss.
+- A complete end-to-end test of every ChatGPT, tunnel, and authorization failure case.
+- Long-duration operation under all workloads.
+- Windows support.
+
+A successful local MCP call does not prove that every remote client can use the service.
+
+A passing CI run also does not prove that the LaunchAgent can start on every macOS configuration.
+
+## 5. Historical report
+
+The initial source delivery had different test results. Its environment used Go 1.23.2 and could not fetch a required newer toolchain.
+
+The initial report is available in the repository's Git history. It is historical evidence, not the current project status.
+
+The source, tests, and CI setup changed after that delivery. Use the current Makefile and CI runs to check the present implementation.
+
+## 6. Before a new release
+
+1. Run `make check`.
+2. Confirm that the Git worktree contains only the intended changes.
+3. Check the macOS and Ubuntu CI results.
+4. If the Go server changed, use `make update` on the local service.
+5. Check `make status` after the update.
+6. Check `refresh_tools_required`. Refresh the ChatGPT tools when it is true.
+7. Review `make logs` and `make logs-service` if a test or update fails.
+
+For design limits, read [SPEC.md](SPEC.md). For operating procedures, read [DEVELOPMENT.md](docs/DEVELOPMENT.md).
