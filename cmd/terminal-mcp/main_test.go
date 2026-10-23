@@ -147,8 +147,10 @@ type authenticatedTransport struct {
 }
 
 func (a authenticatedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r.Header.Set("Authorization", "Bearer "+a.token)
-	return http.DefaultTransport.RoundTrip(r)
+	copy := r.Clone(r.Context())
+	copy.Header = r.Header.Clone()
+	copy.Header.Set("Authorization", "Bearer "+a.token)
+	return http.DefaultTransport.RoundTrip(copy)
 }
 
 func connectHTTP(t *testing.T, ctx context.Context, address string) *mcp.ClientSession {
@@ -170,7 +172,7 @@ func connectHTTP(t *testing.T, ctx context.Context, address string) *mcp.ClientS
 func mcpCall[T any](t *testing.T, ctx context.Context, client *mcp.ClientSession, name string, args any) T {
 	t.Helper()
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
-	if err != nil || result.IsError {
+	if err != nil || result == nil || result.IsError {
 		t.Fatalf("MCP %s: %v, result %+v", name, err, result)
 	}
 	data, err := json.Marshal(result.StructuredContent)
@@ -189,65 +191,56 @@ func mcpList(t *testing.T, ctx context.Context, client *mcp.ClientSession) sessi
 	return mcpCall[session.ListResult](t, ctx, client, "terminal_list", struct{}{})
 }
 
-func TestServeHTTPAuthenticationAndShutdown(t *testing.T) {
+func TestServeHTTPCleansUpIdleManagedSessions(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager := session.New(nil)
-	defer manager.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serveHTTP(ctx, manager, mcpserver.New(manager), listener, testToken) }()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		done <- serveHTTP(ctx, manager, mcpserver.New(manager), listener, testToken)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(6 * time.Second):
+			t.Error("HTTP server did not stop during cleanup")
+		}
+	})
 
-	endpoint := "http://" + listener.Addr().String() + "/mcp"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("HTTP without bearer token: status %d", res.StatusCode)
-	}
-
-	client := connectHTTP(t, context.Background(), listener.Addr().String())
-	tools, err := client.ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 7 {
-		t.Fatalf("HTTP tool discovery: %v, count %d", err, len(tools.Tools))
-	}
-	list := mcpList(t, context.Background(), client)
-	started := mcpCall[session.ActionResult](t, context.Background(), client, "terminal_start", session.StartArgs{
-		ServerID:    list.ServerID,
-		OperationID: "shutdown-child",
-		Argv:        []string{"/bin/sh", "-c", "sleep 60"},
-		Mode:        "pipes",
-		WaitMS:      0,
+	requestCtx, requestCancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer requestCancel()
+	client := connectHTTP(t, requestCtx, listener.Addr().String())
+	list := mcpList(t, requestCtx, client)
+	started := mcpCall[session.ActionResult](t, requestCtx, client, "terminal_start", session.StartArgs{
+		ServerID: list.ServerID, OperationID: "shutdown-child",
+		Argv: []string{"/bin/sleep", "60"}, Mode: "pipes", WaitMS: 0,
 	})
 	if started.Receipt.Status != "applied" || started.Receipt.SessionID == "" {
 		t.Fatalf("could not start long-lived process: %+v", started)
 	}
 	if err := client.Close(); err != nil {
-		t.Fatalf("close MCP client before graceful HTTP shutdown: %v", err)
+		t.Fatalf("close MCP client before shutdown: %v", err)
 	}
 	cancel()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("serveHTTP cancellation: %v", err)
+			t.Fatalf("HTTP shutdown: %v", err)
 		}
 	case <-time.After(6 * time.Second):
-		t.Fatal("HTTP shutdown blocked with active child")
+		t.Fatal("HTTP shutdown blocked on an idle managed child")
 	}
 	output, err := manager.Read(context.Background(), session.ReadArgs{
 		SessionID: started.Receipt.SessionID, WaitFor: "completion", WaitMS: 0,
 	})
 	if err != nil || output.Session.Exit == nil || !output.Session.Closed {
-		t.Fatalf("child not closed on HTTP shutdown: %+v, err %v", output.Session, err)
+		t.Fatalf("managed process was not closed: %+v, %v", output.Session, err)
 	}
 }
 

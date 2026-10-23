@@ -172,6 +172,15 @@ func openAudit(requestedPath, transport string) *audit.Log {
 	return recorder
 }
 
+// newHTTPHandler constructs only HTTP routing and the authentication guard.
+// Tests can exercise this handler with httptest without starting a service.
+func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string) (http.Handler, error) {
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpserver.HTTP(server))
+	mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
+	return httpguard.Wrap(mux, host, token)
+}
+
 // serveHTTP owns the listener and session manager.
 // On cancellation it stops accepting connections, lets admitted HTTP requests
 // finish for up to five seconds, then stops any remaining managed processes.
@@ -185,10 +194,7 @@ func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server
 func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration) error {
 	defer func() { _ = listener.Close() }()
 	defer manager.Close()
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpserver.HTTP(server))
-	mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
-	handler, err := httpguard.Wrap(mux, listener.Addr().String(), token)
+	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token)
 	if err != nil {
 		return err
 	}
