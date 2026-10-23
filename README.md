@@ -186,11 +186,12 @@ Run `make logs` to read new events.
 
 The audit records:
 
-- The tool name, start and finish times, result, and `request_id`.
+- The tool name, timestamps, result, `request_id`, and instance-specific `server_id`.
 - Complete `terminal_start` arguments, including `argv`, `cwd`, `env`, and execution options.
 - `terminal_write` input, including text, keys, and base64 data.
 - `session_id` and options for terminal read, signal, resize, and close operations.
 - File paths, line ranges, search terms, action types, versions, and byte counts for file operations.
+- Counts of successful/failed file reads, search result counts, truncation reasons, and SDK schema rejections.
 
 The file tools do not add file content or edit text to the audit. The audit does not copy stdout or stderr.
 

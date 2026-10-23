@@ -430,17 +430,17 @@ In HTTP mode, the server opens a JSONL audit log in a private user-state directo
 
 The log records a `start` event before a tool callback runs. It records a `finish` event after the callback returns.
 
-A `request_id` links the two events. A `session_id` links terminal actions that use one session.
+A `request_id` links the two events. A `session_id` links terminal actions that use one session. Every event includes the instance-specific `server_id`. The server emits a `server_start` event when it opens an audit log. A process crash cannot guarantee a corresponding stop event.
 
 The audit records all `terminal_start` arguments, including `argv`, `cwd`, `env`, and process options.
 
 It also records the exact `terminal_write` input. This includes text, keys, and base64 values.
 
-The audit records file paths, ranges, search terms, versions, edit counts, and content lengths. It does not store file content or replacement text from file tools.
+The audit records file paths, ranges, search terms, versions, edit counts, and content lengths. For `file_read`, it records `outcome`, `files_total`, and `files_failed`. For `file_search`, it records `search_matches`, `truncated`, and `reason`. These summaries do not store file content or replacement text.
 
 **A command argument can contain a secret or file content.** If the model sends it as a command argument, the audit records it.
 
-The audit does not copy stdout or stderr. It also does not record every rejected HTTP request or invalid MCP tool schema.
+The audit does not copy stdout or stderr. Tool calls rejected by SDK input validation generate a single `rejected` event with `reason: schema_validation` and no input content. These rejections do not have tool-handler `start`/`finish` events. The audit does not record every rejected HTTP request.
 
 The caller sets the event timestamp before enqueue. Each tool sends a complete event to the auditor. The caller encodes the event and submits it to a bounded, nonblocking queue. One goroutine writes accepted events to JSONL in queue order. The queue has at most 1,024 events and 8 MiB of encoded data.
 

@@ -39,6 +39,9 @@ func New(startPTY PTYStarter) *Manager {
 	return &Manager{id: newID(), limits: defaultLimits(), sessions: make(map[string]*Session), startPTY: startPTY, closeDone: make(chan struct{})}
 }
 
+// ID identifies this process-local session manager instance.
+func (m *Manager) ID() string { return m.id }
+
 func (m *Manager) checkServer(id string) error {
 	if id != m.id {
 		return fmt.Errorf("server_instance_changed: obtain terminal_list, investigate the old outcome, and do not blindly resubmit the old action")

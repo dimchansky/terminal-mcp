@@ -108,6 +108,7 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 		if stdio == nil {
 			stdio = &mcp.StdioTransport{MaxLineLength: httpguard.MaxBody}
 		}
+		recordServerStart(recorder, manager.ID())
 		err := server.Run(ctx, stdio)
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -125,7 +126,17 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	if err != nil {
 		return err
 	}
+	recordServerStart(recorder, manager.ID())
 	return serveHTTP(ctx, manager, server, listener, token)
+}
+
+func recordServerStart(recorder *audit.Log, serverID string) {
+	if recorder == nil {
+		return
+	}
+	if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, Tool: "server", Phase: "server_start", Status: "ok"})); err != nil && !errors.Is(err, audit.ErrQueueFull) {
+		log.Printf("audit server_start failure: %v", err)
+	}
 }
 
 func openAudit(requestedPath, transport string) *audit.Log {

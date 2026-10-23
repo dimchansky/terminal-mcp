@@ -29,17 +29,24 @@ var (
 )
 
 type Event struct {
-	Time       string `json:"time"`
-	RequestID  string `json:"request_id"`
-	Tool       string `json:"tool"`
-	Phase      string `json:"phase"`
-	Status     string `json:"status,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
-	Args       any    `json:"args,omitempty"`
-	Replayed   bool   `json:"replayed,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Process    any    `json:"process,omitempty"`
+	Time          string `json:"time"`
+	ServerID      string `json:"server_id,omitempty"`
+	RequestID     string `json:"request_id,omitempty"`
+	Tool          string `json:"tool"`
+	Phase         string `json:"phase"`
+	Status        string `json:"status,omitempty"`
+	DurationMS    int64  `json:"duration_ms,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	Args          any    `json:"args,omitempty"`
+	Replayed      bool   `json:"replayed,omitempty"`
+	Error         string `json:"error,omitempty"`
+	Process       any    `json:"process,omitempty"`
+	Outcome       string `json:"outcome,omitempty"`
+	FilesTotal    int    `json:"files_total,omitempty"`
+	FilesFailed   int    `json:"files_failed,omitempty"`
+	SearchMatches *int   `json:"search_matches,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 // NewEvent fills the timestamp before the event enters the audit queue.

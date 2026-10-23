@@ -393,13 +393,13 @@ The audit file is:
 
 The active file is at most 4 MiB. The server keeps up to three rotated files. A bounded queue holds up to 1,024 encoded events and 8 MiB. One goroutine writes queued events to disk.
 
-Event timestamps are set before enqueue. Each event contains a `request_id` and a `phase` value. The phases are `start` and `finish`. Submission does not wait for disk I/O. If the queue is full, the new event is lost; the worker logs a drop count. The MCP call continues even if the auditor fails.
+Event timestamps are set before enqueue. Every event has a `server_id`. A `server_start` event identifies a newly started instance. Accepted tool calls have a `request_id` and `start`/`finish` phases. Input rejected by the SDK has one `rejected` event without input contents. Submission does not wait for disk I/O. If the queue is full, the new event is lost; the worker logs a drop count. The MCP call continues even if the auditor fails.
 
 When the service closes, `audit.Close()` waits for all accepted events to be processed. It then syncs and closes the file. A slow disk can delay shutdown. An incomplete JSONL tail is removed when the log opens. If audit initialization fails, the server continues without auditing. Restart the service after fixing the cause.
 
 The audit records exact `terminal_start` arguments and `terminal_write` input. It also records `session_id` for actions on an existing session.
 
-For file tools, it records paths, ranges, search values, action types, and byte counts. It does not record file content or edit strings.
+For file tools, it records paths, ranges, search values, action types, and byte counts. `file_read` also reports total and failed file counts and `outcome`. `file_search` reports matches, truncation, and reason. It does not record file content or edit strings.
 
 The audit does not save stdout or stderr. It can still contain secrets if a model sends them as command arguments or terminal input.
 
