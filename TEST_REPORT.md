@@ -52,6 +52,14 @@ The local check included:
 
 The same machine also passed `make check-core`. It ran the selected race tests three times.
 
+The retry ledger now has direct tests in `internal/mutation/ledger_test.go`. On
+2026-10-23, its race-enabled suite passed 100 repetitions with test-order
+randomization (`go test -race -shuffle=on -count=100 ./internal/mutation`).
+Its measured statement coverage was 98.4% (`go test -cover ./internal/mutation`).
+The tests cover concurrent duplicate calls, effect and method conflicts,
+context cancellation, panic recovery, capacity limits, and `Freeze`/`Resume`.
+They found no behavior defect, so production ledger code was not changed.
+
 GitHub Actions runs `make check` on macOS and Ubuntu.
 
 The last CI run verified before this documentation update was:
