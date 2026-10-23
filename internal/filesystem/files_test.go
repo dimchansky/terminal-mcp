@@ -83,6 +83,10 @@ func TestFileBoundaries(t *testing.T) {
 func TestEditUniqueAtomicAndRetry(t *testing.T) {
 	m, dir, id := fixture(t)
 	path := put(t, dir, "file.go", "alpha\r\nbeta\r\n")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := EditArgs{ServerID: id, OperationID: "edit", Path: path, ExpectedVersion: mustRead(t, m, path).Version, Edits: []Edit{{"alpha", "ALPHA"}, {"beta", "BETA"}}}
 	first, err := m.Edit(context.Background(), a)
 	if err != nil || first.Receipt.Status != "applied" {
@@ -93,7 +97,7 @@ func TestEditUniqueAtomicAndRetry(t *testing.T) {
 		t.Fatalf("%q", data)
 	}
 	mode, _ := os.Stat(path)
-	if mode.Mode().Perm() != 0640 {
+	if mode.Mode().Perm() != before.Mode().Perm() {
 		t.Fatal("permissions changed")
 	}
 	retry, err := m.Edit(context.Background(), a)
