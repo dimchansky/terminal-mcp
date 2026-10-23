@@ -164,7 +164,7 @@ func openAudit(requestedPath, transport string) *audit.Log {
 // serveHTTP owns the listener and returns after the HTTP server stops.
 // On cancellation it first stops managed processes, then drains HTTP requests.
 func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string) error {
-	defer listener.Close()
+	defer func() { _ = listener.Close() }() // Shutdown also closes the listener.
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.HTTP(server))
 	mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
@@ -197,7 +197,10 @@ func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server
 		defer cancel()
 		if err := httpServer.Shutdown(shutdown); err != nil {
 			_ = httpServer.Close()
-			<-done
+			serveErr := <-done
+			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				return errors.Join(err, serveErr)
+			}
 			return err
 		}
 		if err := <-done; err != nil && !errors.Is(err, http.ErrServerClosed) {

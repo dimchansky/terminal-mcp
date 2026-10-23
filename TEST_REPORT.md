@@ -2,7 +2,7 @@
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-10-23 |
+| Date | 2026-10-24 |
 | Project | Local Terminal MCP |
 | Platforms | macOS and Linux |
 | Status | Local checks and the last verified CI run passed. |
@@ -22,7 +22,7 @@ This command runs the following checks in order:
 | Target | Check |
 | --- | --- |
 | `fmt-check` | Check Go formatting. |
-| `test-go` | Verify modules. Run all Go tests with `-race`. Run `go vet`. |
+| `test-go` | Verify modules and `go mod tidy -diff`. Run all Go tests with `-race`. Run `go vet`. |
 | `test-service` | Run Python tests for the macOS service controller. |
 | `build` | Build `bin/terminal-mcp`. |
 
@@ -33,6 +33,8 @@ make check-core
 ```
 
 This target runs selected Go race tests three times. It also runs `go vet` on the selected packages.
+
+`make lint` runs the configured Go linters. `make vulncheck` runs pinned `govulncheck v1.9.0`. These are separate from `make check` so the managed updater does not need extra tools.
 
 The Makefile is the standard entry point for builds and tests. The previous `scripts/check.sh` and `scripts/check-core.sh` files were removed.
 
@@ -70,14 +72,23 @@ on macOS. The measured statement coverage of `cmd/terminal-mcp` increased from
 
 The file-tool regression tests now cover external changes before a no-op replacement, external inode replacement, concurrent file creation, cleanup of temporary files after a conflict, symlinks outside the configured root, and operations after manager shutdown. They also check that `file_search` does not report nonexistent empty lines in empty files or after a trailing newline. Both defects were reproduced before the fixes.
 
-GitHub Actions runs `make check` on macOS and Ubuntu.
+On 2026-10-24, `golangci-lint v2.15.0` and `staticcheck` reported no issues on the local macOS checkout. The lint configuration limits checks to relevant correctness, resource handling, and error-handling rules. The local `govulncheck v1.9.0` scan reported no vulnerabilities after upgrading `golang.org/x/sys` to v0.44.0. This upgrade also removes a previously reported, unreachable Windows-only advisory (GO-2026-5024) without raising the Go 1.25 minimum version.
+
+A separate `gosec v2.30.0` review reported 11 potential issues. These concern
+variable paths and commands that the personal MCP intentionally accepts, and
+integer conversions that use constrained sizes or nonnegative counts. They are
+not confirmed vulnerabilities. `gosec` is not a blocking CI check because these
+intended operations produce warnings; dependency scanning and the focused
+linters are blocking checks.
+
+GitHub Actions runs `make check` on macOS and Ubuntu. A separate Ubuntu quality job checks linting and reachable vulnerabilities.
 
 The last CI run verified before this documentation update was:
 
 | Item | Result |
 | --- | --- |
-| Commit | `bd28a42` |
-| Workflow run | [39982268892](https://github.com/dimchansky/terminal-mcp/actions/runs/39982268892) |
+| Commit | `0ba50dc` |
+| Workflow run | [40024600724](https://github.com/dimchansky/terminal-mcp/actions/runs/40024600724) |
 | macOS job | PASS |
 | Ubuntu job | PASS |
 

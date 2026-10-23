@@ -59,13 +59,13 @@ func TestInMemoryToolContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 	client := mcp.NewClient(&mcp.Implementation{Name: "contract-test", Version: "1"}, nil)
 	cs, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 	tools, err := cs.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestHTTPReconnectRetainsProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := connect()
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	list = call[session.ListResult](t, ctx, second, "terminal_list", struct{}{})
 	if len(list.Sessions) != 1 || list.Sessions[0].SessionID != r.Receipt.SessionID || list.Sessions[0].ProcessState != "running" {
 		t.Fatal("process lost on client disconnect")
@@ -191,12 +191,12 @@ func TestFileToolsAndCompletionOverMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "files-contract", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 	tools, err := cs.ListTools(ctx, nil)
 	if err != nil || len(tools.Tools) != 12 {
 		t.Fatalf("%+v %v", tools, err)

@@ -70,7 +70,7 @@ func TestDuplicateAuthAndBodyLimit(t *testing.T) {
 	token := strings.Repeat("b", 64)
 	h, _ := Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.ReadAll(r.Body); err != nil {
-			http.Error(w, "too big", 413)
+			http.Error(w, "too big", http.StatusRequestEntityTooLarge)
 			return
 		}
 		w.WriteHeader(204)

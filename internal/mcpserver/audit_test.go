@@ -32,12 +32,12 @@ func TestAuditToolCallsWithCommandArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	client, err := mcp.NewClient(&mcp.Implementation{Name: "audit-test", Version: "1"}, nil).Connect(context.Background(), one, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	list := call[session.ListResult](t, context.Background(), client, "terminal_list", struct{}{})
 	const commandArgument = "full-argv-is-audited"
 	run := call[session.ActionResult](t, context.Background(), client, "terminal_start", session.StartArgs{
@@ -103,12 +103,12 @@ func TestAuditUnavailableDoesNotPreventToolExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	client, err := mcp.NewClient(&mcp.Implementation{Name: "audit-test", Version: "1"}, nil).Connect(context.Background(), one, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}

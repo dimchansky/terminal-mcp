@@ -82,7 +82,7 @@ func readUntil(t *testing.T, d *device, marker string) string {
 	if err := d.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	defer d.SetReadDeadline(time.Time{})
+	defer func() { _ = d.SetReadDeadline(time.Time{}) }()
 	var data []byte
 	buf := make([]byte, 4096)
 	for !bytes.Contains(data, []byte(marker)) {
@@ -170,9 +170,9 @@ func TestRealPTYResizeAndCtrlC(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
-		<-done
+		waitErr := <-done // Reap the process before failing the test.
 		waited = true
-		t.Fatal("Ctrl+C did not end foreground command")
+		t.Fatalf("Ctrl+C did not end foreground command (wait: %v)", waitErr)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -85,7 +86,7 @@ func readText(root *os.Root, name string) ([]byte, os.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only descriptor.
 	info, err := f.Stat()
 	if err != nil {
 		return nil, nil, err
@@ -316,7 +317,7 @@ func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]
 	if err != nil {
 		return result, err
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }() // Directory descriptor.
 	name := filepath.Base(rel)
 	info, err := parent.Lstat(name)
 	exists := err == nil
@@ -368,7 +369,11 @@ func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]
 	if err != nil {
 		return result, err
 	}
-	defer parent.Remove(temp)
+	defer func() {
+		if err := parent.Remove(temp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("filesystem: clean up temporary file: %v", err)
+		}
+	}()
 	if _, err = f.Write(after); err == nil {
 		err = f.Chmod(mode)
 	}

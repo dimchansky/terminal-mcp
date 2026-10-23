@@ -109,7 +109,7 @@ func Maintenance(manager *session.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var a struct {
@@ -119,12 +119,12 @@ func Maintenance(manager *session.Manager) http.Handler {
 		decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&a); err != nil {
-			http.Error(w, "invalid maintenance request", 400)
+			http.Error(w, "invalid maintenance request", http.StatusBadRequest)
 			return
 		}
 		var extra any
 		if err := decoder.Decode(&extra); err != io.EOF {
-			http.Error(w, "unexpected trailing input", 400)
+			http.Error(w, "unexpected trailing input", http.StatusBadRequest)
 			return
 		}
 		var err error
@@ -134,11 +134,11 @@ func Maintenance(manager *session.Manager) http.Handler {
 		case "cancel":
 			err = manager.CancelRestart(a.ServerID)
 		default:
-			http.Error(w, "unknown action", 400)
+			http.Error(w, "unknown action", http.StatusBadRequest)
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), 409)
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

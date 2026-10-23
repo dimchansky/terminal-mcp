@@ -114,7 +114,7 @@ func TestRunWithContextStdioToolsAndExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	tools, err := conn.ListTools(ctx, nil)
 	if err != nil || len(tools.Tools) != 12 {
 		t.Fatalf("stdio MCP tool discovery: %v, tools %v", err, len(tools.Tools))
@@ -266,7 +266,7 @@ func TestRunWithContextStdioNoAuditRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = mcpList(t, ctx, conn)
 	cancel()
 	select {
@@ -322,7 +322,7 @@ func TestCLISIGTERMStopsProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stderrFile.Close()
+	defer func() { _ = stderrFile.Close() }()
 	cmd.Stderr = stderrFile
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

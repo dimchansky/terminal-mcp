@@ -47,12 +47,12 @@ func (m *Manager) List(ctx context.Context, a ListArgs) (ListResult, error) {
 	if err != nil {
 		return out, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }() // Directory descriptor.
 	f, err := dir.Open(".")
 	if err != nil {
 		return out, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only directory iterator.
 	for {
 		if err = ctx.Err(); err != nil {
 			return out, err

@@ -32,8 +32,12 @@ func TestProcessHelper(t *testing.T) {
 	mode := args[1]
 	switch mode {
 	case "both":
-		fmt.Fprint(os.Stdout, "OUT")
-		fmt.Fprint(os.Stderr, "ERR")
+		if _, err := fmt.Fprint(os.Stdout, "OUT"); err != nil {
+			os.Exit(93)
+		}
+		if _, err := fmt.Fprint(os.Stderr, "ERR"); err != nil {
+			os.Exit(93)
+		}
 		os.Exit(7)
 	case "echo":
 		_, _ = io.Copy(os.Stdout, os.Stdin)
@@ -46,15 +50,21 @@ func TestProcessHelper(t *testing.T) {
 		}
 	case "slow":
 		for i := 0; i < 100; i++ {
-			fmt.Fprint(os.Stdout, "x")
+			if _, err := fmt.Fprint(os.Stdout, "x"); err != nil {
+				os.Exit(93)
+			}
 			time.Sleep(20 * time.Millisecond)
 		}
 	case "interrupt":
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT)
-		fmt.Fprint(os.Stdout, "READY")
+		if _, err := fmt.Fprint(os.Stdout, "READY"); err != nil {
+			os.Exit(93)
+		}
 		<-ch
-		fmt.Fprint(os.Stdout, "INTERRUPTED")
+		if _, err := fmt.Fprint(os.Stdout, "INTERRUPTED"); err != nil {
+			os.Exit(93)
+		}
 	case "once":
 		f, err := os.OpenFile(args[2], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
@@ -64,7 +74,9 @@ func TestProcessHelper(t *testing.T) {
 		_ = f.Close()
 	case "env":
 		cwd, _ := os.Getwd()
-		fmt.Fprintf(os.Stdout, "%s|%s|%s", cwd, os.Getenv("TEST_VALUE"), os.Getenv("TERMINAL_MCP_TOKEN"))
+		if _, err := fmt.Fprintf(os.Stdout, "%s|%s|%s", cwd, os.Getenv("TEST_VALUE"), os.Getenv("TERMINAL_MCP_TOKEN")); err != nil {
+			os.Exit(93)
+		}
 	case "closed-output":
 		_ = os.Stdout.Close()
 		_ = os.Stderr.Close()

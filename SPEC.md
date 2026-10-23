@@ -504,7 +504,9 @@ The response time budget of a hosted MCP client is not a child-process lifetime 
 
 Run `make check` on a supported system. Use `make check-core` for repeated checks of selected core packages.
 
-GitHub Actions runs `make check` on macOS and Ubuntu. The [validation report](TEST_REPORT.md) separates executed checks from untested scenarios.
+GitHub Actions runs `make check` on macOS and Ubuntu and also runs static analysis and `govulncheck` in an Ubuntu quality job. The lint and vulnerability tools are separate from the managed server update path. `make check` verifies that `go mod tidy` would not change module files.
+
+The [validation report](TEST_REPORT.md) separates executed checks from untested scenarios.
 
 References:
 

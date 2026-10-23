@@ -283,8 +283,12 @@ func TestWriteCreationAndConcurrentNoClobber(t *testing.T) {
 func TestEditRefusesSymlinkHardlinkAndReadonlyTargets(t *testing.T) {
 	m, dir, id := fixture(t)
 	target := put(t, dir, "target", "hello")
-	os.Symlink(target, filepath.Join(dir, "link"))
-	os.Link(target, filepath.Join(dir, "hard"))
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, filepath.Join(dir, "hard")); err != nil {
+		t.Fatal(err)
+	}
 	for i, name := range []string{"link", "hard"} {
 		r, e := m.Write(context.Background(), WriteArgs{ServerID: id, OperationID: []string{"link", "hard"}[i], Path: filepath.Join(dir, name), ExpectedVersion: version([]byte("hello")), Content: "bye"})
 		if e != nil || r.Receipt.Status != "failed" {
@@ -292,7 +296,9 @@ func TestEditRefusesSymlinkHardlinkAndReadonlyTargets(t *testing.T) {
 		}
 	}
 	ro := put(t, dir, "ro", "hello")
-	os.Chmod(ro, 0440)
+	if err := os.Chmod(ro, 0440); err != nil {
+		t.Fatal(err)
+	}
 	r, e := m.Write(context.Background(), WriteArgs{ServerID: id, OperationID: "ro", Path: ro, ExpectedVersion: version([]byte("hello")), Content: "bye"})
 	if e != nil || r.Receipt.Status != "failed" {
 		t.Fatalf("%+v %v", r, e)

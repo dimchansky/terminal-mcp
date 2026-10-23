@@ -1,0 +1,24 @@
+version: "2"
+
+# Keep checks focused on correctness, error handling, and resource cleanup.
+# Quick-fix suggestions can obscure important findings without adding safety.
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - "-QF*"
+        - "-ST1000"
+        - "-ST1003"
+        - "-ST1016"
+        - "-ST1020"
+        - "-ST1021"
+        - "-ST1022"

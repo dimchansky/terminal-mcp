@@ -46,7 +46,7 @@ func LoadToken(file string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // Token file is read-only.
 		info, err := f.Stat()
 		if err != nil {
 			return "", err

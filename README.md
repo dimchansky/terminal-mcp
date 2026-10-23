@@ -52,14 +52,13 @@ Each mutating action uses an `operation_id`. The server uses this ID to prevent 
 From the repository root, run:
 
 ```sh
-go mod tidy
 make check
 ```
 
 `make check` runs four targets in this order:
 
 1. `fmt-check` checks Go source formatting.
-2. `test-go` verifies modules, runs Go race tests, and runs `go vet`.
+2. `test-go` verifies modules, checks `go mod tidy -diff`, runs Go race tests, and runs `go vet`.
 3. `test-service` runs Python tests for the macOS service controller.
 4. `build` creates `bin/terminal-mcp`.
 
@@ -71,9 +70,15 @@ make test-go
 make test-service
 make build
 make check-core
+make lint
+make vulncheck
 ```
 
 `make check-core` repeats selected Go race tests three times. It also runs `go vet` on those packages.
+
+`make lint` uses the checks in `.golangci.yml` and needs `golangci-lint` v2.15.0 installed. `make vulncheck` uses a pinned `govulncheck` v1.9.0 through `go run`. They also run in GitHub Actions. Neither tool is required for `make check` or for managed service updates.
+
+`go mod tidy -diff` reports module-file changes without editing `go.mod` or `go.sum`. Use `go mod tidy` explicitly when you intend to update them.
 
 These targets do not stop or restart the MCP server. A native C toolchain is necessary for the Go race detector.
 

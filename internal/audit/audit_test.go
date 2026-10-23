@@ -238,8 +238,8 @@ func TestQueueIsNonblockingAndCloseDrains(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- log.Close() }()
 	select {
-	case <-done:
-		t.Fatal("Close did not wait for queued events")
+	case err := <-done:
+		t.Fatalf("Close did not wait for queued events: %v", err)
 	case <-time.After(40 * time.Millisecond):
 	}
 	close(release)

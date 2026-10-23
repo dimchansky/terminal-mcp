@@ -117,7 +117,7 @@ func spawn(a StartArgs, limits Limits, startPTY PTYStarter) (*Session, error) {
 		wg.Add(1)
 		go func(r io.ReadCloser, stream string) {
 			defer wg.Done()
-			defer r.Close()
+			defer func() { _ = r.Close() }() // I/O reader can also be closed by session shutdown.
 			buf := make([]byte, 4096)
 			for {
 				n, readErr := r.Read(buf)

@@ -15,7 +15,7 @@ make check
 The target runs these steps in order:
 
 1. `make fmt-check` checks Go formatting.
-2. `make test-go` runs module checks, race tests, and `go vet`.
+2. `make test-go` verifies modules and `go mod tidy -diff`, then runs race tests and `go vet`.
 3. `make test-service` runs the Python service-controller tests.
 4. `make build` creates `bin/terminal-mcp`.
 
@@ -25,7 +25,11 @@ To repeat the core race tests three times, run:
 make check-core
 ```
 
-These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu.
+These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu with Go 1.25. It also runs linting and a dependency vulnerability scan in a separate Ubuntu quality job with Go 1.27.
+
+Run `make lint` for the focused checks in `.golangci.yml` (`errcheck`, `bodyclose`, `govet`, `ineffassign`, `staticcheck`, and `unused`). Install `golangci-lint` v2.15.0 to use this target. Run `make vulncheck` to scan reachable vulnerabilities with a pinned `govulncheck` v1.9.0 via `go run`.
+
+Keep these targets separate from `make check`: the service controller must be able to verify and install its own binary without requiring optional development tools or downloading a security scanner.
 
 The Go server does not need Python at runtime. The macOS service controller uses Python 3 and standard-library modules.
 
