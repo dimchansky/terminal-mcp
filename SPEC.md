@@ -33,6 +33,12 @@ You can run an SSH client as a local process. The server cannot control arbitrar
 
 The Go executable provides HTTP or stdio transport. It contains the session manager and the MCP tools.
 
+Startup uses a dedicated `flag.FlagSet`. The server accepts an explicit
+`context.Context` for cancellation; the executable subscribes to SIGINT and
+SIGTERM. HTTP shutdown stops managed processes before it drains HTTP requests
+within a bounded deadline. If the drain deadline expires, the server closes
+remaining connections and reports the error.
+
 ```text
 MCP client
     |

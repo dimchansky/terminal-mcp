@@ -60,6 +60,14 @@ The tests cover concurrent duplicate calls, effect and method conflicts,
 context cancellation, panic recovery, capacity limits, and `Freeze`/`Resume`.
 They found no behavior defect, so production ledger code was not changed.
 
+The CLI and server-lifecycle tests now exercise independent flag parsing,
+configuration precedence, startup failures, HTTP bearer authentication, real
+HTTP and stdio MCP calls, managed-process shutdown, and SIGTERM in a separate
+OS process. These tests use loopback ephemeral ports and isolated temporary
+files. Twelve repeated race-enabled CLI test runs with random test order passed
+on macOS. The measured statement coverage of `cmd/terminal-mcp` increased from
+13.3% to 71.1% (`go test -cover ./cmd/terminal-mcp`).
+
 GitHub Actions runs `make check` on macOS and Ubuntu.
 
 The last CI run verified before this documentation update was:

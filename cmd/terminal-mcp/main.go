@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"terminalmcp/internal/audit"
 	"terminalmcp/internal/filesystem"
 	"terminalmcp/internal/httpguard"
@@ -26,39 +27,65 @@ import (
 	"terminalmcp/internal/terminal"
 )
 
+type options struct {
+	transport string
+	listen    string
+	tokenFile string
+	fileRoot  string
+	auditFile string
+}
+
+func parseOptions(args []string) (options, error) {
+	var opts options
+	flags := flag.NewFlagSet("terminal-mcp", flag.ContinueOnError)
+	flags.StringVar(&opts.transport, "transport", "http", "http (independent process) or stdio (owned by the MCP host)")
+	flags.StringVar(&opts.listen, "listen", "127.0.0.1:8090", "HTTP literal loopback address")
+	flags.StringVar(&opts.tokenFile, "token-file", "", "0600 file holding the HTTP bearer token; otherwise use TERMINAL_MCP_TOKEN")
+	flags.StringVar(&opts.fileRoot, "file-root", "", "Root directory for file tools (overrides configured file_root)")
+	flags.StringVar(&opts.auditFile, "audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
+	if err := flags.Parse(args); err != nil {
+		return opts, err
+	}
+	if flags.NArg() != 0 {
+		return opts, fmt.Errorf("unexpected positional arguments")
+	}
+	if opts.transport != "http" && opts.transport != "stdio" {
+		return opts, fmt.Errorf("transport must be http or stdio")
+	}
+	return opts, nil
+}
+
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runWithContext(ctx, os.Args[1:], nil); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "terminal-mcp:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	transport := flag.String("transport", "http", "http (independent process) or stdio (owned by the MCP host)")
-	listen := flag.String("listen", "127.0.0.1:8090", "HTTP literal loopback address")
-	tokenFile := flag.String("token-file", "", "0600 file holding the HTTP bearer token; otherwise use TERMINAL_MCP_TOKEN")
-	fileRoot := flag.String("file-root", "", "Root directory for file tools (overrides configured file_root)")
-	auditFile := flag.String("audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
-	flag.Parse()
-	if flag.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments")
+// runWithContext uses a supplied context for shutdown. A nil stdio transport
+// selects the real process stdin/stdout. Tests can supply an in-memory transport.
+func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) error {
+	opts, err := parseOptions(args)
+	if err != nil {
+		return err
 	}
-	if *transport != "http" && *transport != "stdio" {
-		return fmt.Errorf("transport must be http or stdio")
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	manager := session.New(terminal.Start)
 	defer manager.Close()
+
 	configPath := ""
-	if runtime.GOOS == "darwin" && *transport == "http" {
+	if runtime.GOOS == "darwin" && opts.transport == "http" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return err
 		}
 		configPath = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "config.json")
 	}
-	configuredRoot, err := fileRootFromConfig(*fileRoot, configPath)
+	configuredRoot, err := fileRootFromConfig(opts.fileRoot, configPath)
 	if err != nil {
 		return err
 	}
@@ -67,12 +94,47 @@ func run() error {
 		return err
 	}
 	defer files.Close()
-	var recorder *audit.Log
-	path := *auditFile
-	if path == "" && *transport == "http" {
+
+	recorder := openAudit(opts.auditFile, opts.transport)
+	if recorder != nil {
+		defer func() {
+			if err := recorder.Close(); err != nil {
+				log.Printf("audit shutdown: %v", err)
+			}
+		}()
+	}
+	server := mcpserver.NewWithAudit(manager, recorder, files)
+	if opts.transport == "stdio" {
+		if stdio == nil {
+			stdio = &mcp.StdioTransport{MaxLineLength: httpguard.MaxBody}
+		}
+		err := server.Run(ctx, stdio)
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+	if err := httpguard.ValidateAddress(opts.listen); err != nil {
+		return err
+	}
+	token, err := httpguard.LoadToken(opts.tokenFile)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", opts.listen)
+	if err != nil {
+		return err
+	}
+	return serveHTTP(ctx, manager, server, listener, token)
+}
+
+func openAudit(requestedPath, transport string) *audit.Log {
+	path := requestedPath
+	if path == "" && transport == "http" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return err
+			log.Printf("audit unavailable; server will continue without audit: %v", err)
+			return nil
 		}
 		if runtime.GOOS == "darwin" {
 			path = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl")
@@ -84,41 +146,24 @@ func run() error {
 			path = filepath.Join(base, "terminal-mcp", "audit.jsonl")
 		}
 	}
-	if path != "" && path != "off" {
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			log.Printf("audit unavailable; server will continue without audit: %v", err)
-		} else {
-			recorder, err = audit.Open(path)
-			if err != nil {
-				log.Printf("audit unavailable; server will continue without audit: %v", err)
-			} else {
-				defer func() {
-					if err := recorder.Close(); err != nil {
-						log.Printf("audit shutdown: %v", err)
-					}
-				}()
-			}
-		}
+	if path == "" || path == "off" {
+		return nil
 	}
-	server := mcpserver.NewWithAudit(manager, recorder, files)
-	if *transport == "stdio" {
-		err := server.Run(ctx, &mcp.StdioTransport{MaxLineLength: httpguard.MaxBody})
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		log.Printf("audit unavailable; server will continue without audit: %v", err)
+		return nil
 	}
-	if err := httpguard.ValidateAddress(*listen); err != nil {
-		return err
-	}
-	token, err := httpguard.LoadToken(*tokenFile)
+	recorder, err := audit.Open(path)
 	if err != nil {
-		return err
+		log.Printf("audit unavailable; server will continue without audit: %v", err)
+		return nil
 	}
-	listener, err := net.Listen("tcp", *listen)
-	if err != nil {
-		return err
-	}
+	return recorder
+}
+
+// serveHTTP owns the listener and returns after the HTTP server stops.
+// On cancellation it first stops managed processes, then drains HTTP requests.
+func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string) error {
 	defer listener.Close()
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.HTTP(server))
@@ -127,9 +172,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
-		MaxHeaderBytes: 16 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
+	httpServer := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+	}
 	logger := log.New(os.Stderr, "terminal-mcp: ", log.LstdFlags)
 	logger.Printf("listening at http://%s/mcp (full local user privileges)", listener.Addr())
 	done := make(chan error, 1)
@@ -141,11 +192,15 @@ func run() error {
 		}
 		return err
 	case <-ctx.Done():
+		manager.Close()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		manager.Close()
 		if err := httpServer.Shutdown(shutdown); err != nil {
 			_ = httpServer.Close()
+			<-done
+			return err
+		}
+		if err := <-done; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
