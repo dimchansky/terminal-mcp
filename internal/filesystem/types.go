@@ -9,7 +9,7 @@ type Range struct {
 }
 type ReadArgs struct {
 	Files    []Range `json:"files" jsonschema:"1..8 file ranges; each regular UTF-8 file is at most 2 MiB."`
-	MaxBytes int     `json:"max_bytes,omitempty" jsonschema:"Total returned text budget: default 16384, maximum 65536 bytes."`
+	MaxBytes int     `json:"max_bytes,omitempty" jsonschema:"Total returned text budget: default 16384, maximum 262144 bytes."`
 }
 type Line struct {
 	Number int    `json:"number"`

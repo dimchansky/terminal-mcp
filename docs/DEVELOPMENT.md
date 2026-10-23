@@ -147,7 +147,7 @@ The `version` value is a SHA-256 digest of the complete file. It is not a digest
 
 The file must contain UTF-8 text without NUL bytes. The maximum file size is 2 MiB.
 
-The default response-text budget is 16 KiB. The maximum is 64 KiB.
+The default file-read text budget is 16 KiB. The maximum is 256 KiB. Use `max_bytes: 0` to select the default. The JSON Schema publishes this maximum and the array and line-range bounds. Larger results can use more MCP client memory and response bandwidth.
 
 The tool refuses binary, special, and oversized files. Use a terminal command when the file tools cannot handle a file.
 

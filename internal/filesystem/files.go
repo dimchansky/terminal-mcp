@@ -28,6 +28,9 @@ import (
 const maxFile = 2 << 20
 const maxContent = 64 << 10
 
+// MaxReadBytes limits read output independently of the 64 KiB write budget.
+const MaxReadBytes = 256 << 10
+
 type Manager struct {
 	mu     sync.Mutex
 	host   *session.Manager
@@ -119,8 +122,8 @@ func (m *Manager) Read(ctx context.Context, a ReadArgs) (ReadResult, error) {
 	if a.MaxBytes == 0 {
 		a.MaxBytes = 16384
 	}
-	if a.MaxBytes < 1 || a.MaxBytes > maxContent {
-		return out, fmt.Errorf("max_bytes must be 1..65536")
+	if a.MaxBytes < 1 || a.MaxBytes > MaxReadBytes {
+		return out, fmt.Errorf("max_bytes must be 1..%d", MaxReadBytes)
 	}
 	budget := a.MaxBytes
 	for _, item := range a.Files {

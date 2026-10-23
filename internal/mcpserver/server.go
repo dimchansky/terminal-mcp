@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"terminalmcp/internal/audit"
@@ -42,7 +43,7 @@ func NewWithAudit(manager *session.Manager, recorder *audit.Log, files ...*files
 	if len(files) > 0 && files[0] != nil {
 		f := files[0]
 		root := " Absolute paths must be inside " + f.Root() + "."
-		add(s, recorder, serverID, "file_read", "Read 1..8 UTF-8 files or inclusive line ranges, with whole-file SHA-256 versions, explicit truncation and next_line. No process/session is created."+root, true, f.Read)
+		add(s, recorder, serverID, "file_read", "Read 1..8 UTF-8 files or inclusive line ranges, with whole-file SHA-256 versions, explicit truncation and next_line. No process/session is created. Max returned text budget is 256 KiB."+root, true, f.Read, fileReadSchema())
 		add(s, recorder, serverID, "file_edit", "Replace exact, unique, non-overlapping text fragments in one file against its expected_version. All edits are validated before an atomic replacement. Returns versions and a bounded preview. On version_conflict reread; do not overwrite. Does not preserve ACLs/xattrs; refuses symlinks and hard-linked targets."+root, false, f.Edit)
 		add(s, recorder, serverID, "file_write", "Create a UTF-8 text file, or replace an existing one only with expected_version. No implicit newline conversion; parents must exist. Atomic single-file publication. Does not preserve ACLs/xattrs; refuses symlinks and hard-linked targets."+root, false, f.Write)
 		add(s, recorder, serverID, "file_search", "Search local text, returning paths/line numbers. ripgrep supplies ignore-aware file discovery; content is read through the configured root. Literal by default; optional Go regex per line. Results and time are bounded; truncation/skips are explicit."+root, true, f.Search)
@@ -51,11 +52,15 @@ func NewWithAudit(manager *session.Manager, recorder *audit.Log, files ...*files
 	return s
 }
 
-func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, description string, readOnly bool, fn func(context.Context, I) (O, error)) {
+func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, description string, readOnly bool, fn func(context.Context, I) (O, error), inputSchema ...*jsonschema.Schema) {
 	destructive, openWorld := !readOnly, !readOnly && strings.HasPrefix(name, "terminal_")
-	mcp.AddTool(s, &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{
+	tool := &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{
 		ReadOnlyHint: readOnly, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld,
-	}}, func(ctx context.Context, _ *mcp.CallToolRequest, input I) (*mcp.CallToolResult, O, error) {
+	}}
+	if len(inputSchema) != 0 {
+		tool.InputSchema = inputSchema[0]
+	}
+	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, input I) (*mcp.CallToolResult, O, error) {
 		if recorder == nil {
 			out, err := fn(ctx, input)
 			return nil, out, err

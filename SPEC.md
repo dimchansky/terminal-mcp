@@ -352,7 +352,7 @@ Lines have one-based numbers. A read returns a SHA-256 version for the whole fil
 
 The default line window has 200 lines. The maximum window has 1,000 lines.
 
-The total response-text budget defaults to 16 KiB and cannot exceed 64 KiB. A truncated response provides `next_line` when possible.
+The total file-read text budget defaults to 16 KiB and cannot exceed 256 KiB. The `file_read` input JSON Schema enforces `max_bytes` from 0 to 262144; zero selects the default. It also limits the `files` array to 1–8 entries and requires nonnegative line numbers. A truncated response provides `next_line` when possible.
 
 ### `file_edit`
 

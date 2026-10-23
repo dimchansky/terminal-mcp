@@ -417,7 +417,7 @@ Use `terminal_read` with `view: "screen"` to get a text screen. The screen is no
 
 Use `file_read` to obtain the file version. Use that version in `file_edit` or a guarded `file_write`.
 
-Omit `expected_version` only when you want to create a new file. File tools enforce size and text-format limits. See the [development guide](docs/DEVELOPMENT.md#3-file-tools) for exact limits.
+Omit `expected_version` only when you want to create a new file. `file_read` returns up to 256 KiB of file text (16 KiB by default). File tools enforce size and text-format limits. See the [development guide](docs/DEVELOPMENT.md#3-file-tools) for exact limits.
 
 ## Limits and recovery
 
@@ -428,7 +428,7 @@ Omit `expected_version` only when you want to create a new file. File tools enfo
 | Active sessions | 32 |
 | Retained completed sessions | 128, for up to 1 hour |
 | Output journal | 1 MiB and 2,048 events per session |
-| Default and maximum read size | 16 KiB and 64 KiB |
+| Default and maximum terminal output read size | 16 KiB and 64 KiB |
 | Maximum input size | 64 KiB |
 | Maximum observation wait | 10 seconds |
 | Maximum PTY size | 80 rows by 200 columns |
