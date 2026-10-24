@@ -88,3 +88,42 @@ func TestWindowsJobCloseStopsChild(t *testing.T) {
 		t.Fatalf("job did not close and reap: %+v %v", obs, err)
 	}
 }
+
+func TestWindowsConPTYAcceptsInteractiveInput(t *testing.T) {
+	m := session.New(terminal.Start)
+	defer m.Close()
+	r, err := m.Start(context.Background(), session.StartArgs{
+		ServerID: m.ID(), OperationID: "interactive-start", Mode: "pty",
+		Cwd: t.TempDir(), Argv: []string{windowsCommand(), "/d", "/v:on", "/c",
+			"set /p X= && echo CONPTY_GOT_!X!"},
+		WaitMS: 0, CloseOnExit: true,
+	})
+	if err != nil || r.Receipt.Status != "applied" {
+		t.Fatalf("cannot start Windows PTY for interactive input: %+v %v", r, err)
+	}
+	line := "native-pty\r"
+	write, err := m.Write(context.Background(), session.WriteArgs{
+		ServerID: m.ID(), OperationID: "interactive-write",
+		SessionID: r.Receipt.SessionID, Input: []session.Input{{Text: &line}},
+		WaitMS: 1000,
+	})
+	if err != nil || write.Receipt.Status != "applied" {
+		t.Fatalf("ConPTY interactive write failed: %+v %v", write, err)
+	}
+	obs, err := m.Read(context.Background(), session.ReadArgs{
+		SessionID: r.Receipt.SessionID, WaitFor: "completion", WaitMS: 5000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	for _, event := range obs.Events {
+		if event.Text != nil {
+			all.WriteString(*event.Text)
+		}
+	}
+	if !strings.Contains(all.String(), "CONPTY_GOT_native-pty") ||
+		obs.Session.Exit == nil || obs.Session.Exit.Code == nil || *obs.Session.Exit.Code != 0 {
+		t.Fatalf("interactive Windows ConPTY did not echo the input: output=%q, session=%+v", all.String(), obs.Session)
+	}
+}

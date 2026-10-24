@@ -2,7 +2,7 @@
 
 **Current interface:** 12 MCP tools. The server reports MCP implementation version `0.2.0`.
 
-**Platforms:** macOS and Linux. **Access model:** one trusted local service account.
+**Platforms:** macOS, Linux and Windows. **Access model:** one trusted local service account.
 
 This document describes the current implementation. Use [README.md](README.md) for setup instructions. Use [DEVELOPMENT.md](docs/DEVELOPMENT.md) for operational procedures.
 
@@ -18,7 +18,6 @@ The server is not a sandbox. A process has the permissions of the service user. 
 
 The server does not provide:
 
-- Windows or ConPTY support.
 - Per-user authorization or an OAuth authorization server.
 - A browser-based terminal.
 - Native SSH or serial-device APIs.
@@ -31,7 +30,9 @@ You can run an SSH client as a local process. The server cannot control arbitrar
 
 ## 2. Process and service architecture
 
-The Go executable provides HTTP or stdio transport. It contains the session manager and the MCP tools.
+The Go executable provides HTTP or stdio transport.
+On Windows, the server runs natively with ConPTY and Job Objects; the Go
+self-update worker is currently available on macOS/Linux only. It contains the session manager and the MCP tools.
 
 Startup uses a dedicated `flag.FlagSet`. The server accepts an explicit
 `context.Context` for cancellation; the executable subscribes to SIGINT and
@@ -67,7 +68,7 @@ stdin, stdout, stderr      input, screen, raw events
 
 Standalone background control:
 terminal-mcp start -> independent server
-terminal-mcp update -> detached worker
+terminal-mcp update -> detached worker (macOS/Linux)
                             |
                             v
                      verify and restart
@@ -75,7 +76,8 @@ terminal-mcp update -> detached worker
 
 The session manager stores sessions and mutation receipts in memory. The audit logger stores tool-call events on disk.
 
-The `terminal` package uses `creack/pty` and `vt10x`. The MCP Go SDK handles message transport and tool schemas.
+The `terminal` package uses `creack/pty` on Unix, ConPTY on Windows
+(via `charmbracelet/x/conpty`) and `vt10x` for both platforms. The MCP Go SDK handles message transport and tool schemas.
 
 ### HTTP transport
 
@@ -512,9 +514,15 @@ supervisor and does not provide automatic crash recovery.
 
 The server does not restore sessions after a crash. The audit log and saved release files do not restore them.
 
-A session has a local process group. A child can escape the group or outlive its leader.
+On Unix, each session has a local process group. A child can escape the
+group or outlive its leader. On Windows, each session uses a Job Object that
+attempts to terminate descendants when closed, but process creation and Job
+Object assignment are not atomic and some descendants can escape.
 
-After the server observes leader exit, it does not send a signal to an old numeric process group. The operating system can reuse that ID.
+After the server observes leader exit, it does not send a signal to a
+possibly reused numeric Unix process group. On Windows only `TERM` and
+`KILL` are supported; both terminate the process or Job Object, not POSIX
+signals. Windows ConPTY does not support the foreground target.
 
 No native SSH process tracking, complete Unicode terminal rendering, or process-container guarantee is provided.
 
@@ -522,9 +530,14 @@ The response time budget of a hosted MCP client is not a child-process lifetime 
 
 ## 14. Checks and references
 
-Run `make check` on a supported system. Use `make check-core` for repeated checks of selected core packages.
+On macOS/Linux, run `make check`. On Windows, use
+`go test -race ./...`, `go vet ./...`, and `go build` as described in the
+[Windows guide](docs/WINDOWS.md). Use `make check-core` on Unix for repeated
+checks of selected core packages.
 
-GitHub Actions runs `make check` on macOS and Ubuntu and also runs static analysis and `govulncheck` in an Ubuntu quality job. The lint and vulnerability tools are separate from the default `make check` target. `make check` verifies that `go mod tidy` would not change module files.
+GitHub Actions runs `make check` on macOS and Ubuntu, Go tests on
+native Windows, and also runs static analysis and `govulncheck` in an
+Ubuntu quality job. The lint and vulnerability tools are separate from the default `make check` target. `make check` verifies that `go mod tidy` would not change module files.
 
 The [validation report](TEST_REPORT.md) separates executed checks from untested scenarios.
 
@@ -533,7 +546,9 @@ References:
 - [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
 - [Go process API](https://pkg.go.dev/os/exec)
 - [Go filesystem root](https://pkg.go.dev/os#Root)
-- [PTY package](https://github.com/creack/pty)
+- [Unix PTY package](https://github.com/creack/pty)
+- [Windows ConPTY package](https://pkg.go.dev/github.com/charmbracelet/x/conpty)
+- [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 - [Virtual terminal package](https://pkg.go.dev/github.com/hinshun/vt10x)
 - [MCP specification](https://modelcontextprotocol.io/specification)
 - [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)

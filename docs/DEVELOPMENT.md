@@ -1,6 +1,8 @@
 # Development and Standalone Operation
 
-This guide describes file tools, terminal workflows, and standalone management.
+This guide describes file tools, terminal workflows, and standalone management
+on macOS/Linux. See the [Windows guide](WINDOWS.md) for native Windows
+commands, permissions and process-model differences.
 Read [README.md](../README.md) for setup and tunnel connection steps, and
 [SPEC.md](../SPEC.md) for behavior guarantees. Older LaunchAgent users can
 consult the [legacy migration guide](STANDALONE_MIGRATION.md).

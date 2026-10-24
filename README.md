@@ -7,6 +7,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 ## Start here
 
 - [Build and check](#build-and-check) — Build the server and run tests.
+- [Windows](docs/WINDOWS.md) — Native Windows installation, ConPTY, logs and current limitations.
 - [Run as an application](#run-as-an-application) — Run, start in the background, stop, and update without a service manager.
 - [Migrate a legacy macOS LaunchAgent](docs/STANDALONE_MIGRATION.md) — One-time migration for older installations.
 - [Connect through Secure MCP Tunnel](#connect-through-secure-mcp-tunnel) — Connect ChatGPT to the local server.
@@ -16,7 +17,9 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 - [Development guide](docs/DEVELOPMENT.md) — Read the complete file-tool and update procedures.
 - [Validation report](TEST_REPORT.md) — See the verified checks and their limits.
 
-The server supports macOS and Linux. It needs Go 1.25 or later.
+The server supports macOS, Linux and Windows. It needs Go 1.25 or later.
+On Windows, use the [native setup guide](docs/WINDOWS.md); the Makefile is
+intended for Unix platforms.
 
 Running the server and updater requires no Python or OS service manager. The `file_search` tool needs `rg` (ripgrep).
 
@@ -42,7 +45,7 @@ The server provides 12 MCP tools.
 The server supports two process modes:
 
 - `pipes` keeps stdout and stderr separate. Use this mode for builds and tests.
-- `pty` provides a terminal, interactive input, and a text screen.
+- `pty` provides a terminal, interactive input, and a text screen (Unix PTY or Windows ConPTY).
 
 A process can continue after the MCP client disconnects. The server requests process termination when it closes a session. A restart removes in-memory session state.
 
@@ -147,7 +150,9 @@ go build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
 Never build directly over the installed running executable; this invalidates
 the rollback image.
 
-The `update` command returns a queued job and status-file path. It may also
+On macOS/Linux, the `update` command returns a queued job and status-file
+path. The Windows port currently requires
+[manual updates while stopped](docs/WINDOWS.md#updating-windows). It may also
 be launched through the running server's `terminal_start` tool. A temporary,
 independent copy of the binary performs the update after the initiating command
 finishes. It checks the candidate using an authenticated MCP connection on an
@@ -166,8 +171,9 @@ tools if the status reports `refresh_tools_required`.
 
 Both commands accept `--state-dir` for a private alternative update directory;
 `update` also accepts `--listen` and `--token-file` for a non-default server.
-Only a server explicitly started with `serve` (including through
-`start`) can be updated this way. The old LaunchAgent is not eligible.
+On macOS/Linux, only a server explicitly started with `serve`
+(including through `start`) can be updated this way. The old LaunchAgent
+is not eligible.
 
 Self-update requires an on-disk token; servers using only the
 `TERMINAL_MCP_TOKEN` environment variable must first be restarted with a token
@@ -181,18 +187,20 @@ so an unexpected crash after a successful update is not automatically restarted.
 
 ## Configuration and logs
 
-The background controller stores configuration in
-`~/.config/terminal-mcp/standalone/config.json`. It includes the listen
+On macOS/Linux, the background controller stores configuration in
+`~/.config/terminal-mcp/standalone/config.json`. On Windows, see
+[Windows configuration and logging](docs/WINDOWS.md#logs). It includes the listen
 address, token file, file root, working directory, PATH and optional audit
 location. Use flags on `terminal-mcp start` to override saved settings
-after stopping the running server. On a fresh installation, the default
-file root is the working directory; a direct `--file-root` argument can
-override it. Files outside that root are not accessible to the five `file_*`
+after stopping the running server. On a fresh installation the macOS/Linux default file root is
+the working directory and the Windows default is the user's home directory;
+a direct `--file-root` argument overrides either. Files outside that root are not accessible to the five `file_*`
 tools, but terminal commands retain the user's OS permissions.
 
-A new HTTP start creates a private token at
+On macOS/Linux, a new HTTP start creates a private token at
 `~/.config/terminal-mcp/token` if no explicit token or environment token
-was supplied. Protect this token: clients using it can run commands as
+was supplied. On Windows the token is stored under
+`%APPDATA%\terminal-mcp\token` with a private Windows ACL. Protect this token: clients using it can run commands as
 the logged-in user. No launchd, Python or privileged installation is required.
 
 Use `make status` or `terminal-mcp status` for the running instance.
@@ -204,13 +212,16 @@ process instead writes to its update job's `server.log` under
 ### Audit log
 
 
-The server writes MCP tool-call events to:
+The default macOS audit path is:
 
 ```text
 ~/Library/Application Support/LocalTerminalMCP/audit.jsonl
 ```
 
-Run `make logs` to read new events.
+The Linux default is `$XDG_STATE_HOME/terminal-mcp/audit.jsonl`
+(or `~/.local/state/terminal-mcp/audit.jsonl`); Windows uses
+`%APPDATA%\terminal-mcp\audit.jsonl`. Unix users can follow the
+audit using `make logs`.
 
 The audit records:
 
@@ -487,10 +498,13 @@ internal/filesystem/     File operations and root restrictions
 internal/mcpserver/      MCP tools and integration tests
 internal/httpguard/      HTTP authentication and request checks
 internal/audit/          Tool-call audit events and rotation
+internal/winsecure/      Windows ACL and ownership checks
 SPEC.md                  Behavior specification
 docs/DEVELOPMENT.md      Detailed operational procedures
 TEST_REPORT.md           Validation report
 .github/workflows/       macOS and Linux CI checks
 ```
 
-The project does not include a browser UI, Windows support, or live-session recovery after a crash.
+The project does not include a browser UI or live-session recovery after a crash.
+Windows lacks the automatic standalone update and rollback workflow currently
+available on macOS and Linux.

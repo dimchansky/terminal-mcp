@@ -39,6 +39,8 @@ jobs:
           go test -race -count=1 -timeout=180s ./...
           go vet ./...
           go build -trimpath -o terminal-mcp.exe ./cmd/terminal-mcp
+          $env:GOARCH = 'arm64'
+          go build -trimpath -o terminal-mcp-arm64.exe ./cmd/terminal-mcp
 
   quality:
     name: Lint and vulnerability scan

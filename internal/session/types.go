@@ -88,8 +88,8 @@ type SignalArgs struct {
 	ServerID    string `json:"server_id"`
 	OperationID string `json:"operation_id"`
 	SessionID   string `json:"session_id"`
-	Signal      string `json:"signal" jsonschema:"INT, TERM, KILL, HUP, CONT or STOP."`
-	Target      string `json:"target,omitempty" jsonschema:"group (default), process, or foreground (PTY only). Always local."`
+	Signal      string `json:"signal" jsonschema:"Unix: INT, TERM, KILL, HUP, CONT or STOP. Windows: TERM or KILL only."`
+	Target      string `json:"target,omitempty" jsonschema:"group (default), process, or foreground (Unix PTY only). Always local."`
 }
 
 type ResizeArgs struct {
