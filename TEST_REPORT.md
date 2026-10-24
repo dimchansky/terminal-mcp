@@ -101,12 +101,12 @@ linters are blocking checks.
 
 GitHub Actions runs `make check` on macOS and Ubuntu. A separate Ubuntu quality job checks linting and reachable vulnerabilities.
 
-The last CI run verified before this documentation update was:
+The latest verified CI run for the standalone migration work was:
 
 | Item | Result |
 | --- | --- |
-| Commit | `0ba50dc` |
-| Workflow run | [40024600724](https://github.com/dimchansky/terminal-mcp/actions/runs/40024600724) |
+| Commit | `057cb55` |
+| Workflow run | [40087861818](https://github.com/dimchansky/terminal-mcp/actions/runs/40087861818) |
 | macOS job | PASS |
 | Ubuntu job | PASS |
 
@@ -132,6 +132,28 @@ The controller reported `status: "applied"` and a healthy new server ID. This te
 The unit tests cover additional results, including mutation retries, cancellation, terminal I/O, version checks, audit rotation, and update rollback.
 
 A unit test result is not proof of every real-world failure condition.
+
+### Standalone background operation and migration
+
+On 2026-10-24, a real CLI test verified background start, authentication,
+runtime status, safe rejection of a duplicate start on another port, and
+graceful stop. Another test confirmed that active managed processes block a
+manual stop. On macOS, tests also verified that existing launchd settings
+(`file_root`, working directory, token and PATH) survive into an independent
+standalone configuration, including after the legacy config file is deleted.
+
+The standalone controller was also checked against an occupied simulated
+legacy listener. The canary started on a separate port, exposed the configured
+file root and PATH, then stopped without disturbing the simulated legacy
+listener. Resetting `--audit-file=default` cleared the temporary canary
+setting. These tests ran with the Go race detector and passed both native CI
+jobs at the run listed above.
+
+A non-disruptive canary test was subsequently run on the installed macOS
+machine using port 18090. It verified all 12 MCP tools, successfully called
+`file_list` at root `/`, and stopped cleanly. The pre-existing server on
+8090 remained healthy, and `tunnel-client` on 8091 continued responding
+to its health endpoint. **No migration of the primary server has yet occurred.**
 
 ## 4. Limits of this evidence
 
@@ -162,8 +184,8 @@ The source, tests, and CI setup changed after that delivery. Use the current Mak
 1. Run `make check`.
 2. Confirm that the Git worktree contains only the intended changes.
 3. Check the macOS and Ubuntu CI results.
-4. If the Go server changed, use `make update` on the local service.
-5. Check `make status` after the update.
+4. For the legacy LaunchAgent, use `make update`; for standalone mode, build a separate candidate and use `terminal-mcp update` (see the [migration guide](docs/STANDALONE_MIGRATION.md)).
+5. Check `make status` for the legacy service or `terminal-mcp update-status` and `terminal-mcp status` for standalone mode.
 6. Check `refresh_tools_required`. Refresh the ChatGPT tools when it is true.
 7. Review `make logs` and `make logs-service` if a test or update fails.
 

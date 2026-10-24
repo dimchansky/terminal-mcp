@@ -16,7 +16,7 @@ From the project checkout:
 
 ```sh
 make check
-./bin/terminal-mcp start --listen=127.0.0.1:8091 --audit-file=off
+./bin/terminal-mcp start --listen=127.0.0.1:18090 --audit-file=off
 ./bin/terminal-mcp status
 ```
 
@@ -28,7 +28,7 @@ On macOS, the first start reads the existing LaunchAgent configuration and
 preserves its working directory, file root, token-file path and PATH.
 It stores these settings independently in
 `~/.config/terminal-mcp/standalone/config.json`. The `--listen` and
-`--audit-file` flags above deliberately create a canary on port 8091 without
+`--audit-file` flags above deliberately create a canary on port 18090 without
 contending for the old server's port or audit journal.
 
 Verify that `status` reports `running` and the expected file root. The
@@ -42,7 +42,10 @@ Stop only the canary, and verify the old service still responds:
 make status
 ```
 
-If port 8091 is occupied, choose another unused loopback port. When these
+Port 8091 is reserved for `tunnel-client`'s local health endpoint in the
+documented tunnel setup; do not use it for the canary. Port 18090 was free in
+the tested macOS installation, but always choose another unused loopback port
+if it is occupied. When these
 checks pass, proceed to the cutover from an **ordinary Terminal window**.
 
 ## 2. Switch on the original port

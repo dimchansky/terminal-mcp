@@ -126,7 +126,7 @@ To configure a tunnel, read the token locally; do not paste it into logs or chat
 The existing `--token-file` flag and `TERMINAL_MCP_TOKEN` take precedence
 and do not create a default token. To avoid port conflicts with an existing
 service, use a different loopback port and audit path, for example
-`./bin/terminal-mcp serve --listen=127.0.0.1:8091 --audit-file=off`.
+`./bin/terminal-mcp serve --listen=127.0.0.1:18090 --audit-file=off`.
 Two instances cannot write to the same audit journal.
 For interactive use, Ctrl+C gracefully stops the server and its managed sessions.
 Standalone background start/stop is not yet provided; running the server with
