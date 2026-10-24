@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package main
 
 import (
@@ -12,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -203,34 +200,16 @@ func (c *updateClient) serverID() (string, error) {
 }
 
 func defaultUpdateRoot() (string, error) {
-	home, err := os.UserHomeDir()
+	path, err := defaultTokenPath()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".config", "terminal-mcp", "updates"), nil
+	return filepath.Join(filepath.Dir(path), "updates"), nil
 }
 
-func defaultTokenFile() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "terminal-mcp", "token"), nil
-}
+func defaultTokenFile() (string, error) { return defaultTokenPath() }
 
-func secureUpdateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("update directory must be private (0700): %s", dir)
-	}
-	return nil
-}
+func secureUpdateDir(dir string) error { return prepareUpdateDir(dir) }
 
 func reserveProbePort() (string, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

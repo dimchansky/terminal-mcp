@@ -51,8 +51,8 @@ func LoadToken(file string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return "", fmt.Errorf("token file must be regular and unreadable by group/other users (for example chmod 600)")
+		if err := validateTokenFile(file, info); err != nil {
+			return "", err
 		}
 		b, err := io.ReadAll(io.LimitReader(f, 4097))
 		if err != nil {

@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package session
 
 import (
@@ -9,11 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
-
-var signals = map[string]syscall.Signal{"INT": syscall.SIGINT, "TERM": syscall.SIGTERM,
-	"KILL": syscall.SIGKILL, "HUP": syscall.SIGHUP, "CONT": syscall.SIGCONT, "STOP": syscall.SIGSTOP}
 
 var namedKeys = []string{"ENTER", "TAB", "BACKSPACE", "ESCAPE", "UP", "DOWN", "LEFT", "RIGHT", "HOME", "END", "PAGE_UP", "PAGE_DOWN", "INSERT", "DELETE", "SHIFT_TAB", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"}
 
@@ -174,7 +168,7 @@ func childEnv(overrides map[string]string, pty bool) []string {
 }
 
 func executable(name, cwd string, env []string) (string, error) {
-	if strings.ContainsRune(name, '/') {
+	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, os.PathSeparator) {
 		if filepath.IsAbs(name) {
 			return name, nil
 		}
@@ -192,8 +186,15 @@ func executable(name, cwd string, env []string) (string, error) {
 		}
 		file := filepath.Join(dir, name)
 		info, err := os.Stat(file)
-		if err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+		if err == nil && !info.IsDir() && executableFile(file, info) {
 			return file, nil
+		}
+		for _, suffix := range executableSuffixes(name) {
+			candidate := file + suffix
+			info, err := os.Stat(candidate)
+			if err == nil && !info.IsDir() && executableFile(candidate, info) {
+				return candidate, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("executable %q not found in effective PATH", name)

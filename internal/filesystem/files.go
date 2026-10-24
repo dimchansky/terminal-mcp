@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package filesystem
 
 import (
@@ -18,7 +16,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"unicode/utf8"
 
 	"terminalmcp/internal/mutation"
@@ -85,7 +82,7 @@ func textOK(data []byte) bool { return utf8.Valid(data) && !strings.ContainsRune
 
 func readText(root *os.Root, name string) ([]byte, os.FileInfo, error) {
 	// Nonblocking open prevents an accidentally selected FIFO from hanging the server.
-	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := root.OpenFile(name, readOpenFlags(), 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -351,8 +348,8 @@ func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]
 		if !info.Mode().IsRegular() || info.Mode().Perm()&0222 == 0 {
 			return result, fmt.Errorf("refusing symlink, special, or read-only file")
 		}
-		if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 || int(st.Uid) != os.Geteuid() {
-			return result, fmt.Errorf("replacement requires a single-link file owned by the service user")
+		if err := ownedSingleLink(parent, name, info); err != nil {
+			return result, err
 		}
 		if expected == "" {
 			return result, fmt.Errorf("file_exists: expected_version required to overwrite")

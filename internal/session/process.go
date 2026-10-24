@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package session
 
 import (
@@ -12,13 +10,19 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
 type inputWriter interface {
 	io.WriteCloser
 	SetWriteDeadline(time.Time) error
+}
+
+// processJob owns a group of platform-managed child processes.
+// Unix process groups are handled directly; Windows holds a native Job Object.
+type processJob interface {
+	Terminate() error
+	Close()
 }
 
 type Session struct {
@@ -40,6 +44,7 @@ type Session struct {
 	writeGate                                         chan struct{}
 	done, drained                                     chan struct{}
 	closeOnExit                                       bool
+	job                                               processJob // Windows job ownership, nil on Unix.
 	closeOnce                                         sync.Once
 	closeDone                                         chan struct{}
 }
@@ -65,7 +70,7 @@ func spawn(a StartArgs, limits Limits, startPTY PTYStarter) (*Session, error) {
 		s.readers = []io.ReadCloser{s.terminal}
 		streams = []string{"terminal"}
 	} else {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		configurePipes(cmd)
 		var opened []*os.File
 		pipe := func() (*os.File, *os.File, error) {
 			r, w, err := os.Pipe()
@@ -100,6 +105,17 @@ func spawn(a StartArgs, limits Limits, startPTY PTYStarter) (*Session, error) {
 			}
 			return nil, err
 		}
+	}
+	if err := trackProcess(s); err != nil {
+		_ = s.cmd.Process.Kill()
+		_ = s.waitCommand()
+		for _, reader := range s.readers {
+			_ = reader.Close()
+		}
+		if s.stdin != nil {
+			_ = s.stdin.Close()
+		}
+		return nil, fmt.Errorf("manage child process: %w", err)
 	}
 	replies := make(chan []byte, 16)
 	if s.terminal != nil {
@@ -144,7 +160,7 @@ func spawn(a StartArgs, limits Limits, startPTY PTYStarter) (*Session, error) {
 					}
 				}
 				if readErr != nil {
-					if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, os.ErrClosed) && !(s.terminal != nil && errors.Is(readErr, syscall.EIO)) {
+					if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, os.ErrClosed) && !(s.terminal != nil && ignorablePTYError(readErr)) {
 						s.mu.Lock()
 						s.outputIncomplete = true
 						s.mu.Unlock()
@@ -180,6 +196,16 @@ func spawn(a StartArgs, limits Limits, startPTY PTYStarter) (*Session, error) {
 	return s, nil
 }
 
+func (s *Session) releaseJob() {
+	s.mu.Lock()
+	job := s.job
+	s.job = nil
+	s.mu.Unlock()
+	if job != nil {
+		job.Close()
+	}
+}
+
 func (s *Session) notifyLocked() { close(s.changed); s.changed = make(chan struct{}) }
 
 func (s *Session) diagnostic(message string) {
@@ -207,18 +233,8 @@ func (s *Session) infoLocked() Info {
 }
 
 func (s *Session) wait() {
-	err := s.cmd.Wait()
-	exit := &Exit{}
-	if s.cmd.ProcessState != nil {
-		if ws, ok := s.cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			exit.Signal = ws.Signal().String()
-		} else {
-			code := s.cmd.ProcessState.ExitCode()
-			exit.Code = &code
-		}
-	} else if err != nil {
-		exit.Error = err.Error()
-	}
+	err := s.waitCommand()
+	exit := exitFromState(s, err)
 	s.mu.Lock()
 	s.exit, s.exitedAt, s.inputClosed = exit, time.Now(), true
 	s.notifyLocked()
@@ -250,6 +266,7 @@ func (s *Session) wait() {
 			s.closed = true
 			s.notifyLocked()
 			s.mu.Unlock()
+			s.releaseJob()
 			close(s.closeDone)
 		})
 	}
@@ -411,82 +428,4 @@ func (s *Session) writeBytes(p []byte, eof bool) (int, error) {
 		}
 	}
 	return n, nil
-}
-
-func (s *Session) signal(sig syscall.Signal, target string) error {
-	s.mu.Lock()
-	exited := s.exit != nil
-	s.mu.Unlock()
-	if exited {
-		return fmt.Errorf("process already exited")
-	}
-	if target == "process" {
-		return s.cmd.Process.Signal(sig)
-	}
-	// Never use a caller-supplied PID or a stale group after observed leader exit.
-	if err := s.cmd.Process.Signal(syscall.Signal(0)); err != nil {
-		return err
-	}
-	group := s.cmd.Process.Pid
-	if target == "foreground" {
-		var err error
-		group, err = s.terminal.ForegroundGroup()
-		if err != nil {
-			return err
-		}
-	}
-	if group <= 1 || group == syscall.Getpgrp() {
-		return fmt.Errorf("refusing invalid or server process group")
-	}
-	return syscall.Kill(-group, sig)
-}
-
-func (s *Session) close(grace time.Duration) {
-	s.closeOnce.Do(func() {
-		defer close(s.closeDone)
-		s.mu.Lock()
-		s.closed, s.inputClosed = true, true
-		s.notifyLocked()
-		s.mu.Unlock()
-		if s.terminal == nil {
-			_ = s.stdin.Close()
-		}
-		for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT} {
-			if s.terminal != nil {
-				_ = s.signal(sig, "foreground")
-			}
-			_ = s.signal(sig, "group")
-		}
-		timer := time.NewTimer(grace)
-		select {
-		case <-s.done:
-		case <-timer.C:
-			if s.terminal != nil {
-				_ = s.signal(syscall.SIGKILL, "foreground")
-			}
-			_ = s.signal(syscall.SIGKILL, "group")
-		}
-		timer.Stop()
-		end := time.NewTimer(time.Second)
-		select {
-		case <-s.done:
-		case <-end.C:
-		}
-		end.Stop()
-		drain := time.NewTimer(200 * time.Millisecond)
-		select {
-		case <-s.drained:
-		case <-drain.C:
-			s.mu.Lock()
-			s.outputIncomplete = true
-			s.notifyLocked()
-			s.mu.Unlock()
-		}
-		drain.Stop()
-		for _, r := range s.readers {
-			_ = r.Close()
-		}
-		_ = s.stdin.Close()
-	})
-	<-s.closeDone
 }

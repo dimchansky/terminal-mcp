@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package session
 
 import (
@@ -273,7 +271,7 @@ func (m *Manager) Signal(ctx context.Context, a SignalArgs) (ActionResult, error
 			r.Status, r.Error = "failed", "foreground target requires PTY"
 			return r
 		}
-		if err := s.signal(signals[a.Signal], a.Target); err != nil {
+		if err := s.signal(a.Signal, a.Target); err != nil {
 			r.Status, r.Error = "failed", err.Error()
 		}
 		return r

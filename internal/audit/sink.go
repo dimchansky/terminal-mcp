@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package audit
 
 import (
@@ -10,8 +8,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-
-	"golang.org/x/sys/unix"
 )
 
 // eventSink is owned exclusively by the audit worker. It does not require a
@@ -57,12 +53,8 @@ func openFileSink(path string) (*fileSink, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(dir)
-	if err != nil {
+	if err := checkAuditPrivateDir(dir); err != nil {
 		return nil, err
-	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, fmt.Errorf("audit directory must exist and be private (0700): %s", dir)
 	}
 	path = filepath.Join(dir, filepath.Base(abs))
 	lock, err := lockAuditFile(path + ".lock")
@@ -76,39 +68,20 @@ func openFileSink(path string) (*fileSink, error) {
 	return s, nil
 }
 
+// PrepareDirectory ensures a private directory using platform-native
+// security controls (POSIX modes on Unix, ACLs on Windows).
+func PrepareDirectory(path string) error { return prepareAuditDir(path) }
+
 // ErrInUse is returned when another live audit writer owns the same log path.
 // The lock file is deliberately retained across restarts. Removing it while
 // another process is active would allow two processes to lock different inodes.
 var ErrInUse = errors.New("audit log is already in use")
 
-func lockAuditFile(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("open audit lock: %w", err)
-	}
-	f := os.NewFile(uintptr(fd), path)
-	info, err := f.Stat()
-	if err != nil {
-		return nil, errors.Join(err, f.Close())
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return nil, errors.Join(fmt.Errorf("audit lock must be a private regular file (0600): %s", path), f.Close())
-	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		closeErr := f.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, errors.Join(fmt.Errorf("%w: %s", ErrInUse, path), closeErr)
-		}
-		return nil, errors.Join(fmt.Errorf("acquire audit lock: %w", err), closeErr)
-	}
-	return f, nil
-}
-
 func (s *fileSink) open() error {
 	info, err := os.Lstat(s.path)
 	if err == nil {
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return fmt.Errorf("audit log must be a private regular file (0600): %s", s.path)
+		if err := checkAuditPrivateFile(s.path, info); err != nil {
+			return err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -121,8 +94,8 @@ func (s *fileSink) open() error {
 	if err != nil {
 		return errors.Join(fmt.Errorf("stat audit file: %w", err), f.Close())
 	}
-	if !stat.Mode().IsRegular() || stat.Mode().Perm()&0077 != 0 {
-		return errors.Join(fmt.Errorf("unsafe audit file: %s", s.path), f.Close())
+	if err := checkAuditPrivateFile(s.path, stat); err != nil {
+		return errors.Join(err, f.Close())
 	}
 	size, err := recoverTail(f, stat.Size())
 	if err != nil {

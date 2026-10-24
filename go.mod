@@ -3,6 +3,7 @@ module terminalmcp
 go 1.25.0
 
 require (
+	github.com/charmbracelet/x/conpty v0.2.0
 	github.com/creack/pty v1.1.24
 	github.com/google/jsonschema-go v0.4.3
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02

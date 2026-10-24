@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package main
 
 import (
@@ -19,11 +17,10 @@ func loadHTTPToken(explicit string) (string, error) {
 	if explicit != "" || os.Getenv("TERMINAL_MCP_TOKEN") != "" {
 		return httpguard.LoadToken(explicit)
 	}
-	home, err := os.UserHomeDir()
+	path, err := defaultTokenPath()
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(home, ".config", "terminal-mcp", "token")
 	created, err := ensureDefaultToken(path)
 	if err != nil {
 		return "", err
@@ -36,20 +33,13 @@ func loadHTTPToken(explicit string) (string, error) {
 
 func ensureDefaultToken(path string) (bool, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := prepareTokenDirectory(dir); err != nil {
 		return false, err
 	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return false, err
-	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return false, fmt.Errorf("token directory must be private (0700): %s", dir)
-	}
-	info, err = os.Lstat(path)
+	info, err := os.Lstat(path)
 	if err == nil {
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return false, fmt.Errorf("token must be a private regular file: %s", path)
+		if err := checkPrivateToken(path, info); err != nil {
+			return false, err
 		}
 		return false, nil
 	}

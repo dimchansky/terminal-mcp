@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package main
 
 import (
@@ -185,6 +183,13 @@ func openAudit(requestedPath, transport string) *audit.Log {
 		}
 		if runtime.GOOS == "darwin" {
 			path = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl")
+		} else if runtime.GOOS == "windows" {
+			config, err := os.UserConfigDir()
+			if err != nil {
+				log.Printf("audit unavailable: %v", err)
+				return nil
+			}
+			path = filepath.Join(config, "terminal-mcp", "audit.jsonl")
 		} else {
 			base := os.Getenv("XDG_STATE_HOME")
 			if base == "" {
@@ -196,7 +201,7 @@ func openAudit(requestedPath, transport string) *audit.Log {
 	if path == "" || path == "off" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := audit.PrepareDirectory(filepath.Dir(path)); err != nil {
 		log.Printf("audit unavailable; server will continue without audit: %v", err)
 		return nil
 	}
