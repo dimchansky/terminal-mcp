@@ -31,6 +31,7 @@ func TestParseOptions(t *testing.T) {
 		wantErr string
 	}{
 		{name: "defaults"},
+		{name: "serve alias", args: []string{"serve", "--transport=stdio"}},
 		{name: "all flags", args: []string{"--transport=stdio", "--file-root=/tmp", "--audit-file=off", "--listen=127.0.0.1:8123", "--token-file=/tmp/token"}},
 		{name: "invalid transport", args: []string{"--transport=other"}, wantErr: "transport must be http or stdio"},
 		{name: "unknown flag", args: []string{"--unknown"}, wantErr: "flag provided but not defined"},
@@ -52,6 +53,10 @@ func TestParseOptions(t *testing.T) {
 			case "defaults":
 				if got.transport != "http" || got.listen != "127.0.0.1:8090" || got.fileRoot != "" || got.auditFile != "" {
 					t.Fatalf("unexpected defaults: %+v", got)
+				}
+			case "serve alias":
+				if got.transport != "stdio" {
+					t.Fatalf("serve subcommand was not parsed: %+v", got)
 				}
 			case "all flags":
 				if got.transport != "stdio" || got.listen != "127.0.0.1:8123" ||
@@ -81,7 +86,7 @@ func TestRunWithContextStartupErrors(t *testing.T) {
 		{name: "invalid CLI transport", args: []string{"--transport=bad"}, wantErr: "transport must be"},
 		{name: "missing root", args: []string{"--transport=stdio", "--file-root=" + filepath.Join(dir, "missing"), "--audit-file=off"}, wantErr: "no such file"},
 		{name: "non-loopback address", args: []string{"--file-root=" + dir, "--audit-file=off", "--listen=0.0.0.0:0"}, wantErr: "only literal loopback"},
-		{name: "no token", args: []string{"--file-root=" + dir, "--audit-file=off", "--listen=127.0.0.1:0"}, wantErr: "token"},
+		{name: "missing explicit token", args: []string{"--file-root=" + dir, "--audit-file=off", "--listen=127.0.0.1:0", "--token-file=" + filepath.Join(dir, "missing")}, wantErr: "no such file"},
 	}
 	t.Setenv("TERMINAL_MCP_TOKEN", "")
 	for _, tt := range tests {

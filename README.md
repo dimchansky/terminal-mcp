@@ -7,7 +7,8 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 ## Start here
 
 - [Build and check](#build-and-check) — Build the server and run tests.
-- [Run as a macOS service](#run-as-a-macos-service) — Use a LaunchAgent to keep the server running.
+- [Run as an application](#run-as-an-application) — Start the server directly, without a service manager.
+- [Run as a macOS service](#run-as-a-macos-service) — Optional existing LaunchAgent setup.
 - [Connect through Secure MCP Tunnel](#connect-through-secure-mcp-tunnel) — Connect ChatGPT to the local server.
 - [Use the tools](#use-the-tools) — Start a process and read its output.
 - [Configuration and logs](#configuration-and-logs) — Set the file root and inspect MCP actions.
@@ -17,7 +18,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 
 The server supports macOS and Linux. It needs Go 1.25 or later.
 
-The macOS service controller needs Python 3 and `launchd`. The core Go server does not use Python. The `file_search` tool needs `rg` (ripgrep).
+The optional macOS service controller needs Python 3 and `launchd`. Running the Go server directly does not use Python. The `file_search` tool needs `rg` (ripgrep).
 
 ## What the server does
 
@@ -82,6 +83,33 @@ make vulncheck
 `go mod tidy -diff` reports module-file changes without editing `go.mod` or `go.sum`. Use `go mod tidy` explicitly when you intend to update them.
 
 These targets do not stop or restart the MCP server. A native C toolchain is necessary for the Go race detector.
+
+## Run as an application
+
+After [building](#build-and-check), launch the server directly:
+
+```sh
+./bin/terminal-mcp serve
+```
+
+This runs in the foreground on `http://127.0.0.1:8090/mcp` until interrupted.
+No Python, `launchd`, or service registration is required. The `serve` subcommand
+is optional: `./bin/terminal-mcp` continues to work.
+
+On the first HTTP launch without `--token-file` or `TERMINAL_MCP_TOKEN`, the
+server generates a random bearer token at `~/.config/terminal-mcp/token`.
+The directory and token are private (`0700` and `0600`). Subsequent starts
+reuse the token, so a previously configured tunnel continues to work.
+**Keep the token private:** it grants the connected client local user privileges.
+To configure a tunnel, read the token locally; do not paste it into logs or chat.
+
+The existing `--token-file` flag and `TERMINAL_MCP_TOKEN` take precedence
+and do not create a default token. To avoid port conflicts with an existing
+service, use a different loopback port and audit path, for example
+`./bin/terminal-mcp serve --listen=127.0.0.1:8091 --audit-file=off`.
+Two instances cannot write to the same audit journal.
+For interactive use, Ctrl+C gracefully stops the server and its managed sessions.
+This standalone mode does **not** yet provide background start/stop or self-update.
 
 ## Run as a macOS service
 
@@ -210,12 +238,12 @@ The server writes diagnostic messages to `stderr.log`. Use `make logs-service` t
 
 Use this method when you do not want a LaunchAgent.
 
-First, build the binary and create the local token as shown above. Then run:
+The shortest command is `./bin/terminal-mcp serve` as described in
+[Run as an application](#run-as-an-application). To use an existing token
+explicitly instead:
 
 ```sh
-./bin/terminal-mcp \
-  --listen=127.0.0.1:8090 \
-  --token-file="$HOME/.config/terminal-mcp/token"
+./bin/terminal-mcp serve --token-file="$HOME/.config/terminal-mcp/token"
 ```
 
 The MCP endpoint is `http://127.0.0.1:8090/mcp`.

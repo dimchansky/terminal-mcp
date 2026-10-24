@@ -36,11 +36,14 @@ type options struct {
 }
 
 func parseOptions(args []string) (options, error) {
+	if len(args) > 0 && args[0] == "serve" {
+		args = args[1:]
+	}
 	var opts options
 	flags := flag.NewFlagSet("terminal-mcp", flag.ContinueOnError)
 	flags.StringVar(&opts.transport, "transport", "http", "http (independent process) or stdio (owned by the MCP host)")
 	flags.StringVar(&opts.listen, "listen", "127.0.0.1:8090", "HTTP literal loopback address")
-	flags.StringVar(&opts.tokenFile, "token-file", "", "0600 file holding the HTTP bearer token; otherwise use TERMINAL_MCP_TOKEN")
+	flags.StringVar(&opts.tokenFile, "token-file", "", "HTTP bearer token file (0600); defaults to TERMINAL_MCP_TOKEN or a generated user token")
 	flags.StringVar(&opts.fileRoot, "file-root", "", "Root directory for file tools (overrides configured file_root)")
 	flags.StringVar(&opts.auditFile, "audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
 	if err := flags.Parse(args); err != nil {
@@ -118,7 +121,7 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	if err := httpguard.ValidateAddress(opts.listen); err != nil {
 		return err
 	}
-	token, err := httpguard.LoadToken(opts.tokenFile)
+	token, err := loadHTTPToken(opts.tokenFile)
 	if err != nil {
 		return err
 	}
