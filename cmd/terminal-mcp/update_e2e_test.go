@@ -95,15 +95,28 @@ func newUpdateFixture(t *testing.T, autoToken bool) *updateFixture {
 	}
 	fixture := &updateFixture{t: t, home: home, target: target, candidate: candidate,
 		token: token, address: address, state: filepath.Join(home, "updates"), client: client, autoToken: autoToken}
+	// os.Executable resolves /var/... to /private/var/... on macOS, while
+	// t.TempDir may return the /var spelling. Compare canonical paths: otherwise
+	// successful detached restarts survive the test and leak live servers.
+	physicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		info, err := client.runtime()
-		if err == nil && strings.HasPrefix(info.Executable, home+string(filepath.Separator)) {
-			if client.maintenance(info.ServerID, "begin") == nil {
-				_ = client.maintenance(info.ServerID, "shutdown")
+		if err == nil {
+			if !strings.HasPrefix(info.Executable, physicalHome+string(filepath.Separator)) {
+				t.Errorf("test cleanup found an unexpected executable at %s; refusing to stop it", info.Executable)
 			} else {
-				_ = syscall.Kill(info.PID, syscall.SIGTERM)
+				if client.maintenance(info.ServerID, "begin") == nil {
+					_ = client.maintenance(info.ServerID, "shutdown")
+				} else {
+					_ = syscall.Kill(info.PID, syscall.SIGTERM)
+				}
+				if err := waitForExit(info.PID, 5*time.Second); err != nil {
+					t.Errorf("updater test server survived cleanup: %v", err)
+				}
 			}
-			_ = waitForExit(info.PID, 5*time.Second)
 		}
 		select {
 		case <-exited:
