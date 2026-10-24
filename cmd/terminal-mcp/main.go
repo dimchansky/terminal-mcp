@@ -65,6 +65,12 @@ func parseOptions(args []string) (options, error) {
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "start", "status", "stop":
+			if err := standaloneCommand(os.Args[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, "terminal-mcp:", err)
+				os.Exit(1)
+			}
+			return
 		case "update", "update-status", "_update-worker":
 			if err := updateCommand(os.Args[1:]); err != nil {
 				fmt.Fprintln(os.Stderr, "terminal-mcp:", err)

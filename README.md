@@ -7,8 +7,9 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 ## Start here
 
 - [Build and check](#build-and-check) — Build the server and run tests.
-- [Run as an application](#run-as-an-application) — Start and update the server without a service manager.
-- [Run as a macOS service](#run-as-a-macos-service) — Optional existing LaunchAgent setup.
+- [Run as an application](#run-as-an-application) — Run, start in the background, stop, and update without a service manager.
+- [Migrate from a macOS service](docs/STANDALONE_MIGRATION.md) — Safely move an existing LaunchAgent to standalone mode.
+- [Run as a macOS service](#run-as-a-macos-service) — Legacy LaunchAgent setup, retained for migration.
 - [Connect through Secure MCP Tunnel](#connect-through-secure-mcp-tunnel) — Connect ChatGPT to the local server.
 - [Use the tools](#use-the-tools) — Start a process and read its output.
 - [Configuration and logs](#configuration-and-logs) — Set the file root and inspect MCP actions.
@@ -93,8 +94,27 @@ After [building](#build-and-check), launch the server directly:
 ```
 
 This runs in the foreground on `http://127.0.0.1:8090/mcp` until interrupted.
-No Python, `launchd`, or service registration is required. The `serve` subcommand
-is optional: `./bin/terminal-mcp` continues to work.
+For a background process that survives closing the terminal, run:
+
+```sh
+./bin/terminal-mcp start
+./bin/terminal-mcp status
+./bin/terminal-mcp stop
+```
+
+`start` copies its executable outside the development directory into
+`~/.config/terminal-mcp/standalone/`, starts it in a separate process session,
+and saves its working directory, PATH, token file and file root for subsequent
+starts. This means rebuilding `bin/terminal-mcp` cannot overwrite the running
+binary. Background operation does not provide automatic login/reboot startup
+or crash recovery.
+
+No Python, `launchd`, or service registration is required for standalone
+mode. The `serve` subcommand is optional:
+`./bin/terminal-mcp` continues to work in the foreground.
+
+**If you currently use the macOS LaunchAgent, do not run `start` on its port
+until you follow the [migration procedure](docs/STANDALONE_MIGRATION.md).**
 
 On the first HTTP launch without `--token-file` or `TERMINAL_MCP_TOKEN`, the
 server generates a random bearer token at `~/.config/terminal-mcp/token`.
@@ -161,7 +181,11 @@ so an unexpected crash after a successful update is not automatically restarted.
 
 ## Run as a macOS service
 
-A user LaunchAgent can keep the server running without an open Terminal window. The service controller manages the server, not `tunnel-client`.
+This is the legacy Python/launchd setup, retained for existing installations.
+New installations can use [standalone background start](#run-as-an-application).
+To migrate an existing LaunchAgent without changing the local bearer token
+or file access, follow the [migration guide](docs/STANDALONE_MIGRATION.md).
+The service controller manages the server, not `tunnel-client`.
 
 ### 1. Create the local token
 

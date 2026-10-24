@@ -1,6 +1,6 @@
 # Development and Service Procedures
 
-This guide describes file tools, terminal workflows, and macOS service operations. Read [README.md](../README.md) for setup and tunnel connection steps. Read [SPEC.md](../SPEC.md) for behavior guarantees.
+This guide describes file tools, terminal workflows, and legacy macOS service operations. For standalone background start and safe migration off launchd, read [Standalone Migration](STANDALONE_MIGRATION.md). Read [README.md](../README.md) for setup and tunnel connection steps. Read [SPEC.md](../SPEC.md) for behavior guarantees.
 
 Use the names of MCP fields exactly as the tool schemas define them.
 
