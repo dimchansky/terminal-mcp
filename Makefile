@@ -1,15 +1,22 @@
 .DEFAULT_GOAL := help
 
-PYTHON ?= python3
 GO ?= go
 GOFMT ?= gofmt
 GOLANGCI_LINT ?= golangci-lint
 GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
-.PHONY: help build check check-core audit-feedback fmt-check test-go test-service lint vulncheck install uninstall update status start stop logs logs-service
+STANDALONE ?= $(HOME)/.config/terminal-mcp/standalone/terminal-mcp
+
+ifeq ($(shell uname -s),Darwin)
+AUDIT_LOG ?= $(HOME)/Library/Application Support/LocalTerminalMCP/audit.jsonl
+else
+AUDIT_LOG ?= $(if $(XDG_STATE_HOME),$(XDG_STATE_HOME),$(HOME)/.local/state)/terminal-mcp/audit.jsonl
+endif
+
+.PHONY: help build check check-core audit-feedback fmt-check test-go lint vulncheck start stop status update update-status logs logs-service
 
 help:
-	@printf '%s\n' 'make build        Build the Go binary (does not restart the service)' 'make check        Run all checks and build' 'make check-core  Repeat core Go race tests three times' 'make audit-feedback Verify MCP responses against the JSONL audit' 'make lint        Run configured Go linters (requires golangci-lint v2)' 'make vulncheck   Scan known reachable Go vulnerabilities' 'make install      Register/start LaunchAgent (idempotent)' 'make uninstall    Unregister/stop LaunchAgent; preserve state and logs' 'make update       Verify, build, and safely update the running service' 'make status       Show service and update status' 'make start        Resume a registered, stopped service' 'make stop         Stop service without automatic restart' 'make logs        Follow detailed MCP tool audit events' 'make logs-service Tail service diagnostics'
+	@printf '%s\n' 'make build         Build the Go binary (does not restart the server)' 'make check         Run all checks and build' 'make check-core    Repeat core Go race tests three times' 'make audit-feedback Verify MCP responses against JSONL audit' 'make lint          Run configured Go linters (requires golangci-lint v2)' 'make vulncheck     Scan known reachable Go vulnerabilities' 'make start         Build and start the standalone server in the background' 'make stop          Stop the standalone server when idle' 'make status        Query the standalone server' 'make update        Test, build a separate candidate, and queue self-update' 'make update-status Show latest self-update result' 'make logs          Follow the MCP audit journal' 'make logs-service  Follow the initial standalone server log (updates have separate logs)'
 
 build:
 	@mkdir -p bin
@@ -24,9 +31,6 @@ test-go:
 	$(GO) mod tidy -diff
 	$(GO) test -race -count=1 -timeout=120s ./...
 	$(GO) vet ./...
-
-test-service:
-	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py'
 
 lint:
 	$(GOLANGCI_LINT) config verify
@@ -45,29 +49,26 @@ check-core:
 check:
 	+@$(MAKE) fmt-check
 	+@$(MAKE) test-go
-	+@$(MAKE) test-service
 	+@$(MAKE) build
 
-install:
-	$(PYTHON) scripts/service.py install
-
-uninstall:
-	$(PYTHON) scripts/service.py uninstall
-
-update:
-	$(PYTHON) scripts/service.py update
-
-status:
-	$(PYTHON) scripts/service.py status
-
-start:
-	$(PYTHON) scripts/service.py start
+start: build
+	./bin/terminal-mcp start
 
 stop:
-	$(PYTHON) scripts/service.py stop
+	"$(STANDALONE)" stop
+
+status:
+	"$(STANDALONE)" status
+
+update: check
+	$(GO) build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
+	"$(STANDALONE)" update --candidate="$(CURDIR)/bin/terminal-mcp.next"
+
+update-status:
+	"$(STANDALONE)" update-status
 
 logs:
-	@tail -n 100 -F "$$HOME/Library/Application Support/LocalTerminalMCP/audit.jsonl"
+	@tail -n 100 -F "$(AUDIT_LOG)"
 
 logs-service:
-	@tail -n 100 -F "$$HOME/Library/Application Support/LocalTerminalMCP/stderr.log"
+	@tail -n 100 -F "$(HOME)/.config/terminal-mcp/standalone/server.log"

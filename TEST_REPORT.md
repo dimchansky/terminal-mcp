@@ -23,7 +23,6 @@ This command runs the following checks in order:
 | --- | --- |
 | `fmt-check` | Check Go formatting. |
 | `test-go` | Verify modules and `go mod tidy -diff`. Run all Go tests with `-race`. Run `go vet`. |
-| `test-service` | Run Python tests for the macOS service controller. |
 | `build` | Build `bin/terminal-mcp`. |
 
 For repeated core checks, run:
@@ -34,23 +33,23 @@ make check-core
 
 This target runs selected Go race tests three times. It also runs `go vet` on the selected packages.
 
-`make lint` runs the configured Go linters. `make vulncheck` runs pinned `govulncheck v1.9.0`. These are separate from `make check` so the managed updater does not need extra tools.
+`make lint` runs the configured Go linters. `make vulncheck` runs pinned
+`govulncheck v1.9.0`. These are separate from `make check` so the standalone
+updater does not require extra tools.
 
 The Makefile is the standard entry point for builds and tests. The previous `scripts/check.sh` and `scripts/check-core.sh` files were removed.
 
-Python is necessary for the current macOS service controller and its tests. The Go server has no Python runtime dependency.
+The macOS Python/launchd controller was retired after successful migration
+to standalone mode. `make check` now has no Python dependency. The old
+controller and its tests remain available in Git history for reference.
 
 ## 2. Verified source and CI checks
 
 On 2026-10-23, the full `make check` command passed on a local macOS machine.
 
-The local check included:
-
-- Go module verification.
-- All Go tests with the race detector.
-- `go vet`.
-- 22 Python controller tests.
-- A successful Go build.
+At that time the local check included Go module verification, race-enabled
+Go tests, `go vet`, 22 historical Python controller tests, and a Go build.
+The Python tests were removed after the transition to standalone.
 
 The same machine also passed `make check-core`. It ran the selected race tests three times.
 
@@ -101,12 +100,12 @@ linters are blocking checks.
 
 GitHub Actions runs `make check` on macOS and Ubuntu. A separate Ubuntu quality job checks linting and reachable vulnerabilities.
 
-The latest verified CI run for the standalone migration work was:
+The last verified CI run before retiring the legacy Python controller was:
 
 | Item | Result |
 | --- | --- |
-| Commit | `057cb55` |
-| Workflow run | [40087861818](https://github.com/dimchansky/terminal-mcp/actions/runs/40087861818) |
+| Commit | `84fef9a` |
+| Workflow run | [40088262291](https://github.com/dimchansky/terminal-mcp/actions/runs/40088262291) |
 | macOS job | PASS |
 | Ubuntu job | PASS |
 
@@ -125,9 +124,9 @@ Real tool calls on the local macOS server confirmed these behaviors:
 - The audit recorded terminal command arguments and session input.
 - The audit recorded file paths without saving file content.
 
-A managed `make update` also succeeded from an MCP terminal session.
-
-The controller reported `status: "applied"` and a healthy new server ID. This test confirms a supervised restart, not zero-downtime migration.
+Historically, a supervised `make update` succeeded from an MCP terminal
+session through the Python controller. That result applies to the retired
+implementation, not the current Go updater.
 
 The unit tests cover additional results, including mutation retries, cancellation, terminal I/O, version checks, audit rotation, and update rollback.
 
@@ -153,7 +152,10 @@ A non-disruptive canary test was subsequently run on the installed macOS
 machine using port 18090. It verified all 12 MCP tools, successfully called
 `file_list` at root `/`, and stopped cleanly. The pre-existing server on
 8090 remained healthy, and `tunnel-client` on 8091 continued responding
-to its health endpoint. **No migration of the primary server has yet occurred.**
+to its health endpoint. Subsequently, on 2026-10-24 the operator migrated
+the live server to standalone on port 8090. The new standalone process was
+verified healthy with `file_root: "/"`, while the LaunchAgent registration
+and plist were absent.
 
 ## 4. Limits of this evidence
 
@@ -169,7 +171,8 @@ The tests do not prove these behaviors:
 
 A successful local MCP call does not prove that every remote client can use the service.
 
-A passing CI run also does not prove that the LaunchAgent can start on every macOS configuration.
+A passing CI run does not prove that standalone background execution will
+survive every logout or machine configuration.
 
 ## 5. Historical report
 
@@ -184,9 +187,9 @@ The source, tests, and CI setup changed after that delivery. Use the current Mak
 1. Run `make check`.
 2. Confirm that the Git worktree contains only the intended changes.
 3. Check the macOS and Ubuntu CI results.
-4. For the legacy LaunchAgent, use `make update`; for standalone mode, build a separate candidate and use `terminal-mcp update` (see the [migration guide](docs/STANDALONE_MIGRATION.md)).
-5. Check `make status` for the legacy service or `terminal-mcp update-status` and `terminal-mcp status` for standalone mode.
+4. Use `make update` to check and queue a separate candidate for standalone.
+5. Check `make update-status` and `make status` for the final result and running instance.
 6. Check `refresh_tools_required`. Refresh the ChatGPT tools when it is true.
-7. Review `make logs` and `make logs-service` if a test or update fails.
+7. Inspect the startup and update-job logs if an update fails.
 
 For design limits, read [SPEC.md](SPEC.md). For operating procedures, read [DEVELOPMENT.md](docs/DEVELOPMENT.md).

@@ -65,11 +65,12 @@ stdin, stdout, stderr      input, screen, raw events
               v
         Output journal
 
-Independent macOS controller:
-Makefile -> scripts/service.py -> launchd worker
-                                   |
-                                   v
-                           release and restart
+Standalone background control:
+terminal-mcp start -> independent server
+terminal-mcp update -> detached worker
+                            |
+                            v
+                     verify and restart
 ```
 
 The session manager stores sessions and mutation receipts in memory. The audit logger stores tool-call events on disk.
@@ -80,7 +81,11 @@ The `terminal` package uses `creack/pty` and `vt10x`. The MCP Go SDK handles mes
 
 HTTP is the default mode. The server listens on `127.0.0.1:8090` unless an operator changes the launch arguments.
 
-The MCP endpoint is `/mcp`. The service also provides an authenticated `/admin/maintenance` endpoint.
+The MCP endpoint is `/mcp`. All HTTP modes expose an authenticated
+`/admin/maintenance` endpoint. An explicitly launched standalone `serve`
+instance additionally exposes authenticated `GET /admin/runtime` and a
+fenced maintenance shutdown action to support self-update. These update
+features are unavailable in other transport modes.
 
 The HTTP transport is stateless at the protocol level. The process manager keeps sessions between requests.
 
@@ -456,39 +461,52 @@ The audit is not tamper-proof. A crash can lose queued or recently written event
 
 In stdio mode, auditing is off by default. A direct `--audit-file` argument can set a path or disable auditing with `off`.
 
-## 12. macOS service and updates
+## 12. Standalone background operation and self-update
 
-The macOS controller is `scripts/service.py`. It uses Python 3, `launchctl`, and a user LaunchAgent.
+`terminal-mcp serve` runs a foreground HTTP server. `terminal-mcp start`
+copies the binary to a stable private user path and runs it detached from the
+terminal, without an OS service manager. `status` and `stop` use
+authenticated local HTTP requests. A manual stop must not interrupt active
+managed processes or pending mutations. Background mode does not automatically
+start at login or restart after an unexpected crash.
 
-Makefile targets provide the normal interface. For example, `make install`, `make update`, and `make status` call the controller.
+Standalone settings live at
+`~/.config/terminal-mcp/standalone/config.json`. The controller retains the
+token file, file root, working directory and PATH across starts, and avoids
+overwriting a running installed binary. It rejects a duplicate start or a
+listener that it cannot identify and verify. Existing macOS users can import
+the previous LaunchAgent settings once, without needing Python at runtime.
 
-The controller uses `make check` for checks and builds. It does not need separate shell check scripts.
+### Independent self-update
 
-### Managed update
+`terminal-mcp update --candidate=<path>` queues a short-lived detached
+worker built from a private copy of the same executable. `update-status`
+reads the saved status. The worker:
 
-The controller:
+1. Verifies that the running server and original executable have not changed,
+   and saves a checksum-verified rollback binary.
+2. Copies and preflights a separately built candidate on a temporary loopback
+   port, exercising real MCP calls, a process launch, and file access.
+3. Waits for managed processes to finish and acquires an authenticated
+   maintenance fence. New mutations are refused while it is held.
+4. Requests shutdown of the exact current server instance and waits for
+   the old process to exit. It does not kill an arbitrary numeric PID.
+5. Atomically installs the candidate and checks the new instance, executable
+   checksum and tool metadata on the original port.
+6. On a failed activation or readiness check, attempts to restore and start
+   the previously saved binary.
 
-1. Runs `make check`.
-2. Stores the candidate as an immutable release.
-3. Tests the candidate on a separate local port.
-4. Starts an independent launchd update job.
-5. Waits for active managed processes to finish.
-6. Acquires an authenticated maintenance fence.
-7. Selects the candidate and restarts the LaunchAgent.
-8. Checks the new server ID and tool metadata.
-9. Reports success or attempts rollback.
+The update briefly disconnects MCP clients and loses in-memory process
+sessions and mutation receipts. The fence has a generation-scoped
+60-second expiration to avoid indefinite read-only operation after an updater
+failure. The recorded outcome is `applied`, `failed` or `rolled_back`;
+`queued` alone is not confirmation of success.
 
-The update can interrupt the MCP connection briefly. It does not move live PTYs or in-memory receipts to the new server.
-
-A busy update must not stop an active job. The maintenance fence has a generation-based expiration time of 60 seconds.
-
-If the new process fails its readiness check, the controller tries to restore the previous release.
-
-A manual stop marker takes priority over an update or rollback. `make uninstall` removes LaunchAgent registration but keeps stored state.
-
-The controller compares tool metadata and server instructions before and after the update. It reports `refresh_tools_required` when they change.
-
-The one-time adoption procedure for a manually started server has separate checks. It requires a saved, known-working binary and an idle period.
+An interrupted shutdown acknowledgment or a crashed worker may require
+manual recovery. Completed worker records, logs, and binaries remain in
+the private update directory. If tool metadata changes, the job reports
+`refresh_tools_required`. The update worker is not a continuously running
+supervisor and does not provide automatic crash recovery.
 
 ## 13. Failure and recovery limits
 
@@ -506,7 +524,7 @@ The response time budget of a hosted MCP client is not a child-process lifetime 
 
 Run `make check` on a supported system. Use `make check-core` for repeated checks of selected core packages.
 
-GitHub Actions runs `make check` on macOS and Ubuntu and also runs static analysis and `govulncheck` in an Ubuntu quality job. The lint and vulnerability tools are separate from the managed server update path. `make check` verifies that `go mod tidy` would not change module files.
+GitHub Actions runs `make check` on macOS and Ubuntu and also runs static analysis and `govulncheck` in an Ubuntu quality job. The lint and vulnerability tools are separate from the default `make check` target. `make check` verifies that `go mod tidy` would not change module files.
 
 The [validation report](TEST_REPORT.md) separates executed checks from untested scenarios.
 

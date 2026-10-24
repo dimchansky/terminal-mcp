@@ -1,126 +1,93 @@
-# Move from the macOS LaunchAgent to standalone
+# Migrate an older macOS LaunchAgent to standalone
 
-The new standalone mode does not register an OS service. It runs in the
-background until stopped, the user logs out, or the OS terminates the process.
-The Go updater can subsequently restart it independently. No Python or
-`launchd` is required **after** migration. This procedure leaves the old
-installation available for rollback.
+This is a one-time procedure for installations created with the **old**
+Python/launchd controller (through commit `84fef9a`). The current project no
+longer ships or requires that controller. Users already running
+`terminal-mcp start` can skip this guide.
 
-**The cutover commands must run in an ordinary macOS Terminal, not in an MCP
-terminal session served by the instance being removed.** Otherwise that session
-will disappear midway through the procedure.
+Run the cutover from an **ordinary macOS Terminal**, not from an MCP session
+owned by the server being stopped. The MCP connection will be interrupted.
 
-## 1. Prepare and test while launchd is still running
+## 1. Test a standalone instance beside the old service
 
-From the project checkout:
+From the repository root, while the old LaunchAgent still runs:
 
 ```sh
 make check
 ./bin/terminal-mcp start --listen=127.0.0.1:18090 --audit-file=off
 ./bin/terminal-mcp status
-```
-
-The standalone controller creates a stable executable at
-`~/.config/terminal-mcp/standalone/terminal-mcp`. It does not execute directly
-from the development `bin/` directory, which `make check` overwrites.
-
-On macOS, the first start reads the existing LaunchAgent configuration and
-preserves its working directory, file root, token-file path and PATH.
-It stores these settings independently in
-`~/.config/terminal-mcp/standalone/config.json`. The `--listen` and
-`--audit-file` flags above deliberately create a canary on port 18090 without
-contending for the old server's port or audit journal.
-
-Verify that `status` reports `running` and the expected file root. The
-existing ChatGPT connection remains attached to the old service on port 8090.
-Do not reconfigure your tunnel for this canary.
-
-Stop only the canary, and verify the old service still responds:
-
-```sh
 ./bin/terminal-mcp stop
-make status
 ```
 
-Port 8091 is reserved for `tunnel-client`'s local health endpoint in the
-documented tunnel setup; do not use it for the canary. Port 18090 was free in
-the tested macOS installation, but always choose another unused loopback port
-if it is occupied. When these
-checks pass, proceed to the cutover from an **ordinary Terminal window**.
+The standalone controller reads the existing macOS configuration if no
+standalone configuration exists, preserving its working directory, PATH,
+token file and file root. It saves an independent copy at
+`~/.config/terminal-mcp/standalone/config.json`.
 
-## 2. Switch on the original port
+Use any unused loopback port for the canary. Port 8091 is reserved for the
+`tunnel-client` health listener in the documented tunnel setup. The
+`--audit-file=off` flag prevents the test process from competing for the
+old server's audit journal.
 
-Use the same checkout and already-tested binary:
+## 2. Remove the old registration and start standalone
+
+The last commit containing the old Python controller is `84fef9a`. If you
+still have that checkout, `make uninstall` there unregisters the
+LaunchAgent. Otherwise, from the current Git repository, retrieve **only
+the exact historical version of the controller** for this one-time cleanup:
 
 ```sh
-make uninstall
+git show 84fef9a:scripts/service.py | python3 - uninstall
+```
+
+Confirm that the old registration is gone before starting on port 8090.
+If the first uninstall reports that the launchd job is still loaded, inspect
+the actual service state and retry only when it is still the expected old
+registration; do not forcibly kill an unrelated listener.
+
+```sh
 ./bin/terminal-mcp start --listen=127.0.0.1:8090 --audit-file=default
 ./bin/terminal-mcp status
 ```
 
-`make uninstall` unregisters the old LaunchAgent and stops its process.
-The connection from ChatGPT will briefly disappear. The Python controller
-preserves the legacy configuration, token file, logs and binary releases.
+The standalone executable is installed outside the repository at
+`~/.config/terminal-mcp/standalone/terminal-mcp`. The canary's temporary
+audit-disable flag is cleared, and the existing private bearer token,
+working directory, PATH, and file root are retained. The tunnel continues
+to use port 8090; refresh the MCP connection after the new process starts.
 
-`--audit-file=default` clears the canary's temporary `off` setting. The
-standalone server resumes the normal private audit journal. Both instances
-use the same local bearer token and port, so the existing tunnel configuration
-does not need to change.
+## 3. Recovery
 
-Confirm that `status` reports `running`, the desired file root, and a new
-`server_id`. Reconnect or refresh ChatGPT's MCP tools if necessary.
-
-After cutover, use the **binary** to control standalone mode:
+If the standalone instance fails, inspect
+`~/.config/terminal-mcp/standalone/server.log` and confirm port 8090 is
+free. Stop an identifiable standalone instance, then use the preserved
+historical controller to restore the previous LaunchAgent from its retained
+local configuration and binary releases:
 
 ```sh
-./bin/terminal-mcp status
 ./bin/terminal-mcp stop
-./bin/terminal-mcp start
+git show 84fef9a:scripts/service.py | python3 - install
 ```
 
-`make start`, `make stop`, `make update` and `make status` still refer to the
-*legacy Python/launchd controller* until that code is removed in a separate
-cleanup. Do not use them to manage a standalone instance.
+**Do not run the historical controller against an unknown or unrelated
+listener.** An installed legacy configuration and its saved binary releases
+are required for this fallback. The current Go project does not remove
+those user files automatically.
 
-## 3. Roll back if the new installation fails
-
-From the same ordinary Terminal window, first ensure the standalone process
-is stopped, then register the preserved LaunchAgent again:
+## 4. Normal operation after migration
 
 ```sh
-./bin/terminal-mcp stop
-make install
 make status
+make stop
+make start
+make update
+make update-status
 ```
 
-`stop` is safe to repeat. If the new process is not responding, inspect
-`~/.config/terminal-mcp/standalone/server.log` and ensure port 8090 is free
-before `make install`. Do not try to run two servers on the same port.
+These targets now operate on standalone, not launchd. `make update`
+checks the Go source, builds a separate candidate and queues a detached
+updater. `make update-status` is required to establish whether the update
+was applied, failed, or rolled back.
 
-Do not delete the Python controller, legacy binary releases or launchd
-configuration until standalone operation has been verified.
-
-## 4. Updating standalone after the cutover
-
-The installed executable is separate from the build output:
-
-```sh
-go test -race ./...
-go vet ./...
-go build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
-"$HOME/.config/terminal-mcp/standalone/terminal-mcp" update --candidate=bin/terminal-mcp.next
-"$HOME/.config/terminal-mcp/standalone/terminal-mcp" update-status
-```
-
-The updater runs a detached copy of itself, waits for the managed sessions to
-finish, restarts the standalone instance, and attempts rollback if the new
-version fails its readiness check. A queued update is not yet a successful one.
-
-After a successful update, the new process logs to the corresponding
-`~/.config/terminal-mcp/updates/<job-id>/server.log`, while the initial
-background start logs to
-`~/.config/terminal-mcp/standalone/server.log`.
-
-A standalone background process is *not* a system service: it will not
-automatically start after login or reboot and does not automatically recover
-from an unrelated crash. This is intentional for now.
+The standalone process is not an OS service: it is not guaranteed to start
+after login/reboot or recover from an unexpected crash.

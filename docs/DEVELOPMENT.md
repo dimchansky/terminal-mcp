@@ -1,6 +1,9 @@
-# Development and Service Procedures
+# Development and Standalone Operation
 
-This guide describes file tools, terminal workflows, and legacy macOS service operations. For standalone background start and safe migration off launchd, read [Standalone Migration](STANDALONE_MIGRATION.md). Read [README.md](../README.md) for setup and tunnel connection steps. Read [SPEC.md](../SPEC.md) for behavior guarantees.
+This guide describes file tools, terminal workflows, and standalone management.
+Read [README.md](../README.md) for setup and tunnel connection steps, and
+[SPEC.md](../SPEC.md) for behavior guarantees. Older LaunchAgent users can
+consult the [legacy migration guide](STANDALONE_MIGRATION.md).
 
 Use the names of MCP fields exactly as the tool schemas define them.
 
@@ -12,12 +15,9 @@ From the repository root, run:
 make check
 ```
 
-The target runs these steps in order:
-
-1. `make fmt-check` checks Go formatting.
-2. `make test-go` verifies modules and `go mod tidy -diff`, then runs race tests and `go vet`.
-3. `make test-service` runs the Python service-controller tests.
-4. `make build` creates `bin/terminal-mcp`.
+The target checks formatting, verifies modules and `go mod tidy -diff`,
+runs Go tests under the race detector, executes `go vet`, then builds
+`bin/terminal-mcp`. It does not restart the running installed binary.
 
 To repeat the core race tests three times, run:
 
@@ -31,20 +31,16 @@ These targets do not restart the service. GitHub Actions uses `make check` on ma
 
 Run `make lint` for the focused checks in `.golangci.yml` (`errcheck`, `bodyclose`, `govet`, `ineffassign`, `staticcheck`, and `unused`). Install `golangci-lint` v2.15.0 to use this target. Run `make vulncheck` to scan reachable vulnerabilities with a pinned `govulncheck` v1.9.0 via `go run`.
 
-Keep these targets separate from `make check`: the service controller must be able to verify and install its own binary without requiring optional development tools or downloading a security scanner.
+Keep these optional tools separate from `make check` so normal builds
+do not require a vulnerability scanner or extra tooling. No Python is needed
+to build or operate the server.
 
-The Go server does not need Python at runtime. The macOS service controller uses Python 3 and standard-library modules.
-
-The independent standalone updater is built into the same Go executable:
-`terminal-mcp update --candidate=<separately built executable>` and
-`terminal-mcp update-status`. See [README.md](../README.md#update-a-running-standalone-server)
-for instructions. It deliberately cannot restart the current launchd LaunchAgent.
-Its temporary worker lives in a private update directory, detaches from the MCP
-process group, records status, preflights the candidate before downtime, and
-preserves a binary backup for rollback. Do not use `make check` when it would
-overwrite the *running* standalone executable: run the checks that don't write
-it and build a candidate at another path, or run the installed binary from a
-different directory than the development output.
+The standalone updater is built into the Go executable:
+`make update` checks and builds a separate candidate, then queues a detached
+worker. Follow with `make update-status`; a queued update is not a successful
+update. See [README.md](../README.md#update-a-running-standalone-server).
+Never build directly over the installed running executable: the updater needs
+its unchanged original bytes for reliable rollback.
 
 ## 2. Terminal workflow
 
@@ -258,134 +254,59 @@ Use the same `operation_id` for an identical retry. Do not ignore a version conf
 
 File writes are atomic for one file only. There is no multi-file transaction.
 
-## 4. macOS service configuration
+## 4. Standalone startup and update
 
-The user LaunchAgent runs independently of the Terminal window. It manages `terminal-mcp` only.
+`terminal-mcp serve` runs a foreground process. `make start` builds the CLI
+and launches a detached standalone server with the current user's permissions.
+`make stop` and `make status` contact the installed process over the
+authenticated loopback endpoint.
 
-The controller is `scripts/service.py`. Use Makefile targets for normal operations.
+A new installation stores its configuration in
+`~/.config/terminal-mcp/standalone/config.json`. The settings include:
+`listen` (loopback address), `token_file` (private bearer token),
+`file_root` (root for file tools), `working_directory`, `path` (PATH for
+child processes), and optionally `audit_file`. If no token exists, a random
+private token is created at `~/.config/terminal-mcp/token`.
 
-### State and settings
-
-The configuration file is:
-
-```text
-~/Library/Application Support/LocalTerminalMCP/config.json
-```
-
-| Key | Purpose |
-| --- | --- |
-| `project` | Working directory for the managed process. |
-| `listen` | Local HTTP address. |
-| `token_file` | Path to the bearer token file. |
-| `path` | Executable search path for the service. |
-| `file_root` | Root for the file tools. |
-
-The new-installation value of `file_root` is `/`.
-
-To change this value, edit `config.json` and set an absolute path. Then run `make update`.
-
-The updater tests the candidate and its file root before it changes the active binary. A path error stops the update.
-
-Do not edit the generated LaunchAgent plist. The controller does not provide general live reconfiguration for `project`, `listen`, or `token_file`.
-
-The state directory is private. The controller does not include the bearer-token value in launch arguments or the plist.
-
-### Install the service
-
-Create the bearer token as shown in [README.md](../README.md#run-as-a-macos-service).
-
-Then run:
+The background binary is installed at
+`~/.config/terminal-mcp/standalone/terminal-mcp`. Builds in the repository
+do not overwrite it. The controller refuses concurrent starts or taking over
+another listener. The process can exit after user logout or OS termination;
+this is not a system service and no automatic restart is promised.
 
 ```sh
-make install
+make check
+make start
 make status
 ```
 
-A new installation runs `make check`, stores the tested binary, and registers the LaunchAgent.
+To change settings, stop the server from an independent terminal, then start
+with explicit flags; this does not require editing generated OS service files.
 
-If the agent already runs, `make install` makes no changes. If it has a manual stop marker, use `make start`.
-
-### One-time adoption of a manual server
-
-Use this procedure only when an older server already listens on port 8090.
-
-1. Save the known-working binary before you rebuild it.
-2. Find the listener PID.
-3. Finish active managed jobs.
-4. Run the adoption command.
-
-```sh
-test -e bin/terminal-mcp.previous || cp -p bin/terminal-mcp bin/terminal-mcp.previous
-lsof -nP -iTCP:8090 -sTCP:LISTEN
-python3 scripts/service.py install \
-  --adopt-pid <LISTENER_PID> \
-  --previous-binary bin/terminal-mcp.previous
-```
-
-Replace `<LISTENER_PID>` with the PID from the previous command.
-
-The controller tests the saved binary on a separate port. Its tool metadata must match the running server.
-
-The first adoption of a legacy server might not have a maintenance fence. Use an idle period for this step.
-
-### Update the server from its own MCP connection
-
-Run this command from the repository root:
+### Update from the repository or the MCP connection
 
 ```sh
 make update
-```
-
-The command checks the code and submits an independent launchd update job. It returns a job ID and status-file path.
-
-**A queued job is not a successful update.** Check the result:
-
-```sh
+make update-status
 make status
 ```
 
-The update is complete when the status is `applied` and the MCP endpoint is healthy.
+The Go updater preserves the original binary, tests a candidate on another
+loopback port, waits until managed commands are idle, acquires the existing
+maintenance fence and restarts a new standalone instance. A failed readiness
+check triggers a rollback attempt. The connection interruption loses live
+session state but not the preserved token or on-disk audit.
 
-The update worker:
+The updater can also be invoked directly using the installed executable and
+`update --candidate=<separately built binary>`. It is safe for an MCP tool
+to queue that command because the worker runs as a detached process outside
+the MCP session's process group. Never overwrite the installed executable
+with `go build` or `make build` before preserving its rollback image.
 
-1. Waits for active managed jobs to finish.
-2. Acquires a maintenance fence. This blocks new mutations.
-3. Selects the tested binary and restarts the LaunchAgent.
-4. Checks the new server ID and expected tool metadata.
-5. Reports success or attempts rollback.
-
-The maintenance fence expires after 60 seconds if the update process fails before restart.
-
-If an active session prevents the update, the controller reports failure without stopping that session.
-
-The update causes a short connection interruption. It does not move live PTYs, output journals, or mutation receipts to the new process.
-
-Get the new `server_id` after restart. Never repeat an old mutation with the new ID without first checking its outcome.
-
-The controller sets `refresh_tools_required` when tool schemas, descriptions, annotations, or server instructions change.
-
-If that value is true, select **Refresh tools** in ChatGPT after the successful update.
-
-### Stop or remove registration
-
-Use:
-
-```sh
-make stop
-make start
-make uninstall
-make install
-```
-
-`make stop` records a manual stop and unloads the service. Launchd does not override this stop.
-
-`make start` resumes a registered service.
-
-`make uninstall` stops the server and removes its LaunchAgent registration. It keeps the configuration, bearer token, releases, logs, and update records.
-
-Do not run `make uninstall` from a terminal session on the server you want to remove.
-
-`make uninstall` refuses a pending update. If launchd cannot unload the job, the controller keeps its plist for recovery.
+If an update fails, inspect `make update-status` and the worker logs in the
+private update directory. A lost shutdown acknowledgment or a crashed worker
+may require manual intervention. Do not delete a pending update marker
+without first checking whether its worker is still running.
 
 ## 5. Audit and diagnostics
 
@@ -418,33 +339,34 @@ The audit does not save stdout or stderr. It can still contain secrets if a mode
 
 The audit is not a tamper-proof record. It does not identify individual callers that use one shared bearer token.
 
-The controller disables auditing for temporary preflight instances. This keeps test calls out of the service audit.
+The updater disables auditing for temporary preflight instances so
+the candidate's probe calls do not pollute the real audit journal.
 
-## 6. Files used by launchd
-
-The main paths are:
+## 6. Standalone files
 
 | Path | Purpose |
 | --- | --- |
-| `~/Library/LaunchAgents/com.dimchansky.terminal-mcp.plist` | LaunchAgent registration. |
-| `~/Library/Application Support/LocalTerminalMCP/config.json` | Saved service configuration. |
-| `~/Library/Application Support/LocalTerminalMCP/current` | Link to the selected binary release. |
-| `~/Library/Application Support/LocalTerminalMCP/releases/` | Immutable release directories. |
-| `~/Library/Application Support/LocalTerminalMCP/audit.jsonl` | MCP tool audit. |
-| `~/Library/Application Support/LocalTerminalMCP/stderr.log` | Server diagnostics. |
-| `~/Library/Application Support/LocalTerminalMCP/jobs/<id>/status.json` | Update result. |
-| `~/Library/Application Support/LocalTerminalMCP/jobs/<id>/worker.log` | Update-worker diagnostics. |
+| `~/.config/terminal-mcp/token` | Private default bearer token. |
+| `~/.config/terminal-mcp/standalone/config.json` | Saved standalone launch configuration. |
+| `~/.config/terminal-mcp/standalone/terminal-mcp` | Installed executable, independent of development builds. |
+| `~/.config/terminal-mcp/standalone/server.log` | Diagnostic log from the first background start. |
+| `~/.config/terminal-mcp/updates/<job-id>/` | Independent update worker, manifest, backups, status and logs. |
 
-The controller retains completed job records and releases. It does not automatically remove old records.
+The macOS default audit journal remains
+`~/Library/Application Support/LocalTerminalMCP/audit.jsonl` for
+compatibility. On Linux, the default is
+`$XDG_STATE_HOME/terminal-mcp/audit.jsonl` (or
+`~/.local/state/terminal-mcp/audit.jsonl` if unset).
 
-If an update worker stops unexpectedly, inspect the status and pending marker. Do not delete `pending` while a worker can still run.
-
-A user LaunchAgent operates in the logged-in GUI domain. It is not a system boot daemon.
+Completed update records and releases are retained; there is currently
+no automatic pruning. The legacy macOS controller is no longer part of the
+source tree and no longer required to run the server.
 
 ## 7. Validation
 
-Run `make check` before a change. Run `make update` to test and install that change.
+Run `make check` before a change, `make update` to queue a verified
+candidate, and `make update-status` plus `make status` to confirm the
+result. After changing tool schemas or descriptions, refresh ChatGPT's MCP
+tools when `refresh_tools_required` is true.
 
-Check `make status` after an update. Inspect `make logs-service` if the server does not become healthy.
-
-Use [TEST_REPORT.md](../TEST_REPORT.md) for the verification evidence and remaining limits.
+Use [TEST_REPORT.md](../TEST_REPORT.md) for verified checks and their limits.

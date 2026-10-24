@@ -8,8 +8,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 
 - [Build and check](#build-and-check) — Build the server and run tests.
 - [Run as an application](#run-as-an-application) — Run, start in the background, stop, and update without a service manager.
-- [Migrate from a macOS service](docs/STANDALONE_MIGRATION.md) — Safely move an existing LaunchAgent to standalone mode.
-- [Run as a macOS service](#run-as-a-macos-service) — Legacy LaunchAgent setup, retained for migration.
+- [Migrate a legacy macOS LaunchAgent](docs/STANDALONE_MIGRATION.md) — One-time migration for older installations.
 - [Connect through Secure MCP Tunnel](#connect-through-secure-mcp-tunnel) — Connect ChatGPT to the local server.
 - [Use the tools](#use-the-tools) — Start a process and read its output.
 - [Configuration and logs](#configuration-and-logs) — Set the file root and inspect MCP actions.
@@ -19,7 +18,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 
 The server supports macOS and Linux. It needs Go 1.25 or later.
 
-The optional macOS service controller needs Python 3 and `launchd`. Running the Go server directly does not use Python. The `file_search` tool needs `rg` (ripgrep).
+Running the server and updater requires no Python or OS service manager. The `file_search` tool needs `rg` (ripgrep).
 
 ## What the server does
 
@@ -57,19 +56,13 @@ From the repository root, run:
 make check
 ```
 
-`make check` runs four targets in this order:
-
-1. `fmt-check` checks Go source formatting.
-2. `test-go` verifies modules, checks `go mod tidy -diff`, runs Go race tests, and runs `go vet`.
-3. `test-service` runs Python tests for the macOS service controller.
-4. `build` creates `bin/terminal-mcp`.
+`make check` checks Go source formatting, verifies modules and `go mod tidy -diff`, runs race-enabled Go tests and `go vet`, and builds `bin/terminal-mcp`.
 
 Use one target when you do not need a full check:
 
 ```sh
 make fmt-check
 make test-go
-make test-service
 make build
 make check-core
 make audit-feedback
@@ -79,7 +72,7 @@ make vulncheck
 
 `make check-core` repeats selected Go race tests three times. It also runs `go vet` on those packages. `make audit-feedback` checks MCP responses against a temporary JSONL audit log using a real SDK client and isolated server.
 
-`make lint` uses the checks in `.golangci.yml` and needs `golangci-lint` v2.15.0 installed. `make vulncheck` uses a pinned `govulncheck` v1.9.0 through `go run`. They also run in GitHub Actions. Neither tool is required for `make check` or for managed service updates.
+`make lint` uses the checks in `.golangci.yml` and needs `golangci-lint` v2.15.0 installed. `make vulncheck` uses a pinned `govulncheck` v1.9.0 through `go run`. They also run in GitHub Actions. Neither tool is required for `make check` or the standalone updater.
 
 `go mod tidy -diff` reports module-file changes without editing `go.mod` or `go.sum`. Use `go mod tidy` explicitly when you intend to update them.
 
@@ -113,8 +106,9 @@ No Python, `launchd`, or service registration is required for standalone
 mode. The `serve` subcommand is optional:
 `./bin/terminal-mcp` continues to work in the foreground.
 
-**If you currently use the macOS LaunchAgent, do not run `start` on its port
-until you follow the [migration procedure](docs/STANDALONE_MIGRATION.md).**
+Older installations that still use a macOS LaunchAgent should follow the
+[legacy migration procedure](docs/STANDALONE_MIGRATION.md) before starting a
+standalone server on the same port.
 
 On the first HTTP launch without `--token-file` or `TERMINAL_MCP_TOKEN`, the
 server generates a random bearer token at `~/.config/terminal-mcp/token`.
@@ -125,26 +119,33 @@ To configure a tunnel, read the token locally; do not paste it into logs or chat
 
 The existing `--token-file` flag and `TERMINAL_MCP_TOKEN` take precedence
 and do not create a default token. To avoid port conflicts with an existing
-service, use a different loopback port and audit path, for example
+server, use a different loopback port and audit path, for example
 `./bin/terminal-mcp serve --listen=127.0.0.1:18090 --audit-file=off`.
 Two instances cannot write to the same audit journal.
 For interactive use, Ctrl+C gracefully stops the server and its managed sessions.
-Standalone background start/stop is not yet provided; running the server with
-`serve` in a terminal is sufficient for interactive use.
 
 ### Update a running standalone server
 
-Build the candidate **to a different file** from the one currently running.
-Never overwrite the live executable with `make check`, `make build`, or `go build -o`
-before the updater has preserved it; this would invalidate the rollback image.
+From the repository root, use:
 
 ```sh
-go test -race ./...
-go vet ./...
-go build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
-./bin/terminal-mcp update --candidate=bin/terminal-mcp.next
-./bin/terminal-mcp update-status
+make update
+make update-status
 ```
+
+`make update` runs Go checks, builds a candidate into
+`bin/terminal-mcp.next` and submits it to the running installed updater.
+It does **not** replace the installed executable before the updater saves
+the rollback image. The corresponding direct CLI commands are:
+
+```sh
+go build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
+"$HOME/.config/terminal-mcp/standalone/terminal-mcp" update --candidate=bin/terminal-mcp.next
+"$HOME/.config/terminal-mcp/standalone/terminal-mcp" update-status
+```
+
+Never build directly over the installed running executable; this invalidates
+the rollback image.
 
 The `update` command returns a queued job and status-file path. It may also
 be launched through the running server's `terminal_start` tool. A temporary,
@@ -165,9 +166,8 @@ tools if the status reports `refresh_tools_required`.
 
 Both commands accept `--state-dir` for a private alternative update directory;
 `update` also accepts `--listen` and `--token-file` for a non-default server.
-Only a server explicitly started with `serve` can be updated this way.
-Existing `launchd` instances are deliberately not eligible: continue using
-`make update` for them until the standalone migration.
+Only a server explicitly started with `serve` (including through
+`start`) can be updated this way. The old LaunchAgent is not eligible.
 
 Self-update requires an on-disk token; servers using only the
 `TERMINAL_MCP_TOKEN` environment variable must first be restarted with a token
@@ -179,103 +179,30 @@ server; manual recovery may be needed. A crash of the updater can leave a pendin
 marker requiring manual inspection. There is no permanent supervisor,
 so an unexpected crash after a successful update is not automatically restarted.
 
-## Run as a macOS service
-
-This is the legacy Python/launchd setup, retained for existing installations.
-New installations can use [standalone background start](#run-as-an-application).
-To migrate an existing LaunchAgent without changing the local bearer token
-or file access, follow the [migration guide](docs/STANDALONE_MIGRATION.md).
-The service controller manages the server, not `tunnel-client`.
-
-### 1. Create the local token
-
-Run these commands once:
-
-```sh
-umask 077
-mkdir -p "$HOME/.config/terminal-mcp"
-test -e "$HOME/.config/terminal-mcp/token" || \
-  openssl rand -hex 32 > "$HOME/.config/terminal-mcp/token"
-chmod 600 "$HOME/.config/terminal-mcp/token"
-```
-
-Do not replace a token that a running client uses.
-
-### 2. Install and check the service
-
-From the repository root, run:
-
-```sh
-make install
-make status
-```
-
-The installer checks the code, builds a binary, and tests that binary before it registers the LaunchAgent.
-
-If the LaunchAgent already runs, `make install` does not restart it. If the service has a manual stop marker, use `make start` to start it.
-
-**Do not use `make install` to take control of an unrelated process on port 8090.** If a manual server already runs, use the [one-time adoption procedure](docs/DEVELOPMENT.md#one-time-adoption-of-a-manual-server).
-
-### 3. Control the service
-
-| Command | Result |
-| --- | --- |
-| `make status` | Show registration, health, and the last update result. |
-| `make update` | Check, build, test, and update the running server. |
-| `make stop` | Stop the server. Keep the registration and stop marker. |
-| `make start` | Start a registered service. |
-| `make uninstall` | Stop the server and remove its LaunchAgent registration. |
-| `make install` | Register the service again from retained state. |
-| `make logs` | Follow detailed MCP tool actions. |
-| `make logs-service` | Follow server diagnostics. |
-
-`make uninstall` keeps the configuration, token, logs, and stored releases. Do not run it from a terminal session hosted by this server.
-
-The updater runs in a separate launchd job. It waits for active commands to finish. It also checks the new server after the restart.
-
-**An update causes a short connection interruption.** It does not transfer live terminal sessions to the new server.
-
-If the update fails after activation, the controller tries to restore the previous binary. A manual stop takes priority over automatic recovery.
-
 ## Configuration and logs
 
-### Service configuration
+The background controller stores configuration in
+`~/.config/terminal-mcp/standalone/config.json`. It includes the listen
+address, token file, file root, working directory, PATH and optional audit
+location. Use flags on `terminal-mcp start` to override saved settings
+after stopping the running server. On a fresh installation, the default
+file root is the working directory; a direct `--file-root` argument can
+override it. Files outside that root are not accessible to the five `file_*`
+tools, but terminal commands retain the user's OS permissions.
 
-The macOS controller reads this file:
+A new HTTP start creates a private token at
+`~/.config/terminal-mcp/token` if no explicit token or environment token
+was supplied. Protect this token: clients using it can run commands as
+the logged-in user. No launchd, Python or privileged installation is required.
 
-```text
-~/Library/Application Support/LocalTerminalMCP/config.json
-```
-
-The configuration can contain these keys:
-
-| Key | Function |
-| --- | --- |
-| `project` | Set the service working directory. |
-| `listen` | Set the local HTTP address. The installed default is `127.0.0.1:8090`. |
-| `token_file` | Give the path to the local bearer token. |
-| `path` | Set the PATH environment variable for the server and child processes. |
-| `file_root` | Set the root directory for `file_*` tools. |
-
-For a new macOS installation, the controller sets `file_root` to `/`. This permits file tools to access any path allowed by the user's OS permissions.
-
-If `file_root` is absent, the Go server uses its working directory. A direct `--file-root` argument overrides the configured value.
-
-To change `file_root`:
-
-1. Open `config.json`.
-2. Set `file_root` to an absolute directory path.
-3. Save valid JSON.
-4. Run `make update`.
-5. Run `make status`.
-
-The updater checks the new root before it restarts the service. If tool metadata changes, the update status tells you to select **Refresh tools** in ChatGPT.
-
-**Do not edit the generated LaunchAgent plist.** The controller does not provide a general live-edit function for `listen`, `project`, or `token_file`.
-
-File-root limits apply to the five `file_*` tools. They do not restrict shell commands.
+Use `make status` or `terminal-mcp status` for the running instance.
+`make logs-service` follows the first standalone startup log at
+`~/.config/terminal-mcp/standalone/server.log`. After an update, the new
+process instead writes to its update job's `server.log` under
+`~/.config/terminal-mcp/updates/<job-id>/`.
 
 ### Audit log
+
 
 The server writes MCP tool-call events to:
 
@@ -304,11 +231,11 @@ The audit files and persistent `<audit path>.lock` file have mode `0600`; the st
 
 The audit records tool callbacks. It does not identify a specific person when callers share one bearer token. It is not a tamper-proof record. If the audit cannot open on startup, the server continues without it and reports the failure in diagnostics. A normal shutdown can wait for a slow disk because accepted events must be processed.
 
-The server writes diagnostic messages to `stderr.log`. Use `make logs-service` to read them.
+Standalone diagnostics are written to the startup or update job logs described above.
 
 ## Run HTTP manually
 
-Use this method when you do not want a LaunchAgent.
+Use this method when you want a foreground server without background management.
 
 The shortest command is `./bin/terminal-mcp serve` as described in
 [Run as an application](#run-as-an-application). To use an existing token
@@ -552,7 +479,7 @@ Stdio uses the same tools. It does not need an HTTP token. When the server proce
 ## Source layout
 
 ```text
-Makefile                 Build, tests, and service commands
+Makefile                 Build, tests, and standalone commands
 cmd/terminal-mcp/        CLI and transport
 internal/session/        Process lifecycle, output, and mutation receipts
 internal/terminal/       PTY, keys, and text screen
@@ -560,8 +487,6 @@ internal/filesystem/     File operations and root restrictions
 internal/mcpserver/      MCP tools and integration tests
 internal/httpguard/      HTTP authentication and request checks
 internal/audit/          Tool-call audit events and rotation
-scripts/service.py       macOS service and update controller
-scripts/test_*.py        Controller tests
 SPEC.md                  Behavior specification
 docs/DEVELOPMENT.md      Detailed operational procedures
 TEST_REPORT.md           Validation report
