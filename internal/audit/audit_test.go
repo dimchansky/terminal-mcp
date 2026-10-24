@@ -200,24 +200,16 @@ func TestEventKeepsTimeFromCaller(t *testing.T) {
 }
 
 func TestQueueIsNonblockingAndCloseDrains(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	log, err := Open(filepath.Join(dir, "audit.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var processed atomic.Int64
-	log.writeLineFn = func([]byte) error {
+	log := newLog(&testSink{write: func([]byte) error {
 		if processed.Add(1) == 1 {
 			close(entered)
 			<-release
 		}
 		return nil
-	}
+	}})
 	event := NewEvent(Event{Tool: "terminal_list", Phase: "start"})
 	if err := log.Write(event); err != nil {
 		t.Fatal(err)
@@ -294,21 +286,13 @@ func TestRecoverIncompleteLineOnOpen(t *testing.T) {
 }
 
 func TestWriteFailureDoesNotStopQueueWorker(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	writer, err := Open(filepath.Join(dir, "audit.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var count atomic.Int64
-	writer.writeLineFn = func([]byte) error {
+	writer := newLog(&testSink{write: func([]byte) error {
 		if count.Add(1) == 1 {
 			return errors.New("temporary disk error")
 		}
 		return nil
-	}
+	}})
 	for i := 0; i < 3; i++ {
 		if err := writer.Write(NewEvent(Event{Tool: "terminal_list", Phase: "start"})); err != nil {
 			t.Fatal(err)

@@ -88,6 +88,8 @@ The file-tool regression tests now cover external changes before a no-op replace
 
 The MCP audit feedback test starts a temporary server and issues a real MCP command, a missing-session read, partial file reads, an ambiguous edit, limited search, a 115000-byte read, and an oversized schema-rejected read. After each call, it waits for the corresponding JSONL event. On shutdown, it checks event pairs by request ID and verifies that file bodies were not written to the audit. Run it with `make audit-feedback`; it is also part of `make check`.
 
+The audit package now owns an exclusive advisory lock for the journal and has a separate worker-owned file sink. Package tests verify same-process and cross-process lock exclusion, aliased paths, lock retention during rotation, byte-budget backpressure including the in-flight record, concurrent Write/Close operations, and retry of failures in partial writes, truncation, Close, Rename, Remove, and Sync. Tests inject I/O errors into the sink before launching the queue worker, without mutating a running worker. In the local macOS run, audit package statement coverage increased from 75.2% to 85.3%, with appendLine coverage from 42.9% to 81.0% and rotate coverage to 92.9%.
+
 On 2026-10-24, `golangci-lint v2.15.0` and `staticcheck` reported no issues on the local macOS checkout. The lint configuration limits checks to relevant correctness, resource handling, and error-handling rules. The local `govulncheck v1.9.0` scan reported no vulnerabilities after upgrading `golang.org/x/sys` to v0.44.0. This upgrade also removes a previously reported, unreachable Windows-only advisory (GO-2026-5024) without raising the Go 1.25 minimum version.
 
 A separate `gosec v2.30.0` review reported 11 potential issues. These concern

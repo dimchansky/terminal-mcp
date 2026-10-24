@@ -198,9 +198,9 @@ The file tools do not add file content or edit text to the audit. The audit does
 
 **Commands can contain secrets.** The audit records command arguments and terminal input exactly as supplied.
 
-The auditor makes each timestamp before it queues an event. One worker writes queued JSONL events in order. The queue holds at most 1,024 events and 8 MiB of encoded data. MCP tool calls do not wait for disk writes. If the queue fills, new audit events can be lost; the worker reports the total in diagnostics. On shutdown, the auditor processes all accepted events, syncs the file, and closes it. A disk error does not stop any MCP tool call.
+The auditor makes each timestamp before it queues an event. One worker owns the JSONL writer and its file rotation. The queue holds at most 1,024 waiting events and 8 MiB of encoded data, including the event in flight. MCP tool calls do not wait for disk writes. If the queue fills, new audit events can be lost; the worker reports the total in diagnostics. Disk-write failures are counted separately and reported at shutdown. On shutdown, the auditor processes all accepted events, syncs the file, closes it, and releases the lock. A disk error does not stop any MCP tool call.
 
-The audit files have mode `0600`. The state directory has private permissions. The active file is limited to 4 MiB. The server keeps up to three rotated files. On startup, the auditor removes a partial final JSONL line left by an interrupted write.
+The audit files and persistent `<audit path>.lock` file have mode `0600`; the state directory has private permissions. The server uses an exclusive advisory lock to reject a second concurrent writer of the same journal. The active file is limited to 4 MiB. The server keeps up to three rotated files. On startup, the auditor removes a partial final JSONL line left by an interrupted write.
 
 The audit records tool callbacks. It does not identify a specific person when callers share one bearer token. It is not a tamper-proof record. If the audit cannot open on startup, the server continues without it and reports the failure in diagnostics. A normal shutdown can wait for a slow disk because accepted events must be processed.
 

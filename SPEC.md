@@ -444,13 +444,13 @@ The audit records file paths, ranges, search terms, versions, edit counts, and c
 
 The audit does not copy stdout or stderr. Tool calls rejected by SDK input validation generate a single `rejected` event with `reason: schema_validation` and no input content. These rejections do not have tool-handler `start`/`finish` events. The audit does not record every rejected HTTP request.
 
-The caller sets the event timestamp before enqueue. Each tool sends a complete event to the auditor. The caller encodes the event and submits it to a bounded, nonblocking queue. One goroutine writes accepted events to JSONL in queue order. The queue has at most 1,024 events and 8 MiB of encoded data.
+The caller sets the event timestamp before enqueue. Each tool sends a complete event to the auditor. The caller encodes the event and submits it to a bounded, nonblocking queue. One goroutine exclusively owns the file sink, including JSONL appends, repair, rotation, and disk sync. The queue has at most 1,024 waiting events and an 8 MiB byte budget, counting the event currently being written.
 
-If the queue is full, the auditor drops the incoming event. It records the loss count in diagnostics. Audit errors never prevent tool execution. If audit initialization fails, the server starts without auditing and reports the error. The service must restart after the cause is fixed to enable audit logging again.
+If the queue is full, the auditor drops the incoming event. It records the drop count in diagnostics. Disk-write failures are counted separately, including failed records before writes resume. `Close()` reports both totals and the first disk-write error. Audit errors never prevent tool execution. If audit initialization fails, the server starts without auditing and reports the error. The service must restart after the cause is fixed to enable audit logging again.
 
-`Close()` stops new submissions, processes all accepted events, syncs the active file, and closes it. Disk errors are reported in diagnostics. A persistent disk stall can delay shutdown because `Close()` waits for the worker.
+`Close()` stops new submissions, processes all accepted events, syncs the active file, and closes it. It then releases the exclusive file lock. A persistent disk stall can delay shutdown because `Close()` waits for the worker.
 
-The audit keeps one active file and at most three rotated files. Each file has a 4 MiB size limit and private permissions. A partial write is truncated to the previous complete record when possible. The next startup also removes an incomplete final JSONL line.
+The audit keeps one active file and at most three rotated files. Each file has a 4 MiB size limit and private permissions. Before accessing the log, the server acquires a nonblocking advisory lock on the private `<audit path>.lock` file. Concurrent audit writers using this implementation cannot open the same journal. The lock file is intentionally kept across restarts to avoid inode-replacement lock races; it is not part of rotation. A partial write is truncated to the previous complete record when possible. The next startup also removes an incomplete final JSONL line.
 
 The audit is not tamper-proof. A crash can lose queued or recently written events. There is no `fsync` for each event.
 
