@@ -10,7 +10,7 @@ import (
 )
 
 func TestExclusiveOwnership(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	first, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +38,8 @@ func TestExclusiveOwnership(t *testing.T) {
 }
 
 func TestLockAliasesResolveToSameOwner(t *testing.T) {
-	dir := t.TempDir()
-	alias := filepath.Join(t.TempDir(), "alias")
+	dir := privateAuditDir(t)
+	alias := filepath.Join(privateAuditDir(t), "alias")
 	if err := os.Symlink(dir, alias); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestLockAliasesResolveToSameOwner(t *testing.T) {
 }
 
 func TestLockHeldAcrossRotation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "events.jsonl")
+	path := filepath.Join(privateAuditDir(t), "events.jsonl")
 	writer, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestLockHeldAcrossRotation(t *testing.T) {
 }
 
 func TestLockFileMustBePrivateAndNotSymlink(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	target := filepath.Join(dir, "target")
 	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {

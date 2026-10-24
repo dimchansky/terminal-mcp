@@ -1,5 +1,20 @@
 package audit
 
+import (
+	"os"
+	"testing"
+)
+
+// privateAuditDir makes test permissions independent of CI runner umask.
+func privateAuditDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // testSink is constructed before newLog launches its worker.
 type testSink struct {
 	write  func([]byte) error

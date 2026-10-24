@@ -45,7 +45,7 @@ func (f *faultFile) Close() error {
 }
 
 func TestFileSinkRecoversAfterPartialWriteAndFailedTruncate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	s, err := openFileSink(path)
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func almostFullLogLine() []byte {
 }
 
 func TestFileSinkRecoversAfterRotationCloseError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	s, err := openFileSink(path)
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestFileSinkRecoversAfterRotationCloseError(t *testing.T) {
 }
 
 func TestFileSinkRecoversAfterRenameFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	s, err := openFileSink(path)
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestFileSinkRecoversAfterRenameFailure(t *testing.T) {
 }
 
 func TestFileSinkRemoveFailureIsRetryable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	s, err := openFileSink(path)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestFileSinkRemoveFailureIsRetryable(t *testing.T) {
 }
 
 func TestFileSinkSyncFailureStillReleasesLock(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	s, err := openFileSink(path)
 	if err != nil {
 		t.Fatal(err)

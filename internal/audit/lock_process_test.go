@@ -30,7 +30,7 @@ func TestAuditLockHelper(t *testing.T) {
 // Locking must work across processes, not merely between Go objects sharing
 // an address space. The child holds the lock until the parent releases stdin.
 func TestExclusiveOwnershipAcrossProcesses(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	ready := filepath.Join(dir, "ready")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
