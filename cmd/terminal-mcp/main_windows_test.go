@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,5 +169,67 @@ func TestWindowsDefaultTokenACL(t *testing.T) {
 	}
 	if err := winsecure.CheckPrivate(path); err != nil {
 		t.Fatalf("Windows token permissions are too broad: %v", err)
+	}
+}
+
+func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs an actual Windows executable")
+	}
+	root := t.TempDir()
+	appdata := filepath.Join(root, "AppData")
+	if err := winsecure.EnsurePrivateDir(appdata); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "terminal-mcp.exe")
+	build := exec.Command("go", "build", "-trimpath", "-o", bin, ".")
+	if result, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build Windows CLI: %v: %s", err, result)
+	}
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = root
+		cmd.Env = append(withoutEnvToken(os.Environ()), "APPDATA="+appdata)
+		result, err := cmd.CombinedOutput()
+		return string(result), err
+	}
+	defer func() {
+		_, _ = run("stop")
+	}()
+	address, err := reserveProbePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := run("start", "--listen="+address, "--file-root="+root)
+	if err != nil {
+		t.Fatalf("Windows background start failed: %v: %s", err, output)
+	}
+	if !strings.Contains(output, `"status":"started"`) {
+		t.Fatalf("start did not report success: %s", output)
+	}
+	output, err = run("status")
+	if err != nil || !strings.Contains(output, `"status":"running"`) {
+		t.Fatalf("Windows background status: %v: %s", err, output)
+	}
+	if output, err := run("start"); err == nil || !strings.Contains(output, "server already listening") {
+		t.Fatalf("duplicate Windows start was allowed: %v %s", err, output)
+	}
+	state := filepath.Join(appdata, "terminal-mcp", "standalone")
+	for _, file := range []string{filepath.Join(state, "config.json"), filepath.Join(state, "server.log")} {
+		if err := winsecure.CheckPrivate(file); err != nil {
+			t.Fatalf("Windows standalone file is not private: %s: %v", file, err)
+		}
+	}
+	output, err = run("stop")
+	if err != nil || !strings.Contains(output, `"status":"stopped"`) {
+		t.Fatalf("Windows stop: %v %s", err, output)
+	}
+	audit := filepath.Join(appdata, "terminal-mcp", "audit.jsonl")
+	data, err := os.ReadFile(audit)
+	if err != nil || !strings.Contains(string(data), "server_start") {
+		t.Fatalf("Windows default audit was not flushed: %v: %s", err, data)
+	}
+	if err := winsecure.CheckPrivate(audit); err != nil {
+		t.Fatalf("Windows audit file is not private: %v", err)
 	}
 }
