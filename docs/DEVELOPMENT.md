@@ -35,6 +35,17 @@ Keep these targets separate from `make check`: the service controller must be ab
 
 The Go server does not need Python at runtime. The macOS service controller uses Python 3 and standard-library modules.
 
+The independent standalone updater is built into the same Go executable:
+`terminal-mcp update --candidate=<separately built executable>` and
+`terminal-mcp update-status`. See [README.md](../README.md#update-a-running-standalone-server)
+for instructions. It deliberately cannot restart the current launchd LaunchAgent.
+Its temporary worker lives in a private update directory, detaches from the MCP
+process group, records status, preflights the candidate before downtime, and
+preserves a binary backup for rollback. Do not use `make check` when it would
+overwrite the *running* standalone executable: run the checks that don't write
+it and build a candidate at another path, or run the installed binary from a
+different directory than the development output.
+
 ## 2. Terminal workflow
 
 ### Start a short command

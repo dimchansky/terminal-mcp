@@ -243,6 +243,7 @@ func TestMaintenanceEndpointContract(t *testing.T) {
 		{"POST", `{"server_id":"old","action":"begin"}`, 409},
 		{"POST", `{"server_id":"` + state.ServerID + `","action":"begin","unknown":1}`, 400},
 		{"POST", `{"server_id":"` + state.ServerID + `","action":"begin"} {}`, 400},
+		{"POST", `{"server_id":"` + state.ServerID + `","action":"shutdown"}`, 403},
 		{"POST", `{"server_id":"` + state.ServerID + `","action":"begin"}`, 200},
 		{"POST", `{"server_id":"` + state.ServerID + `","action":"cancel"}`, 200},
 	}
@@ -254,6 +255,32 @@ func TestMaintenanceEndpointContract(t *testing.T) {
 		}
 	}
 }
+func TestStandaloneMaintenanceShutdownRequiresFence(t *testing.T) {
+	manager := session.New(nil)
+	defer manager.Close()
+	stopped := 0
+	handler := Maintenance(manager, func() { stopped++ })
+	id := manager.ID()
+	request := func(id, action string) int {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("POST", "/admin/maintenance",
+			strings.NewReader(`{"server_id":"`+id+`","action":"`+action+`"}`)))
+		return response.Code
+	}
+	if got := request(id, "shutdown"); got != 409 || stopped != 0 {
+		t.Fatalf("shutdown without fence: status=%d callbacks=%d", got, stopped)
+	}
+	if got := request("stale", "shutdown"); got != 409 || stopped != 0 {
+		t.Fatalf("stale shutdown: status=%d callbacks=%d", got, stopped)
+	}
+	if got := request(id, "begin"); got != 200 {
+		t.Fatalf("fence: %d", got)
+	}
+	if got := request(id, "shutdown"); got != 200 || stopped != 1 {
+		t.Fatalf("fenced shutdown: status=%d callbacks=%d", got, stopped)
+	}
+}
+
 func TestPTYAutoCloseKeepsScreen(t *testing.T) {
 	manager := session.New(terminal.Start)
 	defer manager.Close()

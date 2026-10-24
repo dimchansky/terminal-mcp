@@ -82,7 +82,7 @@ func Wrap(next http.Handler, expectedHost, token string) (http.Handler, error) {
 			return
 		}
 		// Absent routes, including OAuth discovery, must be 404 rather than an auth challenge.
-		if (r.URL.Path != "/mcp" && r.URL.Path != "/admin/maintenance") || r.URL.RawQuery != "" {
+		if (r.URL.Path != "/mcp" && r.URL.Path != "/admin/maintenance" && r.URL.Path != "/admin/runtime") || r.URL.RawQuery != "" {
 			http.NotFound(w, r)
 			return
 		}

@@ -81,3 +81,40 @@ func TestAuthenticatedTransportDoesNotMutateRequest(t *testing.T) {
 		t.Fatalf("RoundTrip mutated its input headers: %v", req.Header)
 	}
 }
+
+// Runtime details are private to authenticated standalone HTTP clients.
+// A launchd/legacy invocation must not expose this update capability.
+func TestStandaloneRuntimeEndpointAuthenticationAndLegacyIsolation(t *testing.T) {
+	manager := session.New(nil)
+	defer manager.Close()
+	const address = "127.0.0.1:45678"
+	state := &updateServer{info: mcpserver.RuntimeInfo{ServerID: manager.ID()},
+		shutdown: func() {}}
+	standalone, err := newHTTPHandler(manager, mcpserver.New(manager), address, testToken, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := newHTTPHandler(manager, mcpserver.New(manager), address, testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(h http.Handler, auth bool, want int) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://"+address+"/admin/runtime", nil)
+		if auth {
+			request.Header.Set("Authorization", "Bearer "+testToken)
+		}
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		if response.Code != want {
+			t.Fatalf("GET runtime (auth=%t): status=%d want=%d, response=%s",
+				auth, response.Code, want, response.Body.String())
+		}
+		if want == http.StatusOK && !strings.Contains(response.Body.String(), manager.ID()) {
+			t.Fatalf("runtime response lacks expected instance ID: %s", response.Body.String())
+		}
+	}
+	check(standalone, false, http.StatusUnauthorized)
+	check(standalone, true, http.StatusOK)
+	check(legacy, true, http.StatusNotFound)
+}

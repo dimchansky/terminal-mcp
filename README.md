@@ -7,7 +7,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 ## Start here
 
 - [Build and check](#build-and-check) — Build the server and run tests.
-- [Run as an application](#run-as-an-application) — Start the server directly, without a service manager.
+- [Run as an application](#run-as-an-application) — Start and update the server without a service manager.
 - [Run as a macOS service](#run-as-a-macos-service) — Optional existing LaunchAgent setup.
 - [Connect through Secure MCP Tunnel](#connect-through-secure-mcp-tunnel) — Connect ChatGPT to the local server.
 - [Use the tools](#use-the-tools) — Start a process and read its output.
@@ -109,7 +109,55 @@ service, use a different loopback port and audit path, for example
 `./bin/terminal-mcp serve --listen=127.0.0.1:8091 --audit-file=off`.
 Two instances cannot write to the same audit journal.
 For interactive use, Ctrl+C gracefully stops the server and its managed sessions.
-This standalone mode does **not** yet provide background start/stop or self-update.
+Standalone background start/stop is not yet provided; running the server with
+`serve` in a terminal is sufficient for interactive use.
+
+### Update a running standalone server
+
+Build the candidate **to a different file** from the one currently running.
+Never overwrite the live executable with `make check`, `make build`, or `go build -o`
+before the updater has preserved it; this would invalidate the rollback image.
+
+```sh
+go test -race ./...
+go vet ./...
+go build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
+./bin/terminal-mcp update --candidate=bin/terminal-mcp.next
+./bin/terminal-mcp update-status
+```
+
+The `update` command returns a queued job and status-file path. It may also
+be launched through the running server's `terminal_start` tool. A temporary,
+independent copy of the binary performs the update after the initiating command
+finishes. It checks the candidate using an authenticated MCP connection on an
+ephemeral port (including a real process launch and file listing), waits for
+managed sessions to finish, acquires the existing maintenance fence, and asks
+the old instance to stop itself. It then atomically installs and starts the
+new binary, verifies the new instance and MCP metadata, and attempts rollback
+if the new version fails.
+
+`update-status` reports `applied`, `failed`, or `rolled_back` when finished.
+Logs and saved binaries remain in `~/.config/terminal-mcp/updates/<job-id>/`.
+After a successful update, the new instance runs independently of the original
+terminal, with diagnostics in `server.log`. The old terminal command will exit.
+The connection drops briefly; obtain the new `server_id` and refresh ChatGPT's
+tools if the status reports `refresh_tools_required`.
+
+Both commands accept `--state-dir` for a private alternative update directory;
+`update` also accepts `--listen` and `--token-file` for a non-default server.
+Only a server explicitly started with `serve` can be updated this way.
+Existing `launchd` instances are deliberately not eligible: continue using
+`make update` for them until the standalone migration.
+
+Self-update requires an on-disk token; servers using only the
+`TERMINAL_MCP_TOKEN` environment variable must first be restarted with a token
+file. If the old binary was overwritten after starting, the updater refuses
+the operation rather than guess at a rollback. It also refuses to interrupt
+active managed processes; the wait is bounded. If the shutdown acknowledgement
+is lost, the worker does not assume permission to restart a deliberately stopped
+server; manual recovery may be needed. A crash of the updater can leave a pending
+marker requiring manual inspection. There is no permanent supervisor,
+so an unexpected crash after a successful update is not automatically restarted.
 
 ## Run as a macOS service
 

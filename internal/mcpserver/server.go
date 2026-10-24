@@ -139,8 +139,22 @@ func HTTP(s *mcp.Server) http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 }
 
+// RuntimeInfo describes only standalone HTTP processes eligible for self-update.
+type RuntimeInfo struct {
+	ServerID         string   `json:"server_id"`
+	Executable       string   `json:"executable"`
+	ExecutableSHA256 string   `json:"executable_sha256"`
+	WorkingDirectory string   `json:"working_directory"`
+	FileRoot         string   `json:"file_root"`
+	Listen           string   `json:"listen"`
+	Arguments        []string `json:"arguments"`
+	PID              int      `json:"pid"`
+	EnvToken         bool     `json:"env_token"`
+}
+
 // Maintenance is token/Host/Origin-protected by the same outer HTTP guard as MCP.
-func Maintenance(manager *session.Manager) http.Handler {
+// The optional shutdown callback exists only for explicitly started standalone servers.
+func Maintenance(manager *session.Manager, shutdown ...func()) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
@@ -168,6 +182,12 @@ func Maintenance(manager *session.Manager) http.Handler {
 			err = manager.PrepareRestart(a.ServerID)
 		case "cancel":
 			err = manager.CancelRestart(a.ServerID)
+		case "shutdown":
+			if len(shutdown) == 0 || shutdown[0] == nil {
+				http.Error(w, "standalone update unavailable", http.StatusForbidden)
+				return
+			}
+			err = manager.CanShutdownForUpdate(a.ServerID)
 		default:
 			http.Error(w, "unknown action", http.StatusBadRequest)
 			return
@@ -178,5 +198,8 @@ func Maintenance(manager *session.Manager) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"server_id": a.ServerID, "draining": a.Action == "begin"})
+		if a.Action == "shutdown" {
+			shutdown[0]()
+		}
 	})
 }

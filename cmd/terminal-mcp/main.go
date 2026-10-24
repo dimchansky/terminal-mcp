@@ -4,9 +4,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -59,6 +63,16 @@ func parseOptions(args []string) (options, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "update", "update-status", "_update-worker":
+			if err := updateCommand(os.Args[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, "terminal-mcp:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runWithContext(ctx, os.Args[1:], nil); err != nil {
@@ -130,7 +144,20 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 		return err
 	}
 	recordServerStart(recorder, manager.ID())
-	return serveHTTP(ctx, manager, server, listener, token)
+	if len(args) == 0 || args[0] != "serve" {
+		return serveHTTP(ctx, manager, server, listener, token)
+	}
+	// Only explicitly launched standalone servers can shut themselves down
+	// for an update. Existing launchd-managed instances remain unchanged.
+	info, err := standaloneInfo(args, manager.ID(), listener.Addr().String(), files.Root(),
+		opts.tokenFile == "" && os.Getenv("TERMINAL_MCP_TOKEN") != "")
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return serveHTTP(serveCtx, manager, server, listener, token, &updateServer{info: info, shutdown: cancel})
 }
 
 func recordServerStart(recorder *audit.Log, serverID string) {
@@ -175,29 +202,78 @@ func openAudit(requestedPath, transport string) *audit.Log {
 	return recorder
 }
 
+type updateServer struct {
+	info     mcpserver.RuntimeInfo
+	shutdown context.CancelFunc
+}
+
+func standaloneInfo(args []string, serverID, listen, root string, envToken bool) (mcpserver.RuntimeInfo, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return mcpserver.RuntimeInfo{}, err
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		return mcpserver.RuntimeInfo{}, err
+	}
+	file, err := os.Open(executable)
+	if err != nil {
+		return mcpserver.RuntimeInfo{}, err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return mcpserver.RuntimeInfo{}, copyErr
+	}
+	if closeErr != nil {
+		return mcpserver.RuntimeInfo{}, closeErr
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return mcpserver.RuntimeInfo{}, err
+	}
+	return mcpserver.RuntimeInfo{
+		ServerID: serverID, Executable: executable,
+		ExecutableSHA256: hex.EncodeToString(hash.Sum(nil)),
+		WorkingDirectory: cwd, FileRoot: root, Listen: listen,
+		Arguments: append([]string(nil), args...), PID: os.Getpid(),
+		EnvToken: envToken,
+	}, nil
+}
+
 // newHTTPHandler constructs only HTTP routing and the authentication guard.
 // Tests can exercise this handler with httptest without starting a service.
-func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string) (http.Handler, error) {
+func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string, standalone ...*updateServer) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.HTTP(server))
-	mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
+	if len(standalone) != 0 && standalone[0] != nil {
+		state := standalone[0]
+		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager, state.shutdown))
+		mux.HandleFunc("GET /admin/runtime", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(state.info)
+		})
+	} else {
+		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
+	}
 	return httpguard.Wrap(mux, host, token)
 }
 
 // serveHTTP owns the listener and session manager.
 // On cancellation it stops accepting connections, lets admitted HTTP requests
 // finish for up to five seconds, then stops any remaining managed processes.
-func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string) error {
-	return serveHTTPWithTimeout(ctx, manager, server, listener, token, 5*time.Second)
+func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, standalone ...*updateServer) error {
+	return serveHTTPWithTimeout(ctx, manager, server, listener, token, 5*time.Second, standalone...)
 }
 
 // serveHTTPWithTimeout makes timeout behavior testable without a five-second
 // sleep in every failure-path test. The shutdown deadline bounds HTTP draining,
 // not the independent process-termination grace inside manager.Close.
-func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration) error {
+func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, standalone ...*updateServer) error {
 	defer func() { _ = listener.Close() }()
 	defer manager.Close()
-	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token)
+	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token, standalone...)
 	if err != nil {
 		return err
 	}

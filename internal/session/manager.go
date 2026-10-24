@@ -411,6 +411,17 @@ func (m *Manager) PrepareRestart(id string) error {
 	time.AfterFunc(time.Minute, func() { m.expireDrain(generation) })
 	return nil
 }
+
+// CanShutdownForUpdate accepts only the instance fenced by PrepareRestart.
+func (m *Manager) CanShutdownForUpdate(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || id != m.id || !m.ops.raw.Frozen() {
+		return fmt.Errorf("update shutdown requires a fenced current server")
+	}
+	return nil
+}
+
 func (m *Manager) CancelRestart(id string) error {
 	if err := m.checkServer(id); err != nil {
 		return err
