@@ -258,10 +258,16 @@ File writes are atomic for one file only. There is no multi-file transaction.
 
 ## 4. Standalone startup and update
 
-`terminal-mcp serve` runs a foreground process. `make start` builds the CLI
-and launches a detached standalone server with the current user's permissions.
-`make stop` and `make status` contact the installed process over the
-authenticated loopback endpoint.
+`terminal-mcp serve` runs a foreground process. The **first** `start`
+installs a verified copy into the private standalone location and starts it.
+Subsequent `start` calls use that installed copy and **refuse** a differently
+built downloaded/development binary: installation version changes are an
+explicit update, never a side effect of start. `status` and `stop` are
+authenticated HTTP clients and can run from any copy of the CLI.
+The Makefile now uses one `BIN` path for all commands; `make build` is
+explicit, and `make start` only builds if the development binary is missing.
+The installed runtime is always identified by its actual executable path and
+SHA-256, with a descriptive Go VCS revision when available.
 
 A new installation stores its configuration in
 `~/.config/terminal-mcp/standalone/config.json`. The settings include:
@@ -322,11 +328,19 @@ maintenance fence and restarts a new standalone instance. A failed readiness
 check triggers a rollback attempt. The connection interruption loses live
 session state but not the preserved token or on-disk audit.
 
-The updater can also be invoked directly using the installed executable and
+The updater can be invoked directly from the downloaded/development CLI using
 `update --candidate=<separately built binary>`. It is safe for an MCP tool
-to queue that command because the worker runs as a detached process outside
-the MCP session's process group. Never overwrite the installed executable
-with `go build` or `make build` before preserving its rollback image.
+to queue that command because the worker runs independently of the MCP session.
+`make update` reuses `bin/terminal-mcp` rather than creating a permanent
+`.next` file. Before any service shutdown, a single verified last-known-good
+copy is atomically saved to the private `rollback/terminal-mcp` slot.
+Successful/rolled-back update job executables are removed after the result is
+recorded; job metadata and logs are retained. Failed/ambiguous job binaries
+are protected. `cleanup --dry-run` previews historical completed job payloads,
+and `cleanup --apply` removes only those narrowly selected payload files.
+The updater queue and cleanup share an OS advisory lock, so cleanup refuses
+to race an active update. Never overwrite the installed executable with
+`go build` or `make build`.
 
 If an update fails, inspect `make update-status` and the worker logs in the
 private update directory. A lost shutdown acknowledgment or a crashed worker

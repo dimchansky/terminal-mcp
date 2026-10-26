@@ -214,8 +214,11 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 		t.Fatalf("start did not report success: %s", output)
 	}
 	output, err = run("status")
-	if err != nil || !strings.Contains(output, `"status":"running"`) {
-		t.Fatalf("Windows background status: %v: %s", err, output)
+	installed := filepath.Join(appdata, "terminal-mcp", "standalone", "terminal-mcp.exe")
+	currentHash, hashErr := fileSHA256(installed)
+	if err != nil || hashErr != nil || !strings.Contains(output, `"status":"running"`) ||
+		!strings.Contains(output, currentHash) || !strings.Contains(output, installed) {
+		t.Fatalf("Windows background status does not identify installed executable: %v %v: %s", err, hashErr, output)
 	}
 	if output, err := run("start"); err == nil || !strings.Contains(output, "server already listening") {
 		t.Fatalf("duplicate Windows start was allowed: %v %s", err, output)
@@ -278,6 +281,21 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 	output, err = run("stop")
 	if err != nil || !strings.Contains(output, `"status":"stopped"`) {
 		t.Fatalf("Windows stop: %v %s", err, output)
+	}
+	different := filepath.Join(root, "different-terminal-mcp.exe")
+	if out, err := exec.Command("go", "build", "-trimpath", "-ldflags=-buildid=other-windows-version",
+		"-o", different, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build different Windows CLI: %s %v", out, err)
+	}
+	differentCmd := exec.Command(different, "start")
+	differentCmd.Dir = root
+	differentCmd.Env = append(withoutEnvToken(os.Environ()), "APPDATA="+appdata)
+	if refused, err := differentCmd.CombinedOutput(); err == nil ||
+		!strings.Contains(string(refused), "installed_version_mismatch") {
+		t.Fatalf("Windows start silently installed a different version: %s %v", refused, err)
+	}
+	if hash, err := fileSHA256(installed); err != nil || hash != currentHash {
+		t.Fatalf("Windows mismatched start changed installed executable: %q %v", hash, err)
 	}
 	audit := filepath.Join(appdata, "terminal-mcp", "logs", "audit.jsonl")
 	data, err := os.ReadFile(audit)

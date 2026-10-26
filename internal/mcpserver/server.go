@@ -162,6 +162,7 @@ type RuntimeInfo struct {
 	ServerID         string       `json:"server_id"`
 	Executable       string       `json:"executable"`
 	ExecutableSHA256 string       `json:"executable_sha256"`
+	Revision         string       `json:"revision,omitempty"`
 	WorkingDirectory string       `json:"working_directory"`
 	FileRoot         string       `json:"file_root"`
 	Audit            audit.Status `json:"audit"`

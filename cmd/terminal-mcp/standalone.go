@@ -301,18 +301,9 @@ func startStandalone(args []string) error {
 		return err
 	}
 	installed := filepath.Join(stateDir, "terminal-mcp")
-	current, srcErr := os.Stat(executable)
-	existing, dstErr := os.Stat(installed)
-	if srcErr != nil {
-		return srcErr
-	}
-	if dstErr != nil && !errors.Is(dstErr, os.ErrNotExist) {
-		return dstErr
-	}
-	if dstErr != nil || !os.SameFile(current, existing) {
-		if err := replaceExecutable(executable, installed, 0700); err != nil {
-			return err
-		}
+	firstInstall, err := installIfMissing(executable, installed, 0700)
+	if err != nil {
+		return err
 	}
 
 	logs, err := openServerLogs()
@@ -383,7 +374,9 @@ func startStandalone(args []string) error {
 	started = true
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "started", "pid": info.PID, "server_id": info.ServerID,
-		"stdout_log": logs.stdout.Name(), "stderr_log": logs.stderr.Name(),
+		"executable": info.Executable, "revision": info.Revision,
+		"installed_new": firstInstall,
+		"stdout_log":    logs.stdout.Name(), "stderr_log": logs.stderr.Name(),
 	})
 }
 
@@ -416,7 +409,16 @@ func controlStandalone(action string, args []string) error {
 		return err
 	}
 	if !listenerInUse(config.Listen) {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": "stopped"})
+		installed := filepath.Join(stateDir, "terminal-mcp")
+		out := map[string]any{"status": "stopped"}
+		if info, err := os.Lstat(installed); err == nil && info.Mode().IsRegular() {
+			out["executable"] = installed
+			out["revision"] = executableRevision(installed)
+			if digest, err := fileSHA256(installed); err == nil {
+				out["executable_sha256"] = digest
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(out)
 	}
 	client, err := newUpdateClient(config.Listen, config.TokenFile)
 	if err != nil {
@@ -430,7 +432,11 @@ func controlStandalone(action string, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
 			"listen": info.Listen, "file_root": info.FileRoot, "audit": info.Audit,
-			"stdout_log": info.StdoutLog, "stderr_log": info.StderrLog,
+			"executable":        info.Executable,
+			"revision":          verifiedRunningRevision(info.Executable, info.ExecutableSHA256, info.Revision),
+			"executable_sha256": info.ExecutableSHA256,
+			"working_directory": info.WorkingDirectory,
+			"stdout_log":        info.StdoutLog, "stderr_log": info.StderrLog,
 		})
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(stateDir), "updates", "pending")); err == nil {

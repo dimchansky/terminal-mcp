@@ -42,6 +42,8 @@ func updateCommand(args []string) error {
 		return queueUpdate(args[1:])
 	case "update-status":
 		return showUpdateStatus(args[1:])
+	case "cleanup":
+		return cleanupCommand(args[1:])
 	case "_update-worker":
 		if len(args) != 2 {
 			return errors.New("_update-worker requires manifest path")
@@ -141,6 +143,11 @@ func queueUpdate(args []string) error {
 	if err = secureUpdateDir(root); err != nil {
 		return err
 	}
+	unlock, err := lockUpdateRoot(root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	pending := filepath.Join(root, "pending")
 	if err = os.Mkdir(pending, 0700); err != nil {
 		return fmt.Errorf("another update may be pending; inspect update-status: %w", err)

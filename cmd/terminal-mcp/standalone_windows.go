@@ -212,25 +212,9 @@ func windowsStart(args []string) error {
 		return err
 	}
 	installed := filepath.Join(stateDir, "terminal-mcp.exe")
-	if _, err := os.Stat(installed); errors.Is(err, os.ErrNotExist) {
-		if err := copyExecutable(self, installed, 0700); err != nil {
-			return err
-		}
-	} else if err != nil {
+	firstInstall, err := installIfMissing(self, installed, 0700)
+	if err != nil {
 		return err
-	} else {
-		// Avoid silently replacing an installed binary with unknown code.
-		current, err := fileSHA256(installed)
-		if err != nil {
-			return err
-		}
-		source, err := fileSHA256(self)
-		if err != nil {
-			return err
-		}
-		if current != source {
-			return errors.New("an older standalone executable is already installed; stop and replace it explicitly")
-		}
 	}
 	logs, err := openServerLogs()
 	if err != nil {
@@ -286,6 +270,8 @@ func windowsStart(args []string) error {
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "started", "server_id": ready.ServerID, "pid": ready.PID,
+		"executable": ready.Executable, "revision": ready.Revision,
+		"installed_new": firstInstall,
 	})
 }
 
@@ -302,7 +288,16 @@ func windowsControl(action string, args []string) error {
 		return err
 	}
 	if !windowsListenerInUse(cfg.Listen) {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": "stopped"})
+		installed := filepath.Join(dir, "terminal-mcp.exe")
+		out := map[string]any{"status": "stopped"}
+		if info, err := os.Lstat(installed); err == nil && info.Mode().IsRegular() {
+			out["executable"] = installed
+			out["revision"] = executableRevision(installed)
+			if digest, err := fileSHA256(installed); err == nil {
+				out["executable_sha256"] = digest
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(out)
 	}
 	client, err := newUpdateClient(cfg.Listen, cfg.TokenFile)
 	if err != nil {
@@ -316,7 +311,11 @@ func windowsControl(action string, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
 			"file_root": info.FileRoot, "listen": info.Listen, "audit": info.Audit,
-			"stdout_log": info.StdoutLog, "stderr_log": info.StderrLog,
+			"executable":        info.Executable,
+			"revision":          verifiedRunningRevision(info.Executable, info.ExecutableSHA256, info.Revision),
+			"executable_sha256": info.ExecutableSHA256,
+			"working_directory": info.WorkingDirectory,
+			"stdout_log":        info.StdoutLog, "stderr_log": info.StderrLog,
 		})
 	}
 	if err := client.maintenance(info.ServerID, "begin"); err != nil {

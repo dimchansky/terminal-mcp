@@ -467,10 +467,14 @@ In stdio mode, auditing is off by default. A direct `--audit-file` argument can 
 
 ## 12. Standalone background operation and self-update
 
-`terminal-mcp serve` runs a foreground HTTP server. `terminal-mcp start`
-copies the binary to a stable private user path and runs it detached from the
-terminal, without an OS service manager. `status` and `stop` use
-authenticated local HTTP requests. A manual stop must not interrupt active
+`terminal-mcp serve` runs a foreground HTTP server. The **first**
+`terminal-mcp start` installs a copy in the stable private user path; later
+`start` invokes that installed binary only and rejects a downloaded/development
+binary with different bytes (never silently upgrades or downgrades).
+`status` and `stop` use authenticated local HTTP and can be called through
+any copy of the CLI without installing that copy. Status exposes the real
+executable path, its exact SHA-256, descriptive embedded Go revision when
+available, PID, listening address, audit health and working directory. A manual stop must not interrupt active
 managed processes or pending mutations. Background mode does not automatically
 start at login or restart after an unexpected crash.
 
@@ -510,6 +514,15 @@ reads the saved status. The worker:
    checksum and tool metadata on the original port.
 6. On a failed activation or readiness check, attempts to restore and start
    the previously saved binary.
+7. Retains one verified rollback executable in a private dedicated slot
+   before stopping the old server. Once activation or rollback succeeds,
+   removes the update job's transient `candidate`, `previous` and `worker`
+   executables, but retains status, manifest and diagnostic logs.
+   Failed/ambiguous jobs retain binary recovery evidence. `cleanup --dry-run`
+   lists completed historical job payloads, and explicit `cleanup --apply`
+   prunes only those files under an OS lock also used by update queueing.
+   No installed executable, audit, diagnostics, backups or unrecognized
+   candidate file is automatically deleted.
 
 The update briefly disconnects MCP clients and loses in-memory process
 sessions and mutation receipts. The fence has a generation-scoped

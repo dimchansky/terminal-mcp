@@ -43,6 +43,14 @@ func runUpdateWorker(manifest string) error {
 	if writeErr := writeJSON(filepath.Join(job.Directory, "status.json"), result); writeErr != nil {
 		return errors.Join(err, writeErr)
 	}
+	// Only terminal states with a confirmed running server may discard
+	// transient rollback/candidate/worker files. Failed or ambiguous jobs
+	// retain their recovery evidence for manual investigation.
+	if result.Status == "applied" || result.Status == "rolled_back" {
+		if cleanupErr := cleanupCompletedJobPayloads(job.Directory); cleanupErr != nil {
+			slog.Error("completed update payload cleanup failed", "error", cleanupErr)
+		}
+	}
 	return err
 }
 
@@ -102,6 +110,11 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 	candidateFingerprint, err := preflightCandidate(job, candidate, candidateHash)
 	if err != nil {
 		return failure, fmt.Errorf("candidate preflight failed (nothing stopped): %w", err)
+	}
+	// Keep exactly one verified rollback executable, independently of the
+	// job-scoped transient files. A failure here aborts BEFORE old shutdown.
+	if _, err := saveRollbackSlot(filepath.Dir(job.Directory), previous, old.ExecutableSHA256); err != nil {
+		return failure, fmt.Errorf("cannot preserve rollback executable: %w", err)
 	}
 	if err := phase("waiting_for_idle"); err != nil {
 		return failure, err

@@ -74,7 +74,7 @@ func main() {
 				os.Exit(1)
 			}
 			return
-		case "update", "update-status", "_update-worker":
+		case "update", "update-status", "cleanup", "_update-worker":
 			if err := updateCommand(os.Args[1:]); err != nil {
 				slog.Error("terminal-mcp updater command failed", "error", err)
 				os.Exit(1)
@@ -268,7 +268,7 @@ func standaloneInfo(args []string, serverID, listen, root string, envToken bool)
 	stdoutLog, stderrLog := activeServerLogPaths()
 	return mcpserver.RuntimeInfo{
 		ServerID: serverID, Executable: executable,
-		ExecutableSHA256: hex.EncodeToString(hash.Sum(nil)),
+		ExecutableSHA256: hex.EncodeToString(hash.Sum(nil)), Revision: sourceRevision(),
 		WorkingDirectory: cwd, FileRoot: root, Listen: listen,
 		Arguments: append([]string(nil), args...), PID: os.Getpid(),
 		EnvToken: envToken, StdoutLog: stdoutLog, StderrLog: stderrLog,

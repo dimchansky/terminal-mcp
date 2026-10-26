@@ -20,10 +20,15 @@ go build -trimpath -o terminal-mcp.exe ./cmd/terminal-mcp
 .\terminal-mcp.exe status
 ```
 
-This creates a private standalone installation at
+On the **first** start, this creates a private standalone installation at
 `%APPDATA%\terminal-mcp\standalone\terminal-mcp.exe` and listens at
-`http://127.0.0.1:8090/mcp`. No Python, launchd, systemd or Windows SCM
-registration is needed.
+`http://127.0.0.1:8090/mcp`. Later starts use the existing installed
+version and refuse to overwrite a different executable implicitly.
+The downloaded CLI can always run `status` or `stop`, regardless of its
+own binary version. Status shows the running executable, SHA-256 and
+embedded Go revision when available. Offline Windows updates still require
+the documented stop/backup/replace/restart sequence. No Python, launchd,
+systemd or Windows SCM registration is needed.
 
 The first background start creates a random private bearer token and its
 directory at `%APPDATA%\terminal-mcp\token`. Files are protected with
@@ -53,7 +58,8 @@ them with `start --clear-env`. The Windows standalone config stores
 command line may appear in process listings and shell history; avoid
 sensitive values in CLI flags.
 
-Use the installed executable for subsequent control:
+Any copy of the CLI can be used for `status` or `stop`; the following
+uses the installed path as a stable example:
 
 ```powershell
 & "$env:APPDATA\terminal-mcp\standalone\terminal-mcp.exe" status

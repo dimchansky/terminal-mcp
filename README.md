@@ -100,12 +100,25 @@ For a background process that survives closing the terminal, run:
 ./bin/terminal-mcp stop
 ```
 
-`start` copies its executable outside the development directory into
-`~/.config/terminal-mcp/standalone/`, starts it in a separate process session,
-and saves the stable working directory, token file and file root for subsequent
-starts. **It does not snapshot `PATH` or other inherited environment variables.**
-This means rebuilding `bin/terminal-mcp` cannot overwrite the running binary.
-Background operation does not provide automatic login/reboot startup or crash recovery.
+The **first** `start` copies the executable into the private
+`~/.config/terminal-mcp/standalone/terminal-mcp` installation and runs the
+detached server from that file; it reports `installed_new: true` and the
+installed path. Later `start` commands only start the **existing installed
+version**. If a downloaded or locally rebuilt CLI has different executable
+bytes, `start` explicitly refuses to install it; use `update` while the
+server is running. For an offline upgrade, start the installed executable
+first and then use `update --candidate=...`. `status`/`stop` are lightweight
+authenticated HTTP clients and work from **any** copy of the CLI, including
+a downloaded executable that is different from the installed version.
+They never install or upgrade anything. `status` reports the actual
+`executable`, `revision` (if embedded by Go), `executable_sha256`,
+`working_directory`, PID and audit health. SHA-256, not revision, is the
+authoritative identity.
+
+The server keeps the configured stable working directory, token file and
+file root across starts. **It does not snapshot `PATH` or other inherited
+environment variables.** Background operation does not provide automatic
+login/reboot startup or crash recovery.
 
 No Python, `launchd`, or service registration is required for standalone
 mode. The `serve` subcommand is optional:
@@ -138,16 +151,27 @@ make update
 make update-status
 ```
 
-`make update` runs Go checks, builds a candidate into
-`bin/terminal-mcp.next` and submits it to the running installed updater.
-It does **not** replace the installed executable before the updater saves
-the rollback image. The corresponding direct CLI commands are:
+`make update` runs the Go checks, rebuilds the **single development binary**
+`bin/terminal-mcp`, then queues an update using that candidate. It no longer
+leaves a second permanent `bin/terminal-mcp.next`. All Makefile control
+targets (`start`, `status`, `stop`, `update`, `update-status`, `cleanup`)
+invoke the same development CLI, with no separate `STANDALONE` binary
+variable. `make start` builds the binary **only when missing**; run
+`make build` intentionally after changing source. The corresponding commands
+can also be run from a single standalone downloaded binary:
 
 ```sh
-go build -trimpath -o bin/terminal-mcp.next ./cmd/terminal-mcp
-"$HOME/.config/terminal-mcp/standalone/terminal-mcp" update --candidate=bin/terminal-mcp.next
-"$HOME/.config/terminal-mcp/standalone/terminal-mcp" update-status
+./terminal-mcp start
+./terminal-mcp status
+./terminal-mcp stop
+./terminal-mcp update --candidate=./terminal-mcp
+./terminal-mcp update-status
+./terminal-mcp cleanup --dry-run
 ```
+
+No binary is implicitly overwritten by a `status`, `stop`, or subsequent
+`start`. A running server is upgraded only with `update`, which saves a
+verified previous version before replacing the installed one.
 
 Never build directly over the installed running executable; this invalidates
 the rollback image.
@@ -165,10 +189,21 @@ new binary, verifies the new instance and MCP metadata, and attempts rollback
 if the new version fails.
 
 `update-status` reports `applied`, `failed`, or `rolled_back` when finished.
-Worker and preflight logs, manifests, status and saved binaries remain in
-`~/.config/terminal-mcp/updates/<job-id>/`. After an update or rollback,
-the **server's** stdout and stderr go to the stable `logs/` directory,
-not to the update job. The old terminal command will exit.
+During an update, the worker needs independent temporary copies of itself,
+the candidate, and the previous binary. Before stopping the server, it
+atomically saves a **single last-known-good executable** at
+`~/.config/terminal-mcp/rollback/terminal-mcp` (when using the default
+updater state directory). On confirmed `applied` or `rolled_back`, the
+temporary job binaries are removed; `status.json`, `manifest.json`,
+`worker.log` and `preflight.log` remain for diagnostics. Failed or ambiguous
+jobs keep their recovery binaries. Older completed jobs can be inspected using
+`make cleanup` (dry run) and explicitly pruned with `make cleanup-apply` or
+`terminal-mcp cleanup --apply`. Cleanup **never** removes the live installed
+server, rollback slot, audit history, diagnostics, user backups or old manually
+staged candidate files.
+
+The **server's** stdout and stderr continue to use the stable `logs/`
+directory, including after rollback. The old terminal command will exit.
 The connection drops briefly; obtain the new `server_id` and refresh ChatGPT's
 tools if the status reports `refresh_tools_required`.
 
