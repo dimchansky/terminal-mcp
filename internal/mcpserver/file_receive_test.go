@@ -171,6 +171,19 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 	if err != nil || bad == nil || !bad.IsError {
 		t.Fatalf("malformed file object was not rejected: %+v %v", bad, err)
 	}
+	// A schema-valid call reaches the typed handler. Its request_finish must
+	// retain the operation ID just like schema-rejected calls.
+	valid := filesystem.ReceiveArgs{
+		ServerID: host.ID(), OperationID: "schema-valid-disallowed-host", Path: path,
+		File: filesystem.OpenAIFile{
+			DownloadURL: signedURL, FileID: "file_123456",
+			FileName: "archive.zip", MIMEType: "application/zip",
+		},
+	}
+	typed, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "file_receive", Arguments: valid})
+	if err != nil || typed == nil || !typed.IsError {
+		t.Fatalf("unsafe schema-valid URL was not rejected: %+v %v", typed, err)
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("rejected tool created a file: %v", err)
 	}
@@ -184,7 +197,7 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 		case "request_start":
 			starts++
 			input, ok := event.Args.(map[string]any)
-			if !ok || input["unknown_sensitive_field"] != extraSecret {
+			if !ok || (event.OperationID != "schema-valid-disallowed-host" && input["unknown_sensitive_field"] != extraSecret) {
 				t.Fatalf("audit lost unknown sensitive arguments: %+v", event)
 			}
 			switch event.OperationID {
@@ -200,16 +213,24 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 				if input["file"] != malformedURL {
 					t.Fatalf("audit discarded malformed sensitive field: %+v", event)
 				}
+			case "schema-valid-disallowed-host":
+				file, ok := input["file"].(map[string]any)
+				if !ok || file["download_url"] != signedURL {
+					t.Fatalf("audit lost a schema-valid signed URL: %+v", event)
+				}
 			default:
 				t.Fatalf("unexpected operation: %+v", event)
 			}
 		case "request_finish":
 			finishes++
+			if event.OperationID != "receive-secret" && event.OperationID != "bad-file-object" && event.OperationID != "schema-valid-disallowed-host" {
+				t.Fatalf("request_finish lost the file_receive operation_id: %+v", event)
+			}
 		case "request_rejected":
 			t.Fatalf("auditable input rejected before full capture: %+v", event)
 		}
 	}
-	if starts != 2 || finishes != 2 {
+	if starts != 3 || finishes != 3 {
 		t.Fatalf("missing complete request pairs: starts=%d finishes=%d", starts, finishes)
 	}
 }

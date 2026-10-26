@@ -41,6 +41,8 @@ func auditOperationID(value any) string {
 		return a.OperationID
 	case filesystem.EditArgs:
 		return a.OperationID
+	case filesystem.ReceiveArgs:
+		return a.OperationID
 	default:
 		return ""
 	}
