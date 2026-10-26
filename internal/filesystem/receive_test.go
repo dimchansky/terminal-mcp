@@ -107,6 +107,7 @@ func TestReceiveURLPolicy(t *testing.T) {
 		"https://chatgpt.com/backend-api/file/123",
 		"https://api.openai.com/signed",
 		"https://oaisdmntprindiasocentral.blob.core.windows.net/files/00000000-0000-0000-0000-000000000000/raw?sig=test",
+		"https://oaisdmntprnortheu.blob.core.windows.net/files/00000000-0000-0000-0000-000000000000/raw?sig=test",
 	}
 	for _, raw := range allowed {
 		u, err := url.Parse(raw)
