@@ -3,14 +3,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -236,6 +240,87 @@ func TestStandaloneStopDoesNotInterruptActiveSession(t *testing.T) {
 	}
 	if err := waitForExit(info.PID, 5*time.Second); err != nil {
 		t.Fatalf("graceful stop did not complete after process exit: %v", err)
+	}
+}
+
+func TestStandaloneGracefulStopDrainsActiveFileReceive(t *testing.T) {
+	home, binary := standaloneTestBinary(t)
+	addr, err := reserveProbePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte{0, 255, 128, 42}, 16384)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	started := make(chan struct{})
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload[:32768])
+		w.(http.Flusher).Flush()
+		close(started)
+		<-release
+		_, _ = w.Write(payload[32768:])
+	}))
+	defer source.Close()
+	if out, err := standaloneTestCommand(binary, home, "start", "--listen="+addr, "--file-root="+home, "--audit-file=off"); err != nil {
+		t.Fatalf("start: %v %s", err, out)
+	}
+	defer func() {
+		unblock()
+		_, _ = standaloneTestCommand(binary, home, "stop", "--force")
+	}()
+	token := filepath.Join(home, ".config", "terminal-mcp", "token")
+	client, err := newUpdateClient(addr, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := client.runtime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(info.FileRoot, "received.bin")
+	var accepted struct {
+		OperationID string `json:"operation_id"`
+		Status      string `json:"status"`
+	}
+	if err := client.tool("file_receive", map[string]any{
+		"server_id": info.ServerID, "operation_id": "graceful-receive",
+		"path": dest, "file": map[string]any{
+			"file_id": "third-party-file", "download_url": source.URL + "/download",
+		},
+	}, &accepted); err != nil || accepted.OperationID != "graceful-receive" {
+		t.Fatalf("asynchronous admission: %+v %v (file_root=%q)", accepted, err, info.FileRoot)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("file download did not start")
+	}
+	var progress struct {
+		Status string `json:"status"`
+	}
+	if err := client.tool("file_receive_status", map[string]string{
+		"server_id": info.ServerID, "operation_id": "graceful-receive",
+	}, &progress); err != nil || progress.Status != "running" {
+		t.Fatalf("download was not running: %+v %v", progress, err)
+	}
+	out, err := standaloneTestCommand(binary, home, "stop")
+	if err != nil || !strings.Contains(string(out), `"status":"draining"`) {
+		t.Fatalf("stop must drain accepted download: %v %s", err, out)
+	}
+	current, err := client.runtime()
+	if err != nil || current.ServerID != info.ServerID || !current.Draining ||
+		current.ActiveOperations < 1 {
+		t.Fatalf("active transfer was not protected by drain: %+v %v", current, err)
+	}
+	unblock()
+	if err := waitForExit(info.PID, 6*time.Second); err != nil {
+		t.Fatalf("server did not stop after transfer finished: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("drain interrupted binary download: %d bytes, %v", len(got), err)
 	}
 }
 

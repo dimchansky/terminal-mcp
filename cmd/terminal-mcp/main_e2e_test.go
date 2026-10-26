@@ -130,16 +130,18 @@ func TestRealCLIBinarySIGTERMAndAuditFlush(t *testing.T) {
 	defer cancel()
 	client := connectHTTP(t, ctx, address)
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || tools == nil || len(tools.Tools) != 13 {
+	if err != nil || tools == nil || len(tools.Tools) != 14 {
 		t.Fatalf("real CLI tool discovery: %v, %+v", err, tools)
 	}
 	list := mcpList(t, ctx, client)
 	if list.ServerID == "" {
 		t.Fatal("real CLI did not provide a server ID")
 	}
+	release := filepath.Join(stateDir, "release-child")
 	run := mcpCall[session.ActionResult](t, ctx, client, "terminal_start", session.StartArgs{
 		ServerID: list.ServerID, OperationID: "real-sigterm-child",
-		Argv: []string{"/bin/sleep", "60"}, Mode: "pipes", WaitMS: 0,
+		Argv: []string{"/bin/sh", "-c", "while [ ! -f \"$1\" ]; do sleep 0.05; done", "sh", release},
+		Mode: "pipes", WaitMS: 0, CloseOnExit: true,
 	})
 	if run.Observation != nil {
 		childPID = run.Observation.Session.PID // Also needed by test cleanup if assertions fail.
@@ -151,6 +153,14 @@ func TestRealCLIBinarySIGTERMAndAuditFlush(t *testing.T) {
 		t.Fatalf("close MCP client: %v", err)
 	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		t.Fatal("SIGTERM interrupted an active managed child")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("continue"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	select {

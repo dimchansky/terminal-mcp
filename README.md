@@ -27,7 +27,7 @@ Running the server and updater requires no Python or OS service manager. The `fi
 
 ## What the server does
 
-The server provides 13 MCP tools.
+The server provides 14 MCP tools.
 
 | Tool | Function |
 | --- | --- |
@@ -41,7 +41,8 @@ The server provides 13 MCP tools.
 | `file_read` | Read UTF-8 text with line numbers and a file version. |
 | `file_edit` | Replace exact text after a version check. |
 | `file_write` | Create a file or replace a file with a version check. |
-| `file_receive` | Save a ChatGPT-provided binary file locally, without passing its bytes through the model. |
+| `file_receive` | Start a binary download from any HTTP(S) URL without waiting for completion. |
+| `file_receive_status` | Read download progress and the final result, repeatedly. |
 | `file_search` | Search file content with bounded results. |
 | `file_list` | List the entries in one directory. |
 
@@ -59,13 +60,32 @@ There is no domain, provider or network allowlist. The service already allows
 arbitrary commands with the user's OS permissions; `file_receive` is not a
 separate sandbox or security boundary.
 
-The download streams up to **128 MiB** into a private temporary file and
-publishes it atomically only if the destination does not already exist. Its
-parent directory must exist. A successful receipt reports the exact byte count
-and SHA-256 digest. The **entire** tool request, including signed URLs, file IDs,
-unknown fields and other arguments, is preserved in the owner's private audit
-without redaction. The operation uses the same retry ledger as other filesystem
-mutations.
+`file_receive` **acknowledges quickly** after admission and the required
+pre-effect audit: it returns `operation_id`, `status`, `stage`, and `replayed`
+without waiting for the actual download. The independent transfer continues
+when the client disconnects or the original MCP call reaches its deadline.
+Call `file_receive_status(server_id, operation_id)` to inspect:
+
+- `running` with stages `queued`, `connecting`, `downloading`, `finalizing`;
+  `bytes_downloaded` is always known, while `total_bytes` and `percent`
+  are `null` when the remote server does not provide `Content-Length`.
+- `completed` with `percent: 100`, the final byte count, destination,
+  timestamp, and immutable `receipt` containing the SHA-256 version.
+- `failed` with the preserved failure receipt and bytes downloaded so far.
+
+Status calls never restart a download and may be repeated after completion,
+including after a signed download URL expires. Results remain only in memory
+until this server instance exits; a new `server_id` cannot retrieve them.
+
+The download streams directly to a private mode-0600 temporary file; it has
+**no arbitrary total-size or overall transfer-duration limit**. It publishes
+atomically only if the destination does not already exist. The parent directory
+must exist. A successful receipt reports exact byte count and SHA-256.
+The **entire** submitted tool request, including signed URLs, file IDs and
+unknown arguments, remains in the owner's private audit without redaction.
+The independent effect uses the shared mutation retry ledger. A graceful
+`stop` or `update` waits for accepted downloads, while `stop --force` may
+abort them.
 
 This tool downloads files **to** the local computer; it does not upload local
 files back to an MCP client.
@@ -208,12 +228,12 @@ path. The Windows port currently requires
 be launched through the running server's `terminal_start` tool. A temporary,
 independent copy of the binary performs the update after the initiating command
 finishes. It checks the candidate using an authenticated MCP connection on an
-ephemeral port (including a real process launch and file listing), waits for
-for the verified candidate before atomically closing admission to new work,
-then drains all already accepted downloads, mutations, and managed processes
-(without a fixed drain deadline) and asks the old instance to stop itself. It then atomically installs and starts the
-new binary, verifies the new instance and MCP metadata, and attempts rollback
-if the new version fails.
+ephemeral port (including a real process launch and file listing). After
+preflight, it atomically closes admission to new work, then drains all
+already accepted downloads, mutations, and managed processes (without a
+fixed drain deadline) and asks the old instance to stop itself. It then
+atomically installs and starts the new binary, verifies the new instance
+and MCP metadata, and attempts rollback if the new version fails.
 
 `update-status` reports `applied`, `failed`, or `rolled_back` when finished.
 During an update, the worker needs independent temporary copies of itself,
@@ -245,11 +265,11 @@ Self-update requires an on-disk token; servers using only the
 file. If the old binary was overwritten after starting, the updater refuses
 the operation rather than guess at a rollback. It also refuses to interrupt
 active managed processes; it enters draining mode before waiting for them.
-If the shutdown acknowledgement
-is lost, the worker does not assume permission to restart a deliberately stopped
-server; manual recovery may be needed. A crash of the updater can leave a pending
-marker requiring manual inspection. There is no permanent supervisor,
-so an unexpected crash after a successful update is not automatically restarted.
+If the shutdown acknowledgement is lost, the worker does not assume
+permission to restart a deliberately stopped server; manual recovery may be
+needed. A crash of the updater can leave a pending marker requiring manual
+inspection. There is no permanent supervisor, so an unexpected crash after
+a successful update is not automatically restarted.
 
 ### Graceful stop and explicit force
 
@@ -489,7 +509,7 @@ In the applicable ChatGPT workspace, add a custom MCP server through the tunnel.
 
 For this setup, choose **No authentication** for the custom MCP server. The tunnel client already supplies the local bearer token. Do not put your runtime key in the ChatGPT server-authentication field.
 
-Review and enable the 13 MCP tools. The UI can change. Refer to the [custom MCP server guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for current steps.
+Review and enable the 14 MCP tools. The UI can change. Refer to the [custom MCP server guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for current steps.
 
 **A healthy tunnel does not prove that ChatGPT can use the tools.** Make a real tool call to confirm the connection.
 

@@ -1,6 +1,6 @@
 # Local Terminal MCP — Behavior Specification
 
-**Current interface:** 13 MCP tools. The server reports MCP implementation version `0.2.0`.
+**Current interface:** 14 MCP tools. The server reports MCP implementation version `0.2.0`.
 
 **Platforms:** macOS, Linux and Windows. **Access model:** one trusted local service account.
 
@@ -36,11 +36,14 @@ self-update worker is currently available on macOS/Linux only. It contains the s
 
 Startup uses a dedicated `flag.FlagSet`. The server accepts an explicit
 `context.Context` for cancellation; the executable subscribes to SIGINT and
-SIGTERM. HTTP shutdown stops accepting new connections and gives already
-accepted requests up to five seconds to finish. Request contexts are not
-cancelled merely by the shutdown signal. If the drain deadline expires, the
-server closes remaining HTTP connections and reports the error. Managed
-processes are closed after HTTP draining; their cleanup has its own bound.
+SIGTERM. For ordinary cancellation, the service first enters draining:
+new work is rejected, while already accepted operations and managed
+processes are allowed to finish without a fixed deadline. While draining,
+the HTTP interface remains available for status and control of existing
+sessions. Once idle, HTTP shutdown waits for admitted requests to finish
+before the audit is closed and the service exits. Explicit `stop --force`
+may abort work. A bounded HTTP-close mode exists only in isolated tests;
+it is not the default production shutdown contract.
 
 ```text
 MCP client
@@ -95,7 +98,7 @@ A tunnel can reconnect while the Go server continues to run. A server restart re
 
 ### Stdio transport
 
-Use `--transport=stdio` when an MCP host starts the server directly. Stdio provides the same 13 tools.
+Use `--transport=stdio` when an MCP host starts the server directly. Stdio provides the same 14 tools.
 
 Stdio uses stdout for MCP data and stderr for diagnostics. It does not require the HTTP token.
 
@@ -400,21 +403,46 @@ on hostname, IP address (including loopback and private networks), provider or
 port. Standard Go HTTP redirects are followed, including across hosts and
 between HTTP/HTTPS (up to 10 redirects). There is no URL-source allowlist:
 this service already exposes arbitrary process execution and is not a sandbox.
-The client has a three-minute timeout and a 128 MiB download limit.
+The command accepts a transfer into the shared mutation ledger, waits
+only for successful pre-effect audit admission, and returns promptly with
+`operation_id`, `status`, `stage`, and `replayed`. The independently
+executing transfer can outlive its initiating MCP request. There is no fixed
+overall download timeout or hardcoded maximum total size. Network, disk and
+server lifetime limits still apply.
 
 The destination must be a new regular file path inside `file_root` whose
-parent already exists. The download is streamed to a mode-0600 temporary
-file, synchronized and atomically linked into place without replacing an
-existing destination. Temporary files are removed on failure. A successful
-receipt reports the byte count and SHA-256 version. This command does not
-upload files from the local computer back into ChatGPT and does not modify
-existing binary files.
+parent already exists. Downloaded bytes stream into a private mode-0600
+temporary file. After all bytes arrive, the file is synchronized and
+atomically linked into place, never overwriting existing content. Temporary
+files are removed on handled failure. A successful receipt reports byte count
+and SHA-256. This command does not upload local files to an MCP client.
 
-The owner's audit preserves all supplied arguments, including the full
-temporary signed `file.download_url` and any malformed or unknown fields.
-A file object rejected by schema validation is still recorded as supplied,
-before the tool is run. Accepted transfers follow the normal mutation audit
-and retry ledger, independent of the request observation lifetime.
+### `file_receive_status` (read-only progress and final outcome)
+
+**Required:** `server_id`, `operation_id`.
+
+Returns an in-memory snapshot with `status`, `stage`, `path`,
+`bytes_downloaded`, `total_bytes`, `percent`, `started_at`, optionally
+`completed_at` and `receipt`. A running operation can report `queued`,
+`connecting`, `downloading`, or `finalizing`. Unknown Content-Length is
+represented by null `total_bytes` and `percent`, never a fabricated
+percentage. Completed operations report `completed`, 100%, exact bytes and
+the final receipt; failures report `failed`, downloaded bytes and failure
+receipt. An operation that cannot be classified reports `unknown`.
+
+Repeated status calls never trigger a new transfer. Final results remain
+queryable for the life of the same server instance, even when the signed URL
+has expired or the output file has subsequently changed. Nothing is persisted
+to restore operation snapshots after a restart; operations from an old
+`server_id` are unavailable. Graceful stop/update waits for admitted effects
+and their completion audit, while explicit `stop --force` may cancel transfers.
+
+The owner's audit preserves all submitted inputs, including the full signed
+`file.download_url`, malformed and unknown fields. A schema-invalid call
+is still fully audited before validation. An independent accepted transfer
+adds one `operation_start` and one `operation_finish`, even if the
+original `request_finish` preceded completion. Progress updates are not
+separate audit events, so the audit does not balloon with every byte.
 
 ### Common edit and write limits
 

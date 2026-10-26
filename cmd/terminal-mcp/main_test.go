@@ -120,7 +120,7 @@ func TestRunWithContextStdioToolsAndExit(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 	tools, err := conn.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 13 {
+	if err != nil || len(tools.Tools) != 14 {
 		t.Fatalf("stdio MCP tool discovery: %v, tools %v", err, len(tools.Tools))
 	}
 	list := mcpList(t, ctx, conn)
@@ -195,7 +195,9 @@ func mcpList(t *testing.T, ctx context.Context, client *mcp.ClientSession) sessi
 	return mcpCall[session.ListResult](t, ctx, client, "terminal_list", struct{}{})
 }
 
-func TestServeHTTPCleansUpIdleManagedSessions(t *testing.T) {
+func TestServeHTTPDrainsIdleManagedSessions(t *testing.T) {
+	release := filepath.Join(t.TempDir(), "child-finish")
+	t.Cleanup(func() { _ = os.WriteFile(release, []byte("continue"), 0600) })
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +225,8 @@ func TestServeHTTPCleansUpIdleManagedSessions(t *testing.T) {
 	list := mcpList(t, requestCtx, client)
 	started := mcpCall[session.ActionResult](t, requestCtx, client, "terminal_start", session.StartArgs{
 		ServerID: list.ServerID, OperationID: "shutdown-child",
-		Argv: []string{"/bin/sleep", "60"}, Mode: "pipes", WaitMS: 0,
+		Argv: []string{"/bin/sh", "-c", "while [ ! -f \"$1\" ]; do sleep 0.05; done", "sh", release},
+		Mode: "pipes", WaitMS: 0, CloseOnExit: true,
 	})
 	if started.Receipt.Status != "applied" || started.Receipt.SessionID == "" {
 		t.Fatalf("could not start long-lived process: %+v", started)
@@ -234,11 +237,19 @@ func TestServeHTTPCleansUpIdleManagedSessions(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
+		t.Fatalf("HTTP shutdown interrupted a live child: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("continue"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
 		if err != nil {
 			t.Fatalf("HTTP shutdown: %v", err)
 		}
 	case <-time.After(6 * time.Second):
-		t.Fatal("HTTP shutdown blocked on an idle managed child")
+		t.Fatal("HTTP shutdown did not finish after the child exited")
 	}
 	output, err := manager.Read(context.Background(), session.ReadArgs{
 		SessionID: started.Receipt.SessionID, WaitFor: "completion", WaitMS: 0,

@@ -39,3 +39,19 @@ func (m *Manager) Mutate(ctx context.Context, serverID, id, method string, effec
 	}
 	return m.ops.raw.Do(ctx, m.limits.MaxOperations, id, method, effect, fn)
 }
+
+// StartMutation admits and audits independent work, then immediately returns
+// its current snapshot instead of waiting for completion.
+func (m *Manager) StartMutation(ctx context.Context, serverID, id, method string, effect any, fn func(func(mutation.Progress)) mutation.Receipt) (mutation.Snapshot, bool, error) {
+	if err := m.checkServer(serverID); err != nil {
+		return mutation.Snapshot{}, false, err
+	}
+	return m.ops.raw.Start(ctx, m.limits.MaxOperations, id, method, effect, fn)
+}
+
+func (m *Manager) MutationSnapshot(serverID, id, method string) (mutation.Snapshot, error) {
+	if err := m.checkServer(serverID); err != nil {
+		return mutation.Snapshot{}, err
+	}
+	return m.ops.raw.Snapshot(id, method)
+}

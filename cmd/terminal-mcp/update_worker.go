@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -239,6 +240,13 @@ func waitForIdleFence(client *updateClient, serverID string) error {
 			return nil
 		}
 		var httpErr *updateHTTPError
+		if errors.As(err, &httpErr) && httpErr.status == http.StatusBadRequest &&
+			strings.Contains(httpErr.body, "unknown action") {
+			// Legacy servers (before asynchronous draining) have no "ready".
+			// Their successful "begin" already guarantees an idle final fence.
+			// This permits safely upgrading a previously installed instance.
+			return nil
+		}
 		if !errors.As(err, &httpErr) || httpErr.status != http.StatusConflict {
 			return err
 		}

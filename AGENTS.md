@@ -61,6 +61,23 @@ user workflows. Introduce any new source restriction only at the owner's
 explicit request. Keep necessary transport validation, bounded resource use,
 atomic file publication, retry semantics and the **full owner-visible audit**.
 
+## Async downloads and lifecycle invariants
+
+`file_receive` must acknowledge promptly after admission and pre-effect
+audit, without waiting for network I/O to finish. Use `file_receive_status`
+for byte progress and repeatedly accessible `completed` or `failed`
+results. Keep snapshots only in the current server instance's memory;
+do not persist them across restarts. Never invent total size or percentage
+when the remote server does not send a usable Content-Length. Do not impose
+an arbitrary overall download timeout or hard-coded total size cap.
+
+Normal `stop`, `update`, SIGINT and SIGTERM must first atomically close
+admission for new work, then wait for already accepted mutations, downloads,
+managed processes and audit completion. Maintain status/controls for existing
+sessions during draining. Only an explicit operator-requested `stop --force`
+may abort active transfers or managed processes. Any updater must work with
+the installed previous revision, not just with itself.
+
 ## Development invariants
 
 Favor idiomatic Go, minimal sufficient complexity, explicit errors, reproducible

@@ -160,7 +160,7 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 	}
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "file_receive", Arguments: args})
 	if err != nil || res == nil || !res.IsError {
-		t.Fatalf("unsafe URL was not rejected: %+v %v", res, err)
+		t.Fatalf("schema-invalid request was not rejected: %+v %v", res, err)
 	}
 
 	// Even an incorrectly typed attachment must be audited as supplied,
@@ -182,9 +182,27 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 			FileName: "archive.zip", MIMEType: "application/zip",
 		},
 	}
-	typed := call[filesystem.ActionResult](t, ctx, cs, "file_receive", valid)
-	if typed.Receipt.Status != "failed" {
-		t.Fatalf("unavailable local source did not report failure: %+v", typed)
+	typed := call[filesystem.ReceiveStartResult](t, ctx, cs, "file_receive", valid)
+	if typed.OperationID != valid.OperationID {
+		t.Fatalf("async submission did not return operation ID: %+v", typed)
+	}
+	var failed filesystem.ReceiveStatusResult
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		failed = call[filesystem.ReceiveStatusResult](t, ctx, cs,
+			"file_receive_status", filesystem.ReceiveStatusArgs{ServerID: host.ID(), OperationID: valid.OperationID})
+		if failed.Status != "running" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if failed.Status != "failed" || failed.Receipt == nil {
+		t.Fatalf("unavailable local source did not report failure: %+v", failed)
+	}
+	again := call[filesystem.ReceiveStatusResult](t, ctx, cs,
+		"file_receive_status", filesystem.ReceiveStatusArgs{ServerID: host.ID(), OperationID: valid.OperationID})
+	if again.Status != "failed" || again.Receipt.Error != failed.Receipt.Error {
+		t.Fatalf("terminal status changed after reread: %+v vs %+v", failed, again)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("rejected tool created a file: %v", err)
@@ -218,7 +236,7 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 			case "schema-valid-unavailable-source":
 				file, ok := input["file"].(map[string]any)
 				if !ok || file["download_url"] != signedURL {
-					t.Fatalf("audit lost a schema-valid signed URL: %+v", event)
+					t.Fatalf("audit lost the schema-valid signed URL: %+v", event)
 				}
 			default:
 				t.Fatalf("unexpected operation: %+v", event)

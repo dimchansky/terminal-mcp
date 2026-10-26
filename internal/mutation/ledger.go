@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Receipt retains only bounded outcome metadata, not request payloads.
@@ -36,9 +37,14 @@ func WithObserver(ctx context.Context, observer Observer) context.Context {
 
 type operation struct {
 	fingerprint [32]byte
+	method      string
 	done        chan struct{}
+	started     chan struct{}
 	receipt     Receipt
 	startErr    error // No effect was executed; this key must not be reserved.
+	progress    Progress
+	startedAt   time.Time
+	completedAt time.Time
 }
 
 type Ledger struct {
@@ -62,16 +68,106 @@ func ValidID(id string) bool {
 	return true
 }
 
+type Progress struct {
+	Stage           string `json:"stage,omitempty"`
+	Path            string `json:"path,omitempty"`
+	BytesDownloaded int64  `json:"bytes_downloaded"`
+	TotalBytes      *int64 `json:"total_bytes"`
+}
+
+type Snapshot struct {
+	OperationID string
+	Status      string
+	Progress    Progress
+	Receipt     *Receipt
+	StartedAt   time.Time
+	CompletedAt *time.Time
+}
+
 func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect any, fn func() Receipt) (Receipt, bool, error) {
+	op, replayed, err := l.admit(ctx, limit, id, method, effect, func(_ func(Progress)) Receipt { return fn() })
+	if err != nil {
+		return Receipt{}, replayed, err
+	}
+	select {
+	case <-op.done:
+		if op.startErr != nil {
+			return Receipt{}, replayed, op.startErr
+		}
+		return op.receipt, replayed, nil
+	case <-ctx.Done():
+		return Receipt{}, replayed, ctx.Err()
+	}
+}
+
+// Start begins an independent effect but only returns after the pre-effect
+// audit start has been written successfully. It never waits for the effect.
+func (l *Ledger) Start(ctx context.Context, limit int, id, method string, effect any, fn func(func(Progress)) Receipt) (Snapshot, bool, error) {
+	op, replayed, err := l.admit(ctx, limit, id, method, effect, fn)
+	if err != nil {
+		return Snapshot{}, replayed, err
+	}
+	select {
+	case <-op.started:
+		if op.startErr != nil {
+			return Snapshot{}, replayed, op.startErr
+		}
+		out, err := l.Snapshot(id, method)
+		return out, replayed, err
+	case <-ctx.Done():
+		return Snapshot{}, replayed, ctx.Err()
+	}
+}
+
+func (l *Ledger) Snapshot(id, method string) (Snapshot, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	op := l.entries[id]
+	if op == nil || op.method != method {
+		return Snapshot{}, fmt.Errorf("operation_not_found: no %s operation with this ID in the current server instance", method)
+	}
+	// The observer sets startErr before closing started. Read it only after
+	// that close: status polling can race a slow pre-effect audit callback.
+	select {
+	case <-op.started:
+		if op.startErr != nil {
+			return Snapshot{}, fmt.Errorf("operation_not_found: %s was not admitted", id)
+		}
+	default:
+	}
+	out := Snapshot{OperationID: id, Status: "running", Progress: op.progress, StartedAt: op.startedAt}
+	select {
+	case <-op.done:
+		receipt := op.receipt
+		out.Receipt = &receipt
+		completed := op.completedAt
+		out.CompletedAt = &completed
+		switch receipt.Status {
+		case "applied":
+			out.Status = "completed"
+			out.Progress.Stage = "completed"
+		case "failed":
+			out.Status = "failed"
+			out.Progress.Stage = "failed"
+		default:
+			out.Status = "unknown"
+			out.Progress.Stage = "unknown"
+		}
+	default:
+	}
+	return out, nil
+}
+
+func (l *Ledger) admit(ctx context.Context, limit int, id, method string, effect any, fn func(func(Progress)) Receipt) (*operation, bool, error) {
 	if !ValidID(id) {
-		return Receipt{}, false, fmt.Errorf("operation_id must be 1..128 ASCII letters, digits, '.', ':', '_' or '-'")
+		return nil, false, fmt.Errorf("operation_id must be 1..128 ASCII letters, digits, '.', ':', '_' or '-'")
 	}
 	if err := ctx.Err(); err != nil {
-		return Receipt{}, false, err
+		return nil, false, err
 	}
 	b, err := json.Marshal(effect)
 	if err != nil {
-		return Receipt{}, false, err
+		return nil, false, err
 	}
 	hash := sha256.Sum256(append([]byte(method+"\x00"), b...))
 	observer, _ := ctx.Value(observerKey{}).(Observer)
@@ -83,38 +179,38 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 	if replayed {
 		if op.fingerprint != hash {
 			l.mu.Unlock()
-			return Receipt{}, true, fmt.Errorf("operation_id_conflict: the key was already used for different effect arguments")
+			return nil, true, fmt.Errorf("operation_id_conflict: the key was already used for different effect arguments")
 		}
 	} else {
 		if l.frozen || (l.draining && method != "write" && method != "signal" && method != "close") {
 			l.mu.Unlock()
-			return Receipt{}, false, fmt.Errorf("server_draining: new work is refused during shutdown or update")
+			return nil, false, fmt.Errorf("server_draining: new work is refused during shutdown or update")
 		}
 		if len(l.entries) >= limit {
 			l.mu.Unlock()
-			return Receipt{}, false, fmt.Errorf("operation_ledger_full: new mutations refused; read/list still work; close locally and restart when safe")
+			return nil, false, fmt.Errorf("operation_ledger_full: new mutations refused; read/list still work; close locally and restart when safe")
 		}
-		op = &operation{fingerprint: hash, done: make(chan struct{})}
+		op = &operation{
+			fingerprint: hash, method: method,
+			done: make(chan struct{}), started: make(chan struct{}),
+			progress: Progress{Stage: "queued"}, startedAt: time.Now().UTC(),
+		}
 		l.entries[id] = op
 		l.inFlight++
-		l.active.Add(1) // Admission and shutdown fencing are both under mu.
+		l.active.Add(1)
 		go func() {
-			// Completion (and audit notification) precedes the ledger receipt
-			// becoming available to the original caller or any replayer.
 			defer func() {
 				l.mu.Lock()
 				if op.startErr != nil {
-					// A rejected pre-effect audit must not consume a retry key.
-					// Replayers already waiting on op.done receive startErr.
 					delete(l.entries, id)
 				}
+				op.completedAt = time.Now().UTC()
 				l.inFlight--
 				close(op.done)
 				l.mu.Unlock()
 				l.active.Done()
 			}()
 			if observer != nil {
-				// Even a broken observer cannot cause an unaudited mutation.
 				startErr := func() (err error) {
 					defer func() {
 						if p := recover(); p != nil {
@@ -125,8 +221,15 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 				}()
 				if startErr != nil {
 					op.startErr = fmt.Errorf("operation_not_executed: pre-effect audit failed: %w", startErr)
+					close(op.started)
 					return
 				}
+			}
+			close(op.started)
+			report := func(p Progress) {
+				l.mu.Lock()
+				op.progress = p
+				l.mu.Unlock()
 			}
 			func() {
 				defer func() {
@@ -134,7 +237,7 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 						op.receipt = Receipt{OperationID: id, Status: "unknown", Error: "internal failure; outcome may be unknown; do not retry with a new key"}
 					}
 				}()
-				op.receipt = fn()
+				op.receipt = fn(report)
 			}()
 			op.receipt.OperationID = id
 			if len(op.receipt.Error) > 1024 {
@@ -144,9 +247,6 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 				func() {
 					defer func() {
 						if p := recover(); p != nil {
-							// The effect has already run. A broken completion
-							// observer must not crash the whole MCP server or
-							// overwrite the stored, replayable receipt.
 							slog.Error("mutation completion observer panicked; outcome remains recorded in ledger",
 								"operation_id", id, "panic", p)
 						}
@@ -157,15 +257,7 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 		}()
 	}
 	l.mu.Unlock()
-	select {
-	case <-op.done:
-		if op.startErr != nil {
-			return Receipt{}, replayed, op.startErr
-		}
-		return op.receipt, replayed, nil
-	case <-ctx.Done():
-		return Receipt{}, replayed, ctx.Err()
-	}
+	return op, replayed, nil
 }
 
 func (l *Ledger) Count() int { l.mu.Lock(); defer l.mu.Unlock(); return len(l.entries) }

@@ -89,6 +89,21 @@ If the process is still active, call `terminal_read`:
 
 Inspect `exit`, `output_done`, `output_incomplete`, `has_more`, and `gap`. A completed process can have incomplete output.
 
+### Independent file downloads
+
+`file_receive` returns an immediate acknowledgement after the pre-effect
+audit is committed. The independent effect continues without holding the
+MCP request open. Query `file_receive_status` using the same `server_id`
+and `operation_id` for in-memory byte progress or repeated final receipts.
+Progress is not added to the audit for each block; original full signed
+URLs and eventual effect receipts remain auditable. Status survives an
+expired file URL, but never survives the server process restart.
+
+Never weaken graceful draining to accommodate a long transfer: `stop`
+and `update` close new-work admission first and wait for all accepted
+mutations and managed processes. Only explicit `stop --force` may abort
+active transfers and sessions.
+
 ### Inspect sessions
 
 `terminal_list({})` shows unclosed sessions. It also gives counts for all retained sessions.

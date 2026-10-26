@@ -198,7 +198,7 @@ func TestFileToolsAndCompletionOverMCP(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 	tools, err := cs.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 13 {
+	if err != nil || len(tools.Tools) != 14 {
 		t.Fatalf("%+v %v", tools, err)
 	}
 	for _, tool := range tools.Tools {

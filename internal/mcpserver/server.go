@@ -44,7 +44,8 @@ func NewWithAudit(manager *session.Manager, recorder *audit.Log, files ...*files
 		add(s, recorder, serverID, "file_read", "Read 1..8 UTF-8 files or inclusive line ranges, with whole-file SHA-256 versions, explicit truncation and next_line. No process/session is created. Max returned text budget is 256 KiB."+root, true, f.Read, fileReadSchema())
 		add(s, recorder, serverID, "file_edit", "Replace exact, unique, non-overlapping text fragments in one file against its expected_version. All edits are validated before an atomic replacement. Returns versions and a bounded preview. On version_conflict reread; do not overwrite. Does not preserve ACLs/xattrs; refuses symlinks and hard-linked targets."+root, false, f.Edit)
 		add(s, recorder, serverID, "file_write", "Create a UTF-8 text file, or replace an existing one only with expected_version. No implicit newline conversion; parents must exist. Atomic single-file publication. Does not preserve ACLs/xattrs; refuses symlinks and hard-linked targets."+root, false, f.Write)
-		addWithMeta(s, recorder, serverID, "file_receive", "Download and save a binary file from any HTTP or HTTPS URL, including localhost, private networks, arbitrary ports and redirects. The file object requires download_url and file_id; ChatGPT can populate it via fileParams, while other MCP clients can supply it directly. Creates a new file only, never overwrites, streams up to 128 MiB, returns SHA-256 and atomically publishes it. The destination parent must exist."+root, false, mcp.Meta{"openai/fileParams": []string{"file"}}, f.Receive)
+		addWithMeta(s, recorder, serverID, "file_receive", "Start an independent streamed download from any HTTP or HTTPS URL (including localhost and redirects). Returns quickly with operation_id and running/completed status; use file_receive_status for byte progress and the durable-in-memory final receipt. No total size or transfer-time limit. Never overwrites existing files; SHA-256 and atomic publication. ChatGPT can supply file automatically via fileParams."+root, false, mcp.Meta{"openai/fileParams": []string{"file"}}, f.Receive)
+		add(s, recorder, serverID, "file_receive_status", "Read the current progress or final receipt for a previously accepted file_receive operation. Reports downloaded and total bytes, percent when known, stage and completion/failure. Idempotent and read-only; completed results remain available until this server instance exits.", true, f.ReceiveStatus)
 		add(s, recorder, serverID, "file_search", "Search local text, returning paths/line numbers. ripgrep supplies ignore-aware file discovery; content is read through the configured root. Literal by default; optional Go regex per line. Results and time are bounded; truncation/skips are explicit."+root, true, f.Search)
 		add(s, recorder, serverID, "file_list", "List one directory, optionally filtered by a basename glob. Includes directories and symlink entries without following them. Bounded output; narrow the path/glob when truncated. Unlike recursive search, this direct listing includes hidden/ignored names."+root, true, f.List)
 	}
@@ -147,6 +148,10 @@ func addWithMeta[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, d
 				if v.Receipt.Error != "" {
 					finish.Error = v.Receipt.Error
 				}
+			case filesystem.ReceiveStartResult:
+				// This is an admission acknowledgment, not the eventual
+				// outcome. operation_finish separately records completion.
+				finish.Status, finish.Replayed = v.Status, v.Replayed
 			}
 		}
 		if writeErr := recorder.Write(audit.NewEvent(finish)); writeErr != nil {

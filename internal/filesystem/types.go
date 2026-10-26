@@ -1,5 +1,7 @@
 package filesystem
 
+import "time"
+
 type Range struct {
 	Path      string `json:"path" jsonschema:"Absolute path inside the configured file root."`
 	StartLine int    `json:"start_line,omitempty" jsonschema:"One-based inclusive line; default 1."`
@@ -61,6 +63,33 @@ type ReceiveArgs struct {
 	OperationID string        `json:"operation_id"`
 	Path        string        `json:"path" jsonschema:"Absolute destination path; the parent directory must already exist."`
 	File        FileReference `json:"file" jsonschema:"Remote file URL and identifier; ChatGPT can populate this using fileParams."`
+}
+
+// ReceiveStartResult acknowledges an independent download without waiting
+// for its bytes. Query progress or the final receipt with file_receive_status.
+type ReceiveStartResult struct {
+	OperationID string `json:"operation_id"`
+	Status      string `json:"status"`
+	Stage       string `json:"stage"`
+	Replayed    bool   `json:"replayed"`
+}
+
+type ReceiveStatusArgs struct {
+	ServerID    string `json:"server_id"`
+	OperationID string `json:"operation_id"`
+}
+
+type ReceiveStatusResult struct {
+	OperationID     string       `json:"operation_id"`
+	Status          string       `json:"status"`
+	Stage           string       `json:"stage"`
+	Path            string       `json:"path,omitempty"`
+	BytesDownloaded int64        `json:"bytes_downloaded"`
+	TotalBytes      *int64       `json:"total_bytes"`
+	Percent         *float64     `json:"percent"`
+	StartedAt       time.Time    `json:"started_at"`
+	CompletedAt     *time.Time   `json:"completed_at,omitempty"`
+	Receipt         *FileReceipt `json:"receipt,omitempty"`
 }
 
 type FileReceipt struct {

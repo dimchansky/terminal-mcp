@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,13 +16,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-)
 
-// A received file stays out of MCP payloads and the model context. Limit the
-// disk space a single authenticated tool call can consume, not its file format.
-const MaxReceiveBytes int64 = 128 << 20
-const receiveTimeout = 3 * time.Minute
+	"terminalmcp/internal/mutation"
+)
 
 type fileReceiver struct {
 	client *http.Client
@@ -29,13 +26,13 @@ type fileReceiver struct {
 
 func newFileReceiver() *fileReceiver {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// A Content-Encoding transformation would change the bytes being saved.
+	// Saving a binary file must never change its compressed response bytes.
 	transport.DisableCompression = true
-	return &fileReceiver{client: &http.Client{Transport: transport, Timeout: receiveTimeout}}
+	// No overall transfer deadline: downloads can outlive MCP tool calls.
+	// Only an explicit forced stop cancels the shared transfer context.
+	return &fileReceiver{client: &http.Client{Transport: transport}}
 }
 
-// parseDownloadURL checks only what net/http needs to fetch a file.
-// Hosts, ports and networks are unrestricted, just like terminal_start.
 func parseDownloadURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -44,32 +41,107 @@ func parseDownloadURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ActionResult, error) {
+// Receive admits a download and acknowledges it after its pre-effect audit
+// is committed, without waiting for the network transfer to finish.
+func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ReceiveStartResult, error) {
 	rel, err := m.relative(a.Path)
 	if err != nil {
-		return ActionResult{}, err
+		return ReceiveStartResult{}, err
 	}
 	if a.File.FileID == "" || len(a.File.FileID) > 512 {
-		return ActionResult{}, errors.New("file.file_id must be nonempty and at most 512 bytes")
+		return ReceiveStartResult{}, errors.New("file.file_id must be nonempty and at most 512 bytes")
 	}
 	u, err := parseDownloadURL(a.File.DownloadURL)
 	if err != nil {
-		return ActionResult{}, err
+		return ReceiveStartResult{}, err
 	}
-	// Keep retries bound to the original file identity and URL. No URL is
-	// persisted by the ledger: only its digest contributes to the fingerprint.
 	effect := a
 	effect.ServerID, effect.OperationID = "", ""
-	return m.mutateUnlocked(ctx, a.ServerID, a.OperationID, "file_receive", effect, func() (FileReceipt, error) {
-		return m.receiveFile(rel, a.Path, u)
-	})
+	snapshot, replayed, err := m.host.StartMutation(ctx, a.ServerID, a.OperationID, "file_receive", effect,
+		func(report func(mutation.Progress)) mutation.Receipt {
+			receipt, receiveErr := m.receiveFile(rel, a.Path, u, report)
+			status, message := "applied", ""
+			if receiveErr != nil {
+				status, message = "failed", receiveErr.Error()
+			}
+			data, err := json.Marshal(receipt)
+			if err != nil {
+				panic(err)
+			}
+			return mutation.Receipt{Status: status, Error: message, Data: data}
+		})
+	if err != nil {
+		return ReceiveStartResult{}, err
+	}
+	return ReceiveStartResult{OperationID: a.OperationID, Status: snapshot.Status,
+		Stage: snapshot.Progress.Stage, Replayed: replayed}, nil
 }
 
-// The download happens outside Manager.mu; only final publication takes the
-// lock. Mutations already admitted by the ledger finish even if the requesting
-// client's observation times out or disconnects.
-func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, error) {
+// ReceiveStatus reads the in-memory ledger. It never starts a transfer and
+// repeat reads return the same final receipt even after the URL expires.
+func (m *Manager) ReceiveStatus(_ context.Context, a ReceiveStatusArgs) (ReceiveStatusResult, error) {
+	snapshot, err := m.host.MutationSnapshot(a.ServerID, a.OperationID, "file_receive")
+	if err != nil {
+		return ReceiveStatusResult{}, err
+	}
+	p := snapshot.Progress
+	out := ReceiveStatusResult{
+		OperationID: snapshot.OperationID, Status: snapshot.Status,
+		Stage: p.Stage, Path: p.Path,
+		BytesDownloaded: p.BytesDownloaded, TotalBytes: p.TotalBytes,
+		StartedAt: snapshot.StartedAt, CompletedAt: snapshot.CompletedAt,
+	}
+	if p.TotalBytes != nil && *p.TotalBytes > 0 {
+		percent := 100 * float64(p.BytesDownloaded) / float64(*p.TotalBytes)
+		if percent > 100 {
+			percent = 100
+		}
+		out.Percent = &percent
+	}
+	if snapshot.Receipt != nil {
+		var receipt FileReceipt
+		if len(snapshot.Receipt.Data) != 0 {
+			if err := json.Unmarshal(snapshot.Receipt.Data, &receipt); err != nil {
+				return ReceiveStatusResult{}, err
+			}
+		}
+		receipt.OperationID, receipt.Status, receipt.Error =
+			snapshot.OperationID, snapshot.Receipt.Status, snapshot.Receipt.Error
+		out.Receipt = &receipt
+		if receipt.Path != "" {
+			out.Path = receipt.Path
+		}
+		if snapshot.Status == "completed" {
+			total := int64(receipt.Bytes)
+			percent := float64(100)
+			out.BytesDownloaded, out.TotalBytes, out.Percent = total, &total, &percent
+		}
+	}
+	return out, nil
+}
+
+type receiveProgressWriter struct {
+	writer io.Writer
+	count  int64
+	path   string
+	total  *int64
+	report func(mutation.Progress)
+}
+
+func (w *receiveProgressWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.count += int64(n)
+	w.report(mutation.Progress{
+		Stage: "downloading", Path: w.path, BytesDownloaded: w.count, TotalBytes: w.total,
+	})
+	return n, err
+}
+
+// The transfer runs independently of the MCP request context. Shutdown
+// draining waits for it; only explicit stop --force cancels m.receiveCtx.
+func (m *Manager) receiveFile(rel, path string, source *url.URL, report func(mutation.Progress)) (FileReceipt, error) {
 	receipt := FileReceipt{Path: path}
+	report(mutation.Progress{Stage: "connecting", Path: path})
 	parent, err := m.root.OpenRoot(filepath.Dir(rel))
 	if err != nil {
 		return receipt, err
@@ -98,20 +170,13 @@ func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, e
 		}
 	}()
 
-	// The ledger owns the effect lifetime. A bounded independent deadline lets
-	// an accepted transfer complete after an MCP client request is cancelled.
-	downloadCtx, cancel := context.WithTimeout(m.receiveCtx, receiveTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, source.String(), nil)
+	req, err := http.NewRequestWithContext(m.receiveCtx, http.MethodGet, source.String(), nil)
 	if err != nil {
 		return receipt, errors.New("cannot construct file download request")
 	}
-	client := *m.receiver.client
-	client.Timeout = receiveTimeout
-	resp, err := client.Do(req)
+	resp, err := m.receiver.client.Do(req)
 	if err != nil {
-		// Avoid repeating the URL in the tool's error text: the complete
-		// signed URL is already captured in the owner's request_start audit.
+		// The full signed URL is already available to the owner in request_start.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return receipt, fmt.Errorf("file download failed: %v", urlErr.Err)
@@ -125,17 +190,19 @@ func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, e
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
 		return receipt, errors.New("file download has unexpected Content-Encoding")
 	}
-	if resp.ContentLength > MaxReceiveBytes {
-		return receipt, fmt.Errorf("file exceeds %d byte download limit", MaxReceiveBytes)
+	var total *int64
+	if resp.ContentLength >= 0 {
+		size := resp.ContentLength
+		total = &size
 	}
+	report(mutation.Progress{Stage: "downloading", Path: path, TotalBytes: total})
 	hash := sha256.New()
-	count, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(resp.Body, MaxReceiveBytes+1))
+	progress := &receiveProgressWriter{writer: io.MultiWriter(f, hash), path: path, total: total, report: report}
+	count, err := io.Copy(progress, resp.Body)
 	if err != nil {
 		return receipt, fmt.Errorf("file download stream failed: %w", err)
 	}
-	if count > MaxReceiveBytes {
-		return receipt, fmt.Errorf("file exceeds %d byte download limit", MaxReceiveBytes)
-	}
+	report(mutation.Progress{Stage: "finalizing", Path: path, BytesDownloaded: count, TotalBytes: total})
 	if err := f.Sync(); err != nil {
 		return receipt, err
 	}
@@ -148,8 +215,7 @@ func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, e
 	if m.closed {
 		return receipt, errors.New("file service is closed")
 	}
-	// Link publishes a fully written regular file, and never replaces a
-	// destination another process created during the download.
+	// Fully written regular file is published atomically without overwriting.
 	if err := parent.Link(temp, name); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return receipt, errors.New("file_exists: destination created during download")

@@ -310,16 +310,16 @@ func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token st
 	return httpguard.Wrap(mux, host, token)
 }
 
-// serveHTTP owns the listener and session manager.
-// On cancellation it stops accepting connections, lets admitted HTTP requests
-// finish for up to five seconds, then stops any remaining managed processes.
+// serveHTTP owns the listener and session manager. Normal cancellation first
+// closes admission for new work, then drains accepted operations and managed
+// processes without an arbitrary shutdown deadline. A forced stop is explicit.
 func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, standalone ...*updateServer) error {
-	return serveHTTPWithTimeout(ctx, manager, server, listener, token, 5*time.Second, standalone...)
+	return serveHTTPWithTimeout(ctx, manager, server, listener, token, 0, standalone...)
 }
 
-// serveHTTPWithTimeout makes timeout behavior testable without a five-second
-// sleep in every failure-path test. The shutdown deadline bounds HTTP draining,
-// not the independent process-termination grace inside manager.Close.
+// serveHTTPWithTimeout preserves an explicit bounded-close test hook. A
+// positive timeout exercises forced HTTP drain for failure-path tests; a zero
+// timeout follows the normal unbounded graceful shutdown contract.
 func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, standalone ...*updateServer) error {
 	defer func() { _ = listener.Close() }()
 	defer manager.Close()
@@ -349,7 +349,29 @@ func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server 
 		}
 		return serveErr
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		if timeout == 0 {
+			// SIGTERM/SIGINT must protect active work just like "stop". During
+			// the drain, the listener remains available for status and for
+			// input/signal/close actions on existing managed processes.
+			if manager.DrainMode() == "" {
+				if _, err := manager.BeginDrain(manager.ID(), "stop"); err != nil {
+					return err
+				}
+			}
+			if manager.DrainMode() == "stop" {
+				for {
+					if manager.TryFinishDrain(manager.ID(), "stop") == nil {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}
+		}
+		shutdownCtx := context.Background()
+		cancel := func() {}
+		if timeout > 0 {
+			shutdownCtx, cancel = context.WithTimeout(shutdownCtx, timeout)
+		}
 		shutdownErr := httpServer.Shutdown(shutdownCtx)
 		cancel()
 		var closeErr error
