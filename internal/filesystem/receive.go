@@ -46,6 +46,12 @@ func validateChatGPTDownloadURL(u *url.URL) error {
 		return errors.New("file.download_url must be a trusted HTTPS file URL")
 	}
 	host := strings.ToLower(u.Hostname())
+	// ChatGPT fileParams currently supplies generated conversation files from
+	// this Azure Blob account. Allow this observed host exactly, not all
+	// *.blob.core.windows.net accounts (which third parties can own).
+	if host == "oaisdmntprindiasocentral.blob.core.windows.net" {
+		return nil
+	}
 	for _, domain := range []string{"oaiusercontent.com", "openai.com", "chatgpt.com"} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return nil

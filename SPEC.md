@@ -395,7 +395,10 @@ fields: `download_url` and `file_id` (required), `mime_type` and
 `file_name` (optional).
 
 The server downloads the exact HTTP response bytes (without automatic
-decompression) from an HTTPS URL on an approved OpenAI-controlled host.
+decompression) from an HTTPS URL on an approved OpenAI-controlled host,
+including the exact ChatGPT file storage account
+`oaisdmntprindiasocentral.blob.core.windows.net` observed during integration
+testing. It does not allow arbitrary `*.blob.core.windows.net` accounts.
 Redirects follow the same host and HTTPS restrictions. The client has a
 three-minute timeout, and the maximum downloaded size is 128 MiB.
 

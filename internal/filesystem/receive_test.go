@@ -106,6 +106,7 @@ func TestReceiveURLPolicy(t *testing.T) {
 		"https://files.oaiusercontent.com/file?id=a",
 		"https://chatgpt.com/backend-api/file/123",
 		"https://api.openai.com/signed",
+		"https://oaisdmntprindiasocentral.blob.core.windows.net/files/00000000-0000-0000-0000-000000000000/raw?sig=test",
 	}
 	for _, raw := range allowed {
 		u, err := url.Parse(raw)
@@ -121,6 +122,9 @@ func TestReceiveURLPolicy(t *testing.T) {
 		"https://example.com/a",
 		"https://user:password@files.oaiusercontent.com/a",
 		"https://files.oaiusercontent.com:8443/a",
+		"https://someoneelse.blob.core.windows.net/files/x/raw?sig=test",
+		"https://oaisdmntprindiasocentral.blob.core.windows.net.evil.test/files/x/raw",
+		"http://oaisdmntprindiasocentral.blob.core.windows.net/files/x/raw",
 		"https://[::1]/a",
 		"https://files.oaiusercontent.com/a#fragment",
 	}

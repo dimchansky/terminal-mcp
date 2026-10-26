@@ -54,8 +54,11 @@ and a unique `operation_id`. The `file` object has required
 `file_id` and `download_url` fields and optional `file_name` and
 `mime_type` fields. Do not manually invent a download URL.
 
-The server downloads directly via HTTPS from approved OpenAI file hosts, streams
-up to **128 MiB** into a private temporary file, and publishes it atomically
+The server downloads directly via HTTPS from approved OpenAI file hosts and
+the exact ChatGPT Azure Blob Storage account observed in testing
+(`oaisdmntprindiasocentral.blob.core.windows.net`), not from arbitrary
+Azure Blob accounts. It streams up to **128 MiB** into a private temporary
+file and publishes it atomically
 only if the destination does not already exist. Its parent directory must exist.
 A successful receipt reports the exact byte count and SHA-256 digest. The
 **entire** tool request, including the temporary signed download URL, file ID,
