@@ -16,6 +16,15 @@ an MCP client (including a language model) asked the server to do, whether the
 server accepted the work, and what actually happened**. The owner explicitly
 wants complete inputs, not secret redaction.
 
+**Non-negotiable owner-first trust model:** this audit protects the computer
+owner against unobserved or unintended LLM/MCP-client actions. It does not
+protect an LLM/MCP client from the owner. The more sensitive a client-supplied
+value is, the more important it is for the owner to inspect its exact value
+in this private audit. A future developer or LLM must not independently
+reinterpret a signed URL, password, key, token, or private content as a
+reason to redact or skip an audit field. See [AGENTS.md](../AGENTS.md).
+Only an explicit owner decision can change this policy.
+
 - Preserve **all supplied fields and values** in authenticated, syntactically
   valid `tools/call` requests, including `argv`, supplied `env` overrides,
   `cwd`, exact `terminal_write` input, `file_write.content`,

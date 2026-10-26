@@ -129,8 +129,8 @@ func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, e
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		// net/http URL errors contain the signed URL; never surface it in a
-		// tool result or audit completion error.
+		// Avoid repeating the URL in the tool's error text: the complete
+		// signed URL is already captured in the owner's request_start audit.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return receipt, fmt.Errorf("file download failed: %v", urlErr.Err)

@@ -58,9 +58,10 @@ The server downloads directly via HTTPS from approved OpenAI file hosts, streams
 up to **128 MiB** into a private temporary file, and publishes it atomically
 only if the destination does not already exist. Its parent directory must exist.
 A successful receipt reports the exact byte count and SHA-256 digest. The
-temporary signed URL is redacted from the audit; the destination, file ID, file
-name and other arguments remain auditable. The operation is protected by the
-same retry ledger as other filesystem mutations.
+**entire** tool request, including the temporary signed download URL, file ID,
+file name, unknown fields and other arguments, is preserved in the owner's
+private audit without redaction. The operation is protected by the same retry
+ledger as other filesystem mutations.
 
 This is **one-way** (ChatGPT to the local computer). Whether ChatGPT can bind
 a particular generated conversation file to this tool is a host integration
@@ -320,19 +321,26 @@ Stop the old instance before starting a new one. Explicit custom paths and
 both activation and rollback, even when restoring an older executable.
 Interrupted copies resume only if their existing bytes match the originals.
 
+**Owner-first audit policy:** the audit protects the computer's owner from
+unobserved LLM/MCP-client actions, **not the LLM from its owner**. The owner
+must see the complete model-supplied input, especially sensitive content such
+as passwords, tokens and signed URLs. No tool argument may be masked or
+redacted merely for being sensitive. See [AGENTS.md](AGENTS.md) and
+[the audit design](docs/LOGGING_AND_AUDIT_DESIGN.md).
+
 The audit records:
 
 - The tool name, timestamps, result, `request_id`, and instance-specific `server_id`.
 - Complete `terminal_start` arguments, including `argv`, `cwd`, `env`, and execution options.
 - `terminal_write` input, including text, keys, and base64 data.
 - `session_id` and options for terminal read, signal, resize, and close operations.
-- The complete JSON arguments of decoded `tools/call`, including `file_write.content`, all `file_edit.edits`, `argv`, supplied `env` overrides and terminal input. Exception: `file_receive.file.download_url` is a temporary bearer credential and is recorded as `[REDACTED]`; malformed file objects that cannot be sanitized are rejected before dispatch.
+- The complete JSON arguments of decoded `tools/call`, including `file_write.content`, all `file_edit.edits`, `argv`, supplied `env` overrides, terminal input and the full `file_receive.file.download_url` (including signed URL query parameters). Invalid or unknown fields are also recorded before schema validation.
 - Recognized tool-call `_meta`, `inputResponses`, and `requestState` fields, when supplied.
 - Outcomes of file reads/searches, mutation receipts and SDK schema rejections.
 
 New events have `schema_version: 2`. Each tool request has `request_start` and `request_finish`, linked by `request_id`. A newly admitted mutation additionally has `operation_start` and `operation_finish`, correlated with the originating request and `operation_id`. A canceled request can have an unknown outcome even when its mutation later finishes successfully; a replay creates a new request pair, not another operation pair. The operation receipt describes the requested action, **not the eventual exit of a child process**. Schema-invalid requests retain the exact argument values in the rejected request pair; unknown fields are not discarded. Older audit records with `start`, `finish`, or `rejected` remain readable.
 
-Raw inputs are captured **before** schema validation or conversion into Go structs. JSON whitespace and key ordering may be normalized. Inputs are otherwise unredacted and untruncated except for the `file_receive.file.download_url` credential. Each audit event has a 4 MiB file-size limit. If a complete request-start record cannot fit or be serialized, the MCP tool is rejected **before execution**, with an explicit error and a small `request_rejected` event (not a misleading incomplete request pair). A full record that cannot be written due to a filesystem error likewise blocks a new tool call. The first I/O failure latches an `audit_degraded` state until a controlled restart. Source file bodies returned by `file_read` and child stdout/stderr are not copied into the audit; `operation_finish` may include the usual bounded edit preview. This is a tool-action audit, not a byte-for-byte recording of malformed or unauthenticated protocol traffic.
+Raw inputs are captured **before** schema validation or conversion into Go structs. JSON whitespace and key ordering may be normalized. No model-supplied argument is redacted or truncated because it contains a sensitive value. Each audit event has a 4 MiB file-size limit. If a complete request-start record cannot fit or be serialized, the MCP tool is rejected **before execution**, with an explicit error and a small `request_rejected` event (not a misleading incomplete request pair). A full record that cannot be written due to a filesystem error likewise blocks a new tool call. The first I/O failure latches an `audit_degraded` state until a controlled restart. Source file bodies returned by `file_read` and child stdout/stderr are not copied into the audit; `operation_finish` may include the usual bounded edit preview. This is a tool-action audit, not a byte-for-byte recording of malformed or unauthenticated protocol traffic.
 
 **Commands can contain secrets.** The audit records command arguments and terminal input exactly as supplied.
 

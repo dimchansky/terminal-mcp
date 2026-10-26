@@ -106,7 +106,7 @@ func TestFileReceivePublishesChatGPTFileParamsSchema(t *testing.T) {
 	}
 }
 
-func TestFileReceiveAuditsEverythingExceptTemporarySignedURL(t *testing.T) {
+func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -136,39 +136,80 @@ func TestFileReceiveAuditsEverythingExceptTemporarySignedURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ss.Close() }()
-	cs, err := mcp.NewClient(&mcp.Implementation{Name: "redaction-test", Version: "1"}, nil).Connect(ctx, ct, nil)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "full-owner-audit-test", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = cs.Close() }()
-	const secret = "DO_NOT_LOG_THIS_SIGNED_SECRET"
-	args := filesystem.ReceiveArgs{
-		ServerID: host.ID(), OperationID: "receive-secret", Path: filepath.Join(dir, "not-created.zip"),
-		File: filesystem.OpenAIFile{
-			FileID: "file_123456", DownloadURL: "https://127.0.0.1/private?signature=" + secret,
-			FileName: "archive.zip", MIMEType: "application/zip",
+
+	const secret = "PRESIGNED_URL_SECRET_MUST_BE_IN_OWNER_AUDIT"
+	const extraSecret = "UNKNOWN_SENSITIVE_FIELD_MUST_BE_IN_OWNER_AUDIT"
+	signedURL := "https://127.0.0.1/private?signature=" + secret
+	path := filepath.Join(dir, "not-created.zip")
+	// The URL is deliberately disallowed: even a rejected call must preserve
+	// exactly what the client attempted to send.
+	args := map[string]any{
+		"server_id": host.ID(), "operation_id": "receive-secret", "path": path,
+		"file": map[string]any{
+			"download_url": signedURL, "file_id": "file_123456",
+			"file_name": "archive.zip", "mime_type": "application/zip",
 		},
+		"unknown_sensitive_field": extraSecret,
 	}
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "file_receive", Arguments: args})
 	if err != nil || res == nil || !res.IsError {
 		t.Fatalf("unsafe URL was not rejected: %+v %v", res, err)
 	}
+
+	// Even an incorrectly typed attachment must be audited as supplied,
+	// rather than dropped because its shape is invalid.
+	malformedURL := "https://example.org/?signature=" + secret
 	bad, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "file_receive", Arguments: map[string]any{
 		"server_id": host.ID(), "operation_id": "bad-file-object",
-		"path": args.Path, "file": "https://example.org/?signature=" + secret,
+		"path": path, "file": malformedURL, "unknown_sensitive_field": extraSecret,
 	}})
 	if err != nil || bad == nil || !bad.IsError {
 		t.Fatalf("malformed file object was not rejected: %+v %v", bad, err)
 	}
-	b, err := os.ReadFile(logfile)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("rejected tool created a file: %v", err)
 	}
-	if bytes := string(b); strings.Contains(bytes, secret) ||
-		!strings.Contains(bytes, "[REDACTED]") ||
-		!strings.Contains(bytes, "file_123456") ||
-		!strings.Contains(bytes, "archive.zip") ||
-		!strings.Contains(bytes, "unsafe_file_arguments") {
-		t.Fatalf("signed URL not sanitized or remaining audit data missing: %s", bytes)
+
+	var starts, finishes int
+	for _, event := range readLifecycleAudit(t, logfile) {
+		if event.Tool != "file_receive" {
+			continue
+		}
+		switch event.Phase {
+		case "request_start":
+			starts++
+			input, ok := event.Args.(map[string]any)
+			if !ok || input["unknown_sensitive_field"] != extraSecret {
+				t.Fatalf("audit lost unknown sensitive arguments: %+v", event)
+			}
+			switch event.OperationID {
+			case "receive-secret":
+				file, ok := input["file"].(map[string]any)
+				if !ok || file["download_url"] != signedURL ||
+					file["file_id"] != "file_123456" ||
+					file["file_name"] != "archive.zip" ||
+					file["mime_type"] != "application/zip" {
+					t.Fatalf("audit altered signed URL or file metadata: %+v", event)
+				}
+			case "bad-file-object":
+				if input["file"] != malformedURL {
+					t.Fatalf("audit discarded malformed sensitive field: %+v", event)
+				}
+			default:
+				t.Fatalf("unexpected operation: %+v", event)
+			}
+		case "request_finish":
+			finishes++
+		case "request_rejected":
+			t.Fatalf("auditable input rejected before full capture: %+v", event)
+		}
+	}
+	if starts != 2 || finishes != 2 {
+		t.Fatalf("missing complete request pairs: starts=%d finishes=%d", starts, finishes)
 	}
 }

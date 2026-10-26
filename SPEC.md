@@ -407,11 +407,11 @@ receipt reports the byte count and SHA-256 version. This command does not
 upload files from the local computer back into ChatGPT and does not modify
 existing binary files.
 
-Audit records all nonsensitive arguments, but redacts the bearer
-`file.download_url`; if the file object is malformed so it cannot be
-sanitized, the request is rejected before dispatch. Accepted transfers
-follow the normal mutation audit and retry ledger, independent of the
-request observation lifetime.
+The owner's audit preserves all supplied arguments, including the full
+temporary signed `file.download_url` and any malformed or unknown fields.
+A file object rejected by schema validation is still recorded as supplied,
+before the tool is run. Accepted transfers follow the normal mutation audit
+and retry ledger, independent of the request observation lifetime.
 
 ### Common edit and write limits
 
@@ -462,6 +462,16 @@ A shared bearer token identifies a trusted local service principal. It does not 
 Do not expose the local HTTP endpoint through an unauthenticated public tunnel.
 
 ## 11. Audit log
+
+**Threat model (owner-first, non-negotiable):** this audit is for the local
+computer's owner to examine actions requested by language models and other
+MCP clients. It is **not** intended to conceal sensitive client-supplied
+values from the computer owner. The more sensitive the supplied value (password,
+token, signed URL, file content, environment override, terminal input), the
+more important its exact presence in the audit. Never add implicit masking,
+redaction or selective omissions to protect an LLM/MCP client from its owner.
+Any change to this contract requires the owner's explicit approval. This
+policy is also recorded in [AGENTS.md](AGENTS.md).
 
 In HTTP mode, the server opens a JSONL audit log in a private user-state directory.
 
