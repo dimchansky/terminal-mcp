@@ -42,6 +42,17 @@ Do not point the root at a publicly writable directory or grant the tunnel
 to untrusted users. The file root limits the `file_*` tools, **not** the
 commands launched through terminal tools.
 
+The detached server retains the absolute working directory selected on
+its first start; use `start --working-directory="C:\path\to\project"`
+to change it intentionally (only while stopped). A missing directory is an
+error. It inherits the current start command's environment; old `path`
+fields are ignored instead of restoring a stale `PATH`. Save only
+intentional overrides with repeatable `start --env KEY=VALUE` and remove
+them with `start --clear-env`. The Windows standalone config stores
+`env_overrides`, not an automatic copy of `PATH`. Values passed on the
+command line may appear in process listings and shell history; avoid
+sensitive values in CLI flags.
+
 Use the installed executable for subsequent control:
 
 ```powershell

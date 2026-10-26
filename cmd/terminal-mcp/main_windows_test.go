@@ -200,7 +200,13 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := run("start", "--listen="+address, "--file-root="+root)
+	stableCWD := filepath.Join(root, "stable-cwd")
+	if err := os.Mkdir(stableCWD, 0700); err != nil {
+		t.Fatal(err)
+	}
+	const explicitEnvKey = "TERMINAL_MCP_WINDOWS_POLICY_TEST"
+	output, err := run("start", "--listen="+address, "--file-root="+root,
+		"--working-directory="+stableCWD, "--env="+explicitEnvKey+"=from-explicit-config")
 	if err != nil {
 		t.Fatalf("Windows background start failed: %v: %s", err, output)
 	}
@@ -215,6 +221,51 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 		t.Fatalf("duplicate Windows start was allowed: %v %s", err, output)
 	}
 	state := filepath.Join(appdata, "terminal-mcp", "standalone")
+	var saved winStandaloneConfig
+	if err := readJSON(filepath.Join(state, "config.json"), &saved); err != nil ||
+		saved.EnvOverrides[explicitEnvKey] != "from-explicit-config" ||
+		saved.WorkingDirectory != stableCWD {
+		t.Fatalf("Windows standalone did not persist explicit cwd/env: %+v %v", saved, err)
+	}
+	configBytes, err := os.ReadFile(filepath.Join(state, "config.json"))
+	if err != nil || strings.Contains(string(configBytes), `"path":`) {
+		t.Fatalf("Windows persisted an obsolete PATH snapshot: %s %v", configBytes, err)
+	}
+	client, err := newUpdateClient(address, filepath.Join(appdata, "terminal-mcp", "token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverID, err := client.serverID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ran struct {
+		Receipt struct {
+			Status string `json:"status"`
+		} `json:"receipt"`
+		Observation struct {
+			Events []struct {
+				Text *string `json:"text"`
+			} `json:"events"`
+		} `json:"observation"`
+	}
+	cmdExe := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
+	if err := client.tool("terminal_start", map[string]any{
+		"server_id": serverID, "operation_id": "windows-explicit-env-e2e",
+		"argv":          []string{cmdExe, "/c", "echo %" + explicitEnvKey + "%"},
+		"close_on_exit": true, "wait_for": "completion", "wait_ms": 3000,
+	}, &ran); err != nil || ran.Receipt.Status != "applied" {
+		t.Fatalf("Windows server could not spawn command with env: %+v %v", ran, err)
+	}
+	foundEnv := false
+	for _, event := range ran.Observation.Events {
+		if event.Text != nil && strings.Contains(*event.Text, "from-explicit-config") {
+			foundEnv = true
+		}
+	}
+	if !foundEnv {
+		t.Fatalf("Windows child did not inherit explicit environment: %+v", ran.Observation)
+	}
 	for _, file := range []string{
 		filepath.Join(state, "config.json"),
 		filepath.Join(appdata, "terminal-mcp", "logs", "server.stdout.log"),

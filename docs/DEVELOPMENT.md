@@ -266,9 +266,11 @@ authenticated loopback endpoint.
 A new installation stores its configuration in
 `~/.config/terminal-mcp/standalone/config.json`. The settings include:
 `listen` (loopback address), `token_file` (private bearer token),
-`file_root` (root for file tools), `working_directory`, `path` (PATH for
-child processes), and optionally `audit_file`. If no token exists, a random
-private token is created at `~/.config/terminal-mcp/token`.
+`file_root` (root for file tools), stable `working_directory`,
+optional explicit `env_overrides` and `audit_file`. The old `path` field
+is accepted but **ignored**; inherited `PATH` is never automatically saved.
+If no token exists, a random private token is created at
+`~/.config/terminal-mcp/token`.
 
 The background binary is installed at
 `~/.config/terminal-mcp/standalone/terminal-mcp`. Builds in the repository
@@ -284,6 +286,27 @@ make status
 
 To change settings, stop the server from an independent terminal, then start
 with explicit flags; this does not require editing generated OS service files.
+
+**Launch and updater environment policy:** the first `start` captures the
+current cwd as an absolute, validated `working_directory` (or uses
+`start --working-directory=...`). That directory is preserved on subsequent
+starts and passed verbatim to updater preflight, activation and rollback;
+a missing directory causes explicit failure. The service does **not** use
+the updater's cwd as a fallback. The launched server otherwise inherits the
+current invoking CLI's environment, with the bearer token stripped. On update,
+the scheduling CLI's environment is captured by its detached worker and
+passed to preflight, activation and rollback. No implicit `PATH` snapshot
+is read from or written into the config.
+
+To pin only intentionally selected variables, call `start --env KEY=VALUE`
+(repeatable). The resulting `env_overrides` map lives in the private
+standalone config; it takes precedence over inherited values even during
+update and rollback. The updater applies it once to its independent worker,
+rather than duplicating secrets in the on-disk job manifest. Use
+`start --clear-env` to discard all saved overrides, possibly together with
+new `--env` flags. `TERMINAL_MCP_TOKEN` cannot be explicitly overridden,
+and secrets should not be passed on the command line where process listings
+or shell history might expose them.
 
 ### Update from the repository or the MCP connection
 

@@ -102,10 +102,10 @@ For a background process that survives closing the terminal, run:
 
 `start` copies its executable outside the development directory into
 `~/.config/terminal-mcp/standalone/`, starts it in a separate process session,
-and saves its working directory, PATH, token file and file root for subsequent
-starts. This means rebuilding `bin/terminal-mcp` cannot overwrite the running
-binary. Background operation does not provide automatic login/reboot startup
-or crash recovery.
+and saves the stable working directory, token file and file root for subsequent
+starts. **It does not snapshot `PATH` or other inherited environment variables.**
+This means rebuilding `bin/terminal-mcp` cannot overwrite the running binary.
+Background operation does not provide automatic login/reboot startup or crash recovery.
 
 No Python, `launchd`, or service registration is required for standalone
 mode. The `serve` subcommand is optional:
@@ -193,12 +193,41 @@ so an unexpected crash after a successful update is not automatically restarted.
 On macOS/Linux, the background controller stores configuration in
 `~/.config/terminal-mcp/standalone/config.json`. On Windows, see
 [Windows configuration and logging](docs/WINDOWS.md#logs). It includes the listen
-address, token file, file root, working directory, PATH and optional audit
-location. Use flags on `terminal-mcp start` to override saved settings
-after stopping the running server. On a fresh installation the macOS/Linux default file root is
+address, token file, file root, stable `working_directory`, optional
+`env_overrides`, and optional audit location. Use flags on
+`terminal-mcp start` after stopping the running server. On a fresh
+installation the macOS/Linux default file root is
 the working directory and the Windows default is the user's home directory;
 a direct `--file-root` argument overrides either. Files outside that root are not accessible to the five `file_*`
 tools, but terminal commands retain the user's OS permissions.
+
+**Working directory and environment policy:**
+
+- On the very first `start`, the server captures the CLI's current working
+  directory as an absolute, resolved path. Subsequent starts, updates,
+  preflight and rollback retain **that same directory**, not the update
+  worker's own cwd. Change it intentionally with
+  `start --working-directory=/absolute/project` while the service is stopped.
+  A missing/non-directory path makes startup fail rather than silently fall
+  back to another directory. Foreground `serve` inherits its launcher's cwd.
+- Each new standalone server inherits the current environment of **the process
+  that starts it**, except for the removed `TERMINAL_MCP_TOKEN` bearer secret.
+  For `start`, this is its CLI invocation. For `update`, it is the CLI
+  scheduling the update, which passes its environment to an independent worker.
+  That worker keeps the same values through candidate preflight, activation
+  and rollback. `PATH` is **not** automatically saved in the configuration.
+- Only deliberately configured overrides persist: use repeatable
+  `start --env KEY=VALUE`. They win over inherited values, including during
+  update and rollback. `start --clear-env` removes all saved overrides;
+  `--clear-env --env KEY=VALUE` replaces the entire set. You cannot
+  override `TERMINAL_MCP_TOKEN` this way. The `env_overrides` map is saved in
+  the private standalone config; secrets supplied on a command line can also
+  be visible to local processes or shell history, so do not use these flags
+  for sensitive values.
+
+Old configuration files containing a `path` field are accepted: this
+obsolete automatic snapshot is ignored and omitted when `start` next saves
+the configuration. Nothing needs to be manually deleted.
 
 On macOS/Linux, a new HTTP start creates a private token at
 `~/.config/terminal-mcp/token` if no explicit token or environment token

@@ -104,6 +104,10 @@ func queueUpdate(args []string) error {
 	if info.ServerID != serverID {
 		return errors.New("server changed during update preparation")
 	}
+	explicitEnv, err := updateEnvironmentOverrides(info, tokenFile)
+	if err != nil {
+		return fmt.Errorf("resolve configured environment for update: %w", err)
+	}
 	candidate, err = filepath.Abs(candidate)
 	if err != nil {
 		return err
@@ -189,7 +193,10 @@ func queueUpdate(args []string) error {
 	cmd.Dir = job.Directory
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Env = withoutEnvToken(os.Environ())
+	// Inherited values come from the CLI that scheduled this update.
+	// Only deliberately configured overrides are pinned in the worker
+	// environment, which its preflight, activation and rollback inherit.
+	cmd.Env = childEnvironment(cmd.Environ(), explicitEnv)
 	if err := cmd.Start(); err != nil {
 		_ = writeJSON(filepath.Join(job.Directory, "status.json"),
 			updateStatus{ID: job.ID, Status: "failed", Error: err.Error()})

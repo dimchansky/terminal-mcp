@@ -476,10 +476,21 @@ start at login or restart after an unexpected crash.
 
 Standalone settings live at
 `~/.config/terminal-mcp/standalone/config.json`. The controller retains the
-token file, file root, working directory and PATH across starts, and avoids
-overwriting a running installed binary. It rejects a duplicate start or a
-listener that it cannot identify and verify. Existing macOS users can import
-the previous LaunchAgent settings once, without needing Python at runtime.
+token file, file root and a stable, absolute working directory across starts.
+The initial cwd comes from the first `start` invocation and may be changed
+explicitly with `start --working-directory=...`; it is never replaced
+by the updater's working directory. The server inherits the environment of
+each launcher; `PATH` and other inherited variables are **not** saved
+automatically. Only `start --env KEY=VALUE` values persist in
+`env_overrides`, and these override the environment inherited during later
+starts, updater preflight, candidate activation and rollback. The updater
+pins them in its worker's environment instead of copying them to its
+manifest. `start --clear-env` clears the saved overrides. Legacy `path`
+fields are ignored. The bearer-token environment variable is intentionally
+filtered and cannot be set as an explicit override. The controller avoids
+overwriting a running installed binary and rejects duplicate starts. Existing
+macOS users can import other previous LaunchAgent settings once without
+requiring Python at runtime.
 
 ### Independent self-update
 

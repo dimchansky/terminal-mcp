@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -164,19 +165,18 @@ func TestStandaloneMigratesLegacyConfig(t *testing.T) {
 	original := standaloneConfig{
 		Listen: "127.0.0.1:8912", FileRoot: root,
 		WorkingDirectory: home, TokenFile: filepath.Join(home, "existing-token"),
-		Path: "/opt/test/bin:/usr/bin",
 	}
 	// The saved launchd format uses "project" rather than "working_directory".
 	if err := writeJSON(filepath.Join(legacy, "config.json"), map[string]string{
 		"listen": original.Listen, "token_file": original.TokenFile,
 		"file_root": original.FileRoot, "project": original.WorkingDirectory,
-		"path": original.Path,
+		"path": "/opt/test/bin:/usr/bin",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	state := filepath.Join(home, ".config", "terminal-mcp", "standalone")
 	c, err := initialStandaloneConfig(state)
-	if err != nil || c != original {
+	if err != nil || !reflect.DeepEqual(c, original) {
 		t.Fatalf("legacy migration lost configuration: %+v %v", c, err)
 	}
 	if err := os.MkdirAll(state, 0700); err != nil {
@@ -189,7 +189,7 @@ func TestStandaloneMigratesLegacyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, err := initialStandaloneConfig(state)
-	if err != nil || after != original {
+	if err != nil || !reflect.DeepEqual(after, original) {
 		t.Fatalf("standalone configuration depends on removed legacy files: %+v %v", after, err)
 	}
 }
@@ -306,15 +306,19 @@ func TestStandaloneCanaryDoesNotDisruptLegacyListener(t *testing.T) {
 		"wait_for": "completion", "wait_ms": 3000,
 	}, &env)
 	if err != nil || env.Receipt.Status != "applied" || len(env.Observation.Events) == 0 ||
-		env.Observation.Events[0].Text == nil || strings.TrimSpace(*env.Observation.Events[0].Text) != "/usr/bin:/bin" {
+		env.Observation.Events[0].Text == nil || strings.TrimSpace(*env.Observation.Events[0].Text) != os.Getenv("PATH") {
 		t.Fatalf("canary lost legacy PATH: %+v %v", env, err)
 	}
 	if !listenerInUse(legacyListener.Addr().String()) {
 		t.Fatal("canary installation stopped the legacy listener")
 	}
 	saved, err := savedStandaloneConfig(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
-	if err != nil || saved.FileRoot != "/" || saved.Path != "/usr/bin:/bin" {
-		t.Fatalf("standalone config failed to preserve legacy settings: %+v %v", saved, err)
+	if err != nil || saved.FileRoot != "/" || len(saved.EnvOverrides) != 0 {
+		t.Fatalf("standalone config should keep root but discard legacy PATH: %+v %v", saved, err)
+	}
+	savedJSON, err := os.ReadFile(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
+	if err != nil || strings.Contains(string(savedJSON), `"path":`) {
+		t.Fatalf("legacy PATH snapshot was persisted again: %q %v", savedJSON, err)
 	}
 	// After the canary stops and the legacy service is removed, the operator
 	// can restore production auditing without retaining the canary's "off".

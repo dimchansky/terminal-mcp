@@ -100,7 +100,8 @@ func fileSHA256(path string) (string, error) {
 func withoutEnvToken(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, item := range env {
-		if !strings.HasPrefix(item, "TERMINAL_MCP_TOKEN=") {
+		name, _, ok := strings.Cut(item, "=")
+		if !ok || !strings.EqualFold(name, "TERMINAL_MCP_TOKEN") {
 			out = append(out, item)
 		}
 	}

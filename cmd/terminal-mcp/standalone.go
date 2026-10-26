@@ -21,13 +21,13 @@ import (
 )
 
 type standaloneConfig struct {
-	Listen           string `json:"listen"`
-	TokenFile        string `json:"token_file"`
-	FileRoot         string `json:"file_root"`
-	AuditFile        string `json:"audit_file,omitempty"`
-	AuditMaxBytes    int64  `json:"audit_max_bytes,omitempty"`
-	WorkingDirectory string `json:"working_directory"`
-	Path             string `json:"path"`
+	Listen           string            `json:"listen"`
+	TokenFile        string            `json:"token_file"`
+	FileRoot         string            `json:"file_root"`
+	AuditFile        string            `json:"audit_file,omitempty"`
+	AuditMaxBytes    int64             `json:"audit_max_bytes,omitempty"`
+	WorkingDirectory string            `json:"working_directory"`
+	EnvOverrides     map[string]string `json:"env_overrides,omitempty"`
 }
 
 func standaloneCommand(args []string) error {
@@ -81,7 +81,7 @@ func initialStandaloneConfig(stateDir string) (standaloneConfig, error) {
 	}
 	c = standaloneConfig{
 		Listen: "127.0.0.1:8090", TokenFile: token, FileRoot: cwd,
-		WorkingDirectory: cwd, Path: os.Getenv("PATH"),
+		WorkingDirectory: cwd,
 	}
 	if runtime.GOOS == "darwin" {
 		home, err := os.UserHomeDir()
@@ -94,7 +94,6 @@ func initialStandaloneConfig(stateDir string) (standaloneConfig, error) {
 			Listen    string `json:"listen"`
 			TokenFile string `json:"token_file"`
 			FileRoot  string `json:"file_root"`
-			Path      string `json:"path"`
 		}
 		if err := readJSON(legacy, &source); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return c, err
@@ -110,9 +109,6 @@ func initialStandaloneConfig(stateDir string) (standaloneConfig, error) {
 		}
 		if source.FileRoot != "" {
 			c.FileRoot = source.FileRoot
-		}
-		if source.Path != "" {
-			c.Path = source.Path
 		}
 	}
 	return c, nil
@@ -140,6 +136,12 @@ func resolveStandaloneConfig(c standaloneConfig) (standaloneConfig, error) {
 		return c, err
 	}
 	if c.WorkingDirectory, err = filepath.EvalSymlinks(c.WorkingDirectory); err != nil {
+		return c, err
+	}
+	if err := validateDirectory(c.WorkingDirectory); err != nil {
+		return c, err
+	}
+	if err := validateEnvironmentOverrides(c.EnvOverrides); err != nil {
 		return c, err
 	}
 	if c.FileRoot, err = filepath.Abs(c.FileRoot); err != nil {
@@ -194,8 +196,13 @@ func listenerInUse(address string) bool {
 
 func startStandalone(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
-	var listen, tokenFile, fileRoot, auditFile string
+	var listen, tokenFile, fileRoot, auditFile, workingDirectory string
 	var auditMaxBytes int64
+	var envFlags environmentFlags
+	var clearEnv bool
+	flags.StringVar(&workingDirectory, "working-directory", "", "absolute server working directory; default retains configured initial cwd")
+	flags.Var(&envFlags, "env", "explicit, persistent KEY=VALUE environment override (repeatable)")
+	flags.BoolVar(&clearEnv, "clear-env", false, "discard previously saved environment overrides")
 	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "hard audit history limit in bytes; 0 keeps saved/default limit")
 	flags.StringVar(&listen, "listen", "", "standalone loopback listening address")
 	flags.StringVar(&tokenFile, "token-file", "", "existing bearer token file")
@@ -234,6 +241,13 @@ func startStandalone(args []string) error {
 	}
 	if fileRoot != "" {
 		config.FileRoot = fileRoot
+	}
+	if workingDirectory != "" {
+		config.WorkingDirectory = workingDirectory
+	}
+	config.EnvOverrides, err = withEnvironmentOptions(config.EnvOverrides, clearEnv, envFlags)
+	if err != nil {
+		return err
 	}
 	if auditFile == "default" {
 		config.AuditFile = ""
@@ -324,7 +338,7 @@ func startStandalone(args []string) error {
 	}
 	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = config.WorkingDirectory
-	cmd.Env = append(withoutEnvToken(os.Environ()), "PATH="+config.Path)
+	cmd.Env = childEnvironment(cmd.Environ(), config.EnvOverrides)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, logs.stdout, logs.stderr
 	if err := cmd.Start(); err != nil {

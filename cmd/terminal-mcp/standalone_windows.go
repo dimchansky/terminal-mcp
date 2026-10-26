@@ -21,13 +21,13 @@ import (
 )
 
 type winStandaloneConfig struct {
-	Listen           string `json:"listen"`
-	TokenFile        string `json:"token_file"`
-	FileRoot         string `json:"file_root"`
-	AuditFile        string `json:"audit_file,omitempty"`
-	AuditMaxBytes    int64  `json:"audit_max_bytes,omitempty"`
-	WorkingDirectory string `json:"working_directory"`
-	Path             string `json:"path"`
+	Listen           string            `json:"listen"`
+	TokenFile        string            `json:"token_file"`
+	FileRoot         string            `json:"file_root"`
+	AuditFile        string            `json:"audit_file,omitempty"`
+	AuditMaxBytes    int64             `json:"audit_max_bytes,omitempty"`
+	WorkingDirectory string            `json:"working_directory"`
+	EnvOverrides     map[string]string `json:"env_overrides,omitempty"`
 }
 
 func windowsStateDir() (string, error) {
@@ -64,7 +64,7 @@ func windowsConfig(stateDir string) (winStandaloneConfig, error) {
 		return saved, err
 	}
 	return winStandaloneConfig{Listen: "127.0.0.1:8090", TokenFile: token,
-		FileRoot: home, WorkingDirectory: cwd, Path: os.Getenv("PATH")}, nil
+		FileRoot: home, WorkingDirectory: cwd}, nil
 }
 
 func windowsListenerInUse(listen string) bool {
@@ -94,8 +94,13 @@ func standaloneCommand(args []string) error { return windowsStandaloneCommand(ar
 
 func windowsStart(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
-	var listen, root, token, auditFile string
+	var listen, root, token, auditFile, workingDirectory string
 	var auditMaxBytes int64
+	var envFlags environmentFlags
+	var clearEnv bool
+	flags.StringVar(&workingDirectory, "working-directory", "", "server working directory; default retains configured initial cwd")
+	flags.Var(&envFlags, "env", "explicit persistent KEY=VALUE environment override (repeatable)")
+	flags.BoolVar(&clearEnv, "clear-env", false, "discard previously saved environment overrides")
 	flags.StringVar(&listen, "listen", "", "loopback listen address")
 	flags.StringVar(&root, "file-root", "", "root for file tools")
 	flags.StringVar(&token, "token-file", "", "private HTTP bearer token file")
@@ -126,6 +131,13 @@ func windowsStart(args []string) error {
 	}
 	if root != "" {
 		cfg.FileRoot = root
+	}
+	if workingDirectory != "" {
+		cfg.WorkingDirectory = workingDirectory
+	}
+	cfg.EnvOverrides, err = withEnvironmentOptions(cfg.EnvOverrides, clearEnv, envFlags)
+	if err != nil {
+		return err
 	}
 	if auditFile == "default" {
 		cfg.AuditFile = ""
@@ -165,6 +177,12 @@ func windowsStart(args []string) error {
 	}
 	cfg.WorkingDirectory, err = filepath.Abs(cfg.WorkingDirectory)
 	if err != nil {
+		return err
+	}
+	if cfg.WorkingDirectory, err = filepath.EvalSymlinks(cfg.WorkingDirectory); err != nil {
+		return err
+	}
+	if err := validateDirectory(cfg.WorkingDirectory); err != nil {
 		return err
 	}
 	cfg.TokenFile, err = filepath.Abs(cfg.TokenFile)
@@ -226,7 +244,7 @@ func windowsStart(args []string) error {
 	}
 	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = cfg.WorkingDirectory
-	cmd.Env = append(withoutEnvToken(os.Environ()), "PATH="+cfg.Path)
+	cmd.Env = childEnvironment(cmd.Environ(), cfg.EnvOverrides)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,

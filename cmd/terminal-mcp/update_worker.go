@@ -285,7 +285,7 @@ func preflightCandidate(job updateJob, candidate, expectedHash string) (string, 
 	defer func() { _ = logFile.Close() }()
 	cmd := exec.Command(candidate, args...)
 	cmd.Dir = job.Runtime.WorkingDirectory
-	cmd.Env = withoutEnvToken(os.Environ())
+	cmd.Env = withoutEnvToken(cmd.Environ())
 	cmd.Stdin = nil
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -365,7 +365,7 @@ func launchStandalone(job updateJob, executable, auditPath string) (*exec.Cmd, e
 		"--token-file="+job.TokenFile, "--audit-file="+auditPath)
 	cmd := exec.Command(executable, args...)
 	cmd.Dir = job.Runtime.WorkingDirectory
-	cmd.Env = withoutEnvToken(os.Environ())
+	cmd.Env = withoutEnvToken(cmd.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	logs, err := openServerLogs()
 	if err != nil {
