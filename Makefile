@@ -7,16 +7,13 @@ GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
 STANDALONE ?= $(HOME)/.config/terminal-mcp/standalone/terminal-mcp
 
-ifeq ($(shell uname -s),Darwin)
-AUDIT_LOG ?= $(HOME)/Library/Application Support/LocalTerminalMCP/audit.jsonl
-else
-AUDIT_LOG ?= $(if $(XDG_STATE_HOME),$(XDG_STATE_HOME),$(HOME)/.local/state)/terminal-mcp/audit.jsonl
-endif
+AUDIT_LOG ?= $(HOME)/.config/terminal-mcp/logs/audit.jsonl
+STDERR_LOG ?= $(HOME)/.config/terminal-mcp/logs/server.stderr.log
 
 .PHONY: help build check check-core audit-feedback fmt-check test-go lint vulncheck start stop status update update-status logs logs-service
 
 help:
-	@printf '%s\n' 'make build         Build the Go binary (does not restart the server)' 'make check         Run all checks and build' 'make check-core    Repeat core Go race tests three times' 'make audit-feedback Verify MCP responses against JSONL audit' 'make lint          Run configured Go linters (requires golangci-lint v2)' 'make vulncheck     Scan known reachable Go vulnerabilities' 'make start         Build and start the standalone server in the background' 'make stop          Stop the standalone server when idle' 'make status        Query the standalone server' 'make update        Test, build a separate candidate, and queue self-update' 'make update-status Show latest self-update result' 'make logs          Follow the MCP audit journal' 'make logs-service  Follow the initial standalone server log (updates have separate logs)'
+	@printf '%s\n' 'make build         Build the Go binary (does not restart the server)' 'make check         Run all checks and build' 'make check-core    Repeat core Go race tests three times' 'make audit-feedback Verify MCP responses against JSONL audit' 'make lint          Run configured Go linters (requires golangci-lint v2)' 'make vulncheck     Scan known reachable Go vulnerabilities' 'make start         Build and start the standalone server in the background' 'make stop          Stop the standalone server when idle' 'make status        Query the standalone server' 'make update        Test, build a separate candidate, and queue self-update' 'make update-status Show latest self-update result' 'make logs          Follow the MCP audit journal' 'make logs-service  Follow the stable standalone server stderr (including updates)'
 
 build:
 	@mkdir -p bin
@@ -71,4 +68,4 @@ logs:
 	@tail -n 100 -F "$(AUDIT_LOG)"
 
 logs-service:
-	@tail -n 100 -F "$(HOME)/.config/terminal-mcp/standalone/server.log"
+	@tail -n 100 -F "$(STDERR_LOG)"

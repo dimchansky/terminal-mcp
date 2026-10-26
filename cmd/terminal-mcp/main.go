@@ -186,35 +186,38 @@ func recordServerStart(recorder *audit.Log, serverID string) error {
 
 func openAudit(requestedPath, transport string) (*audit.Log, error) {
 	path := requestedPath
-	if path == "" && transport == "http" {
-		home, err := os.UserHomeDir()
+	if path == "" {
+		if transport != "http" {
+			return nil, nil // Stdio defaults to intentional opt-out.
+		}
+		var err error
+		path, err = defaultAuditPath()
 		if err != nil {
 			return nil, fmt.Errorf("resolve default audit path: %w", err)
 		}
-		if runtime.GOOS == "darwin" {
-			path = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl")
-		} else if runtime.GOOS == "windows" {
-			config, err := os.UserConfigDir()
-			if err != nil {
-				return nil, fmt.Errorf("resolve Windows audit path: %w", err)
-			}
-			path = filepath.Join(config, "terminal-mcp", "audit.jsonl")
-		} else {
-			base := os.Getenv("XDG_STATE_HOME")
-			if base == "" {
-				base = filepath.Join(home, ".local", "state")
-			}
-			path = filepath.Join(base, "terminal-mcp", "audit.jsonl")
-		}
 	}
-	if path == "" || path == "off" {
-		// Only stdio default or deliberate --audit-file=off disables auditing.
+	if path == "off" {
 		return nil, nil
 	}
 	if err := audit.PrepareDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("prepare audit directory %q: %w", filepath.Dir(path), err)
 	}
-	recorder, err := audit.Open(path)
+	// Explicit custom paths remain untouched. Only the platform default is
+	// cold-migrated, with both old/new locks held until the server stops.
+	defaultPath, err := defaultAuditPath()
+	if err != nil {
+		return nil, err
+	}
+	var recorder *audit.Log
+	if sameAuditPath(path, defaultPath) {
+		legacy, legacyErr := legacyAuditPath()
+		if legacyErr != nil {
+			return nil, legacyErr
+		}
+		recorder, err = audit.OpenWithMigration(path, legacy)
+	} else {
+		recorder, err = audit.Open(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open required audit file %q: %w", path, err)
 	}

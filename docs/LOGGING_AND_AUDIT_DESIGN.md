@@ -1,6 +1,6 @@
 # Logging and audit redesign — target contract
 
-> **Status: staged implementation; stages 1–4 completed in source, stages 5–7 pending.**
+> **Status: staged implementation; stages 1–5 completed in source, stages 6–7 pending.**
 > This document is the agreed **target** contract, not a claim that every
 > requirement below is implemented. [SPEC.md](../SPEC.md) and
 > [README.md](../README.md) describe the current checked-out implementation.
@@ -278,7 +278,7 @@ documentation only as each corresponding implementation becomes true.
 | **2 — source complete** | Separate MCP request and independent operation lifecycles | Cancellation, replay, conflict, actual completion, panic, shutdown and update fence tests |
 | **3 — source complete** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
 | **4 — source complete** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
-| **5** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
+| **5 — source complete** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
 | **6** | Standard `slog`, status, and explicit retention policy | stderr diagnostics, usable status, no silently removed audit history, safe diagnostic log rotation plan |
 | **7** | End-to-end validation and documentation finalization | macOS/Linux/Windows checks, isolated updater/rollback tests, failure injection, `make check`, release readiness review |
 
@@ -503,3 +503,71 @@ three-archive rotation can evict old audit history (stage 6). The
 self-managed stdout/stderr file paths and update/rollback migration
 remain stage 5. A process with the local user's own privileges can still
 tamper with the audit, as documented in the original trust boundary.
+
+
+## 12. Stage 5 implementation and verification (2026-10-26)
+
+**Source implementation complete; not deployed to the running MCP instance.**
+
+- Unified default on macOS/Linux: `~/.config/terminal-mcp/logs/`; on
+  Windows: `%APPDATA%\\terminal-mcp\\logs\\`. Files:
+  `audit.jsonl`, its numbered archives and persistent lock,
+  `server.stdout.log`, and `server.stderr.log`.
+  Detached server stdout and stderr now append to **separate** private
+  files across ordinary standalone starts, successful updates and rollbacks.
+  The stdio MCP protocol continues to own stdout, unchanged.
+- Added verified **cold migration** for the former macOS, Linux and Windows
+  default audit locations. Migration obtains both legacy/new writer locks,
+  refuses a still-active old writer, copies the original audit and **every
+  numbered archive**, verifies SHA-256 digests, and persists a private marker
+  with all source hashes. The originals are never moved, overwritten or
+  removed. The new running process retains the legacy lock until shutdown
+  to fence cooperating older writers. Interrupted copying can resume only
+  if existing targets agree with originals. Missing active history, an
+  independent destination archive, or changed source history produces an
+  explicit startup refusal rather than silently merging journals.
+- Explicitly configured nondefault audit paths remain unchanged and are
+  **not** migrated. Explicit `--audit-file=off` stays disabled; stdio still
+  disables auditing by default. The resolved default path is persisted in
+  standalone launch settings.
+- The updater now explicitly pins the selected audit path in both candidate
+  activation and rollback arguments. It reads the running server's audit
+  health/path when available, and handles old binaries that only expose
+  the original command-line arguments. After a candidate has already
+  completed migration, rollback restarts the restored executable against
+  the **migrated path** rather than creating a second audit in the old
+  location. If migration did not complete, rollback uses the original
+  path. Readiness checks verify audit location and health.
+- Worker and preflight diagnostics remain job-specific; ordinary server
+  stdout/stderr use the stable `logs/` paths, including rollback. Old
+  `standalone/server.log`, previous update-job `server.log` /
+  `rollback.log`, and the source audit journal are preserved untouched.
+  No remote push, live service update or process restart was performed.
+
+**Verification (macOS, isolated temporary homes and test servers):**
+
+- `make check`: **PASS**, all Go package suites under `-race`,
+  `go vet`, dependency checks, and a binary build.
+- `make audit-feedback`: **PASS**.
+- `make lint`: **PASS**, zero issues.
+- Windows amd64 application cross-compilation: **PASS** (not native Windows
+  runtime testing).
+- `go test -race -count=1 -run '^TestMigration' ./internal/audit`:
+  **PASS**, including archive copies, partial copy recovery, lock conflicts,
+  changed history, symlink refusal, unexpected independent destination
+  archives, and missing active file with a marker.
+- Isolated end-to-end updater tests:
+  `TestUpdaterMigratesLegacyAuditAndKeepsStableDiagnosticLogs` and
+  `TestUpdaterRollbackAfterSuccessfulAuditMigration`: **PASS**.
+  The latter injected a real failure after migration and verified the
+  rollback binary, journal path, legacy lock and complete history.
+- `git diff --check`: **PASS**.
+
+**Intentionally pending stage 6:** stdout/stderr files currently append
+without automatic rotation. Renaming a file whose child process retains an
+open descriptor is not a valid rotation strategy. Audit files still rotate
+at 4 MiB with only three archives, so older events may be deleted by the
+existing retention policy. A successful append is not a per-event `fsync`,
+and the local owner or arbitrary code under their UID can still tamper with
+unprotected files. Do not represent this stage as lossless lifetime retention
+or tamper-proof history.

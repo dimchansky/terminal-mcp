@@ -215,7 +215,11 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 		t.Fatalf("duplicate Windows start was allowed: %v %s", err, output)
 	}
 	state := filepath.Join(appdata, "terminal-mcp", "standalone")
-	for _, file := range []string{filepath.Join(state, "config.json"), filepath.Join(state, "server.log")} {
+	for _, file := range []string{
+		filepath.Join(state, "config.json"),
+		filepath.Join(appdata, "terminal-mcp", "logs", "server.stdout.log"),
+		filepath.Join(appdata, "terminal-mcp", "logs", "server.stderr.log"),
+	} {
 		if err := winsecure.CheckPrivate(file); err != nil {
 			t.Fatalf("Windows standalone file is not private: %s: %v", file, err)
 		}
@@ -224,7 +228,7 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 	if err != nil || !strings.Contains(output, `"status":"stopped"`) {
 		t.Fatalf("Windows stop: %v %s", err, output)
 	}
-	audit := filepath.Join(appdata, "terminal-mcp", "audit.jsonl")
+	audit := filepath.Join(appdata, "terminal-mcp", "logs", "audit.jsonl")
 	data, err := os.ReadFile(audit)
 	if err != nil || !strings.Contains(string(data), "server_start") {
 		t.Fatalf("Windows default audit was not flushed: %v: %s", err, data)

@@ -321,11 +321,16 @@ make logs-service
 
 `make logs` follows the MCP tool-call audit. `make logs-service` follows server diagnostic messages.
 
-The audit file is:
+The default audit file is now:
 
 ```text
-~/Library/Application Support/LocalTerminalMCP/audit.jsonl
+~/.config/terminal-mcp/logs/audit.jsonl
 ```
+
+The detached server's stdout and stderr use independent
+`logs/server.stdout.log` and `logs/server.stderr.log` files, including
+successful updater activation and rollback. Job-specific `worker.log` and
+`preflight.log` remain in the private update directory.
 
 The active file is at most 4 MiB. The server keeps up to three rotated files. Each `audit.Write` serializes a complete JSONL record and appends it under one mutex; there is no worker or queue. Concurrent calls wait for the same sink instead of dropping events under load. A private `<audit path>.lock` file enforces one cooperating writer process. Do not unlink the lock file: advisory locks refer to an inode, and removing it while in use could allow two processes to acquire different locks.
 
@@ -351,14 +356,22 @@ the candidate's probe calls do not pollute the real audit journal.
 | `~/.config/terminal-mcp/token` | Private default bearer token. |
 | `~/.config/terminal-mcp/standalone/config.json` | Saved standalone launch configuration. |
 | `~/.config/terminal-mcp/standalone/terminal-mcp` | Installed executable, independent of development builds. |
-| `~/.config/terminal-mcp/standalone/server.log` | Diagnostic log from the first background start. |
+| `~/.config/terminal-mcp/logs/server.stdout.log` | Persistent detached HTTP server stdout. |
+| `~/.config/terminal-mcp/logs/server.stderr.log` | Persistent detached HTTP server stderr (including operational errors). |
+| `~/.config/terminal-mcp/logs/audit.jsonl` | Current MCP audit and numbered archives, with a separate writer lock. |
+| `~/.config/terminal-mcp/standalone/server.log` | Legacy diagnostic history, left untouched. |
 | `~/.config/terminal-mcp/updates/<job-id>/` | Independent update worker, manifest, backups, status and logs. |
 
-The macOS default audit journal remains
-`~/Library/Application Support/LocalTerminalMCP/audit.jsonl` for
-compatibility. On Linux, the default is
-`$XDG_STATE_HOME/terminal-mcp/audit.jsonl` (or
-`~/.local/state/terminal-mcp/audit.jsonl` if unset).
+Legacy macOS (`~/Library/Application Support/LocalTerminalMCP/audit.jsonl`)
+and Linux (`$XDG_STATE_HOME/terminal-mcp/audit.jsonl`, or
+`~/.local/state/terminal-mcp/audit.jsonl`) journals are **copied cold**
+along with their numbered archives after a competing old writer has stopped.
+The originals are never deleted. The migration marker records source hashes
+and enables safe resume. The new server retains the legacy writer lock for
+its lifetime so an older process cannot independently append to the old
+default. If history diverges or copying fails, enabled auditing prevents
+server startup. The updater uses an explicitly chosen audit path during
+activation and rollback; it does not rely on an older binary's defaults.
 
 Completed update records and releases are retained; there is currently
 no automatic pruning. The legacy macOS controller is no longer part of the

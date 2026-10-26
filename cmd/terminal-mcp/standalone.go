@@ -289,26 +289,29 @@ func startStandalone(args []string) error {
 		}
 	}
 
-	logFile, err := os.OpenFile(filepath.Join(stateDir, "server.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	logs, err := openServerLogs()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = logFile.Close() }()
+	defer func() { _ = logs.Close() }()
 	devnull, err := os.Open(os.DevNull)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = devnull.Close() }()
-	serverArgs := []string{"serve", "--listen=" + config.Listen, "--token-file=" + config.TokenFile,
-		"--file-root=" + config.FileRoot}
-	if config.AuditFile != "" {
-		serverArgs = append(serverArgs, "--audit-file="+config.AuditFile)
+	if config.AuditFile == "" {
+		config.AuditFile, err = defaultAuditPath()
+		if err != nil {
+			return err
+		}
 	}
+	serverArgs := []string{"serve", "--listen=" + config.Listen, "--token-file=" + config.TokenFile,
+		"--file-root=" + config.FileRoot, "--audit-file=" + config.AuditFile}
 	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = config.WorkingDirectory
 	cmd.Env = append(withoutEnvToken(os.Environ()), "PATH="+config.Path)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, logFile, logFile
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, logs.stdout, logs.stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -328,7 +331,7 @@ func startStandalone(args []string) error {
 	}
 	info, err := waitForStandalone(client, "", hash, 12*time.Second)
 	if err != nil {
-		return fmt.Errorf("standalone startup failed; inspect %s: %w", logFile.Name(), err)
+		return fmt.Errorf("standalone startup failed; inspect %s: %w", logs.stderr.Name(), err)
 	}
 	installedFile, err := os.Stat(installed)
 	if err != nil {
@@ -351,7 +354,7 @@ func startStandalone(args []string) error {
 	started = true
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "started", "pid": info.PID, "server_id": info.ServerID,
-		"log_file": logFile.Name(),
+		"stdout_log": logs.stdout.Name(), "stderr_log": logs.stderr.Name(),
 	})
 }
 

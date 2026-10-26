@@ -60,13 +60,16 @@ func TestStandaloneBackgroundStartStop(t *testing.T) {
 		t.Fatalf("standalone start: %v\n%s", err, result)
 	}
 	var started struct {
-		Status   string `json:"status"`
-		PID      int    `json:"pid"`
-		ServerID string `json:"server_id"`
-		LogFile  string `json:"log_file"`
+		Status    string `json:"status"`
+		PID       int    `json:"pid"`
+		ServerID  string `json:"server_id"`
+		StdoutLog string `json:"stdout_log"`
+		StderrLog string `json:"stderr_log"`
 	}
 	if err := json.Unmarshal(result, &started); err != nil ||
-		started.Status != "started" || started.ServerID == "" || started.PID < 2 {
+		started.Status != "started" || started.ServerID == "" || started.PID < 2 ||
+		started.StdoutLog != filepath.Join(home, ".config", "terminal-mcp", "logs", "server.stdout.log") ||
+		started.StderrLog != filepath.Join(home, ".config", "terminal-mcp", "logs", "server.stderr.log") {
 		t.Fatalf("invalid start result: %v %s", err, result)
 	}
 	client, err := newUpdateClient(addr, tokenFile)
@@ -324,8 +327,11 @@ func TestStandaloneCanaryDoesNotDisruptLegacyListener(t *testing.T) {
 		t.Fatalf("restart with default audit: %v %s", err, out)
 	}
 	saved, err = savedStandaloneConfig(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
-	if err != nil || saved.AuditFile != "" {
-		t.Fatalf("canary audit disable was not cleared: %+v %v", saved, err)
+	// Subprocess HOME is isolated. The persisted default must use the
+	// canary's HOME rather than this Go test runner's home.
+	wantDefault := filepath.Join(home, ".config", "terminal-mcp", "logs", "audit.jsonl")
+	if err != nil || saved.AuditFile != wantDefault {
+		t.Fatalf("canary audit disable was not cleared: %+v want=%q %v", saved, wantDefault, err)
 	}
 	if !listenerInUse(legacyListener.Addr().String()) {
 		t.Fatal("legacy listener was affected by canary restart")

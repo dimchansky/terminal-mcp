@@ -164,9 +164,10 @@ new binary, verifies the new instance and MCP metadata, and attempts rollback
 if the new version fails.
 
 `update-status` reports `applied`, `failed`, or `rolled_back` when finished.
-Logs and saved binaries remain in `~/.config/terminal-mcp/updates/<job-id>/`.
-After a successful update, the new instance runs independently of the original
-terminal, with diagnostics in `server.log`. The old terminal command will exit.
+Worker and preflight logs, manifests, status and saved binaries remain in
+`~/.config/terminal-mcp/updates/<job-id>/`. After an update or rollback,
+the **server's** stdout and stderr go to the stable `logs/` directory,
+not to the update job. The old terminal command will exit.
 The connection drops briefly; obtain the new `server_id` and refresh ChatGPT's
 tools if the status reports `refresh_tools_required`.
 
@@ -205,24 +206,30 @@ was supplied. On Windows the token is stored under
 the logged-in user. No launchd, Python or privileged installation is required.
 
 Use `make status` or `terminal-mcp status` for the running instance.
-`make logs-service` follows the first standalone startup log at
-`~/.config/terminal-mcp/standalone/server.log`. After an update, the new
-process instead writes to its update job's `server.log` under
-`~/.config/terminal-mcp/updates/<job-id>/`.
+On macOS/Linux, all new detached launches, successful updates and rollbacks
+append diagnostics to `~/.config/terminal-mcp/logs/server.stdout.log`
+and `server.stderr.log` separately; `make logs-service` follows stderr.
+Windows uses `%APPDATA%\\terminal-mcp\\logs\\`. Old `standalone/server.log`
+and older update-job `server.log`/`rollback.log` are kept untouched.
 
 ### Audit log
 
 
-The default macOS audit path is:
+The default audit path on macOS/Linux is now
+`~/.config/terminal-mcp/logs/audit.jsonl`; on Windows it is
+`%APPDATA%\\terminal-mcp\\logs\\audit.jsonl`. Unix users can follow the
+active journal with `make logs`.
 
-```text
-~/Library/Application Support/LocalTerminalMCP/audit.jsonl
-```
-
-The Linux default is `$XDG_STATE_HOME/terminal-mcp/audit.jsonl`
-(or `~/.local/state/terminal-mcp/audit.jsonl`); Windows uses
-`%APPDATA%\terminal-mcp\audit.jsonl`. Unix users can follow the
-audit using `make logs`.
+**Cold migration:** The first start with this default copies the former
+platform-default audit and every numbered archive into `logs/`, verifies
+hashes, and creates `audit.jsonl.migrated.json`. The source and archives
+remain untouched. The new process holds both old and new journal locks
+for its lifetime, preventing concurrent cooperating writers. It refuses
+migration while the old service is running or if old/new histories conflict.
+Stop the old instance before starting a new one. Explicit custom paths and
+`--audit-file=off` are not migrated. The updater pins the audit path for
+both activation and rollback, even when restoring an older executable.
+Interrupted copies resume only if their existing bytes match the originals.
 
 The audit records:
 
@@ -246,7 +253,9 @@ The audit files and persistent `<audit path>.lock` file have mode `0600`; the st
 
 The audit records tool calls and actual mutation lifecycles. It cannot identify an individual user or model sharing the same bearer token and is not tamper-proof. The intentional `--audit-file=off` opt-out still works; stdio defaults to auditing disabled. In standalone HTTP mode, authenticated `terminal-mcp status` reports audit `state` (`ok`, `degraded`, `disabled`), file path and the first audit error. Status and controlled shutdown remain available even when the audit is degraded, subject to the existing safeguard against stopping active sessions or effects.
 
-Standalone diagnostics are written to the startup or update job logs described above.
+Detached-server stdout and stderr are persisted separately at stable paths.
+Descriptor-safe diagnostic rotation and long-term audit retention are
+addressed in stage 6.
 
 ## Run HTTP manually
 

@@ -59,8 +59,13 @@ to use port 8090; refresh the MCP connection after the new process starts.
 ## 3. Recovery
 
 If the standalone instance fails, inspect
-`~/.config/terminal-mcp/standalone/server.log` and confirm port 8090 is
-free. Stop an identifiable standalone instance, then use the preserved
+`~/.config/terminal-mcp/logs/server.stderr.log` (and the separate
+`server.stdout.log`) and confirm port 8090 is free. Legacy
+`standalone/server.log` remains available as history. The old default
+audit and its archives are copied into `logs/` only after the old audit
+writer releases its lock. If migration refuses to proceed due to an
+occupied lock or differing history, stop and inspect the precise old/new
+paths; never delete the old files to force the migration through. Stop an identifiable standalone instance, then use the preserved
 historical controller to restore the previous LaunchAgent from its retained
 local configuration and binary releases:
 

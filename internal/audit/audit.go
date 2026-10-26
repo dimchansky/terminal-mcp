@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,12 +67,13 @@ func NewEvent(e Event) Event {
 // Log serializes all sink operations, including writes, rotation, and Close.
 // Write waits for the sink to append the record; there is no in-memory queue.
 type Log struct {
-	mu       sync.Mutex
-	sink     eventSink
-	closed   bool
-	closeErr error
-	path     string
-	failure  atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
+	mu         sync.Mutex
+	sink       eventSink
+	closed     bool
+	closeErr   error
+	path       string
+	legacyLock *os.File                     // Kept until Close to fence out the old server.
+	failure    atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
 }
 
 type auditFailure struct{ err error }
@@ -183,6 +185,10 @@ func (l *Log) Close() error {
 	if !l.closed {
 		l.closed = true
 		l.closeErr = l.sink.close()
+		if l.legacyLock != nil {
+			l.closeErr = errors.Join(l.closeErr, l.legacyLock.Close())
+			l.legacyLock = nil
+		}
 		if l.closeErr != nil {
 			l.Degrade(l.closeErr)
 		}

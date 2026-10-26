@@ -77,14 +77,20 @@ The default Windows log paths are:
 
 | Data | Location |
 | --- | --- |
-| MCP audit | `%APPDATA%\terminal-mcp\audit.jsonl` |
-| Server stdout and stderr after `start` | `%APPDATA%\terminal-mcp\standalone\server.log` |
+| MCP audit | `%APPDATA%\terminal-mcp\logs\audit.jsonl` |
+| Server stdout after `start` | `%APPDATA%\terminal-mcp\logs\server.stdout.log` |
+| Server stderr after `start` | `%APPDATA%\terminal-mcp\logs\server.stderr.log` |
 | Child command stdout/stderr | Bounded in-memory session journal; **not** persisted to disk |
 | Standalone configuration | `%APPDATA%\terminal-mcp\standalone\config.json` |
 
-The audit rotates at 4 MiB and retains three rotated files. It records tool
-calls and arguments, not subprocess stdout/stderr. The diagnostic log combines
-the **server's** stdout and stderr; it is not automatically rotated.
+The audit rotates at 4 MiB and currently retains three rotated files.
+It records tool calls and arguments, not subprocess stdout/stderr.
+The **server's** stdout and stderr are separate, private files, and are
+not automatically rotated yet. Old `standalone/server.log` remains as
+historical evidence. On the first new default start, the old
+`%APPDATA%\terminal-mcp\audit.jsonl` and all numbered archives are
+copied cold after the former writer releases its lock; originals remain.
+The legacy writer lock is retained until the new server shuts down.
 
 ## Updating Windows
 

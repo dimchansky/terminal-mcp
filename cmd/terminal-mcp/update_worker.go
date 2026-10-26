@@ -48,6 +48,10 @@ func runUpdateWorker(manifest string) error {
 func performUpdate(job updateJob, phase func(string) error) (updateStatus, error) {
 	old := job.Runtime
 	failure := updateStatus{Status: "failed"}
+	oldAudit, targetAudit, migrating, err := updateAuditPaths(old)
+	if err != nil {
+		return failure, fmt.Errorf("resolve update audit path: %w", err)
+	}
 	// Do not overwrite an executable rebuilt in-place since this server started:
 	// its on-disk bytes would no longer be a valid rollback image.
 	original, err := fileSHA256(old.Executable)
@@ -144,7 +148,7 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 		}
 	}
 	if err == nil {
-		newProcess, err = launchStandalone(job, old.Executable, "server.log")
+		newProcess, err = launchStandalone(job, old.Executable, targetAudit)
 	}
 	if err == nil {
 		var current mcpserver.RuntimeInfo
@@ -154,6 +158,9 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 			after, err = client.fingerprint()
 			if err == nil && after != candidateFingerprint {
 				err = errors.New("running MCP metadata differs from preflight candidate")
+			}
+			if err == nil {
+				err = verifyRestartAudit(current, targetAudit)
 			}
 			if err == nil {
 				_ = newProcess.Process.Release()
@@ -176,7 +183,8 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 			return failure, errors.Join(err, fmt.Errorf("rollback replacement failed: %w", restoreErr))
 		}
 	}
-	restored, restartErr := launchStandalone(job, old.Executable, "rollback.log")
+	rollbackAudit := rollbackAuditPath(oldAudit, targetAudit, migrating)
+	restored, restartErr := launchStandalone(job, old.Executable, rollbackAudit)
 	if restartErr != nil {
 		return failure, errors.Join(err, fmt.Errorf("rollback launch failed: %w", restartErr))
 	}
@@ -184,6 +192,10 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 	if readyErr != nil {
 		stopStartedProcess(restored)
 		return failure, errors.Join(err, fmt.Errorf("rollback readiness failed: %w", readyErr))
+	}
+	if auditErr := verifyRestartAudit(recovered, rollbackAudit); auditErr != nil {
+		stopStartedProcess(restored)
+		return failure, errors.Join(err, fmt.Errorf("rollback audit path check failed: %w", auditErr))
 	}
 	_ = restored.Process.Release()
 	return updateStatus{Status: "rolled_back", Error: err.Error(), ServerID: recovered.ServerID}, nil
@@ -343,26 +355,26 @@ func preflightCandidate(job updateJob, candidate, expectedHash string) (string, 
 	return fingerprint, nil
 }
 
-func launchStandalone(job updateJob, executable, logName string) (*exec.Cmd, error) {
+func launchStandalone(job updateJob, executable, auditPath string) (*exec.Cmd, error) {
 	args := append([]string(nil), job.Runtime.Arguments...)
 	args = append(args, "--listen="+job.Runtime.Listen, "--file-root="+job.Runtime.FileRoot,
-		"--token-file="+job.TokenFile)
+		"--token-file="+job.TokenFile, "--audit-file="+auditPath)
 	cmd := exec.Command(executable, args...)
 	cmd.Dir = job.Runtime.WorkingDirectory
 	cmd.Env = withoutEnvToken(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	logFile, err := os.OpenFile(filepath.Join(job.Directory, logName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	logs, err := openServerLogs()
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = logFile.Close() }()
+	defer func() { _ = logs.Close() }()
 	devnull, err := os.Open(os.DevNull)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = devnull.Close() }()
 	cmd.Stdin = devnull
-	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.Stdout, cmd.Stderr = logs.stdout, logs.stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

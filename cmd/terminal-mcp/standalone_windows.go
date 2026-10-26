@@ -24,6 +24,7 @@ type winStandaloneConfig struct {
 	Listen           string `json:"listen"`
 	TokenFile        string `json:"token_file"`
 	FileRoot         string `json:"file_root"`
+	AuditFile        string `json:"audit_file,omitempty"`
 	WorkingDirectory string `json:"working_directory"`
 	Path             string `json:"path"`
 }
@@ -92,10 +93,11 @@ func standaloneCommand(args []string) error { return windowsStandaloneCommand(ar
 
 func windowsStart(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
-	var listen, root, token string
+	var listen, root, token, auditFile string
 	flags.StringVar(&listen, "listen", "", "loopback listen address")
 	flags.StringVar(&root, "file-root", "", "root for file tools")
 	flags.StringVar(&token, "token-file", "", "private HTTP bearer token file")
+	flags.StringVar(&auditFile, "audit-file", "", "audit log path; off disables; default restores platform default")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -121,6 +123,22 @@ func windowsStart(args []string) error {
 	}
 	if root != "" {
 		cfg.FileRoot = root
+	}
+	if auditFile == "default" {
+		cfg.AuditFile = ""
+	} else if auditFile != "" {
+		cfg.AuditFile = auditFile
+	}
+	if cfg.AuditFile == "" {
+		cfg.AuditFile, err = defaultAuditPath()
+		if err != nil {
+			return err
+		}
+	} else if cfg.AuditFile != "off" {
+		cfg.AuditFile, err = filepath.Abs(cfg.AuditFile)
+		if err != nil {
+			return err
+		}
 	}
 	if err := httpguard.ValidateAddress(cfg.Listen); err != nil {
 		return err
@@ -187,23 +205,20 @@ func windowsStart(args []string) error {
 			return errors.New("an older standalone executable is already installed; stop and replace it explicitly")
 		}
 	}
-	logFile, err := os.OpenFile(filepath.Join(stateDir, "server.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	logs, err := openServerLogs()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = logFile.Close() }()
-	if err := winsecure.CheckPrivate(logFile.Name()); err != nil {
-		return err
-	}
+	defer func() { _ = logs.Close() }()
 	cmd := exec.Command(installed, "serve", "--listen="+cfg.Listen,
-		"--token-file="+cfg.TokenFile, "--file-root="+cfg.FileRoot)
+		"--token-file="+cfg.TokenFile, "--file-root="+cfg.FileRoot, "--audit-file="+cfg.AuditFile)
 	cmd.Dir = cfg.WorkingDirectory
 	cmd.Env = append(withoutEnvToken(os.Environ()), "PATH="+cfg.Path)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,
 	}
-	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.Stdout, cmd.Stderr = logs.stdout, logs.stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -229,7 +244,7 @@ func windowsStart(args []string) error {
 	}
 	if ready.PID != cmd.Process.Pid || err != nil {
 		_ = cmd.Process.Kill()
-		return fmt.Errorf("standalone did not become ready; inspect server.log: %w", err)
+		return fmt.Errorf("standalone did not become ready; inspect %s: %w", logs.stderr.Name(), err)
 	}
 	if err := writeJSON(filepath.Join(stateDir, "config.json"), cfg); err != nil {
 		_ = cmd.Process.Kill()
