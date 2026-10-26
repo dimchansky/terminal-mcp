@@ -29,12 +29,13 @@ const maxContent = 64 << 10
 const MaxReadBytes = 256 << 10
 
 type Manager struct {
-	mu     sync.Mutex
-	host   *session.Manager
-	root   *os.Root
-	path   string
-	alias  string
-	closed bool
+	mu       sync.Mutex
+	host     *session.Manager
+	root     *os.Root
+	path     string
+	alias    string
+	closed   bool
+	receiver *fileReceiver
 }
 
 func New(host *session.Manager, path string) (*Manager, error) {
@@ -50,7 +51,7 @@ func New(host *session.Manager, path string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{host: host, root: root, path: physical, alias: abs}, nil
+	return &Manager{host: host, root: root, path: physical, alias: abs, receiver: newFileReceiver()}, nil
 }
 func (m *Manager) Root() string { return m.path }
 func (m *Manager) Close()       { m.mu.Lock(); defer m.mu.Unlock(); m.closed = true; _ = m.root.Close() }
@@ -185,12 +186,20 @@ func (m *Manager) Read(ctx context.Context, a ReadArgs) (ReadResult, error) {
 }
 
 func (m *Manager) mutate(ctx context.Context, server, id, method string, args any, fn func() (FileReceipt, error)) (ActionResult, error) {
-	r, replayed, err := m.host.Mutate(ctx, server, id, method, args, func() mutation.Receipt {
+	return m.mutateUnlocked(ctx, server, id, method, args, func() (FileReceipt, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.closed {
-			return mutation.Receipt{Status: "failed", Error: "file service is closed"}
+			return FileReceipt{}, errors.New("file service is closed")
 		}
+		return fn()
+	})
+}
+
+// mutateUnlocked preserves the same audit/retry semantics, but allows file_receive
+// to stream a download without holding the filesystem manager mutex.
+func (m *Manager) mutateUnlocked(ctx context.Context, server, id, method string, args any, fn func() (FileReceipt, error)) (ActionResult, error) {
+	r, replayed, err := m.host.Mutate(ctx, server, id, method, args, func() mutation.Receipt {
 		receipt, e := fn()
 		status := "applied"
 		message := ""

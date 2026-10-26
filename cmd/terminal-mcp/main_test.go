@@ -120,7 +120,7 @@ func TestRunWithContextStdioToolsAndExit(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 	tools, err := conn.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 12 {
+	if err != nil || len(tools.Tools) != 13 {
 		t.Fatalf("stdio MCP tool discovery: %v, tools %v", err, len(tools.Tools))
 	}
 	list := mcpList(t, ctx, conn)

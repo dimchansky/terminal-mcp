@@ -198,12 +198,15 @@ func TestFileToolsAndCompletionOverMCP(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 	tools, err := cs.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 12 {
+	if err != nil || len(tools.Tools) != 13 {
 		t.Fatalf("%+v %v", tools, err)
 	}
 	for _, tool := range tools.Tools {
-		if strings.HasPrefix(tool.Name, "file_") && (tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint) {
-			t.Fatal("local filesystem marked open world")
+		if strings.HasPrefix(tool.Name, "file_") {
+			wantOpenWorld := tool.Name == "file_receive"
+			if tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint != wantOpenWorld {
+				t.Fatalf("wrong open-world annotation for %s", tool.Name)
+			}
 		}
 	}
 	list := call[session.ListResult](t, ctx, cs, "terminal_list", struct{}{})

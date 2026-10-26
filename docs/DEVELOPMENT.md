@@ -127,7 +127,7 @@ A partial input write reports bytes accepted by the operating system. It does no
 
 ## 3. File tools
 
-The five file tools use Go `os.Root`. Each file path must be absolute and inside the configured `file_root`.
+The six file tools use Go `os.Root`. Each file path must be absolute and inside the configured `file_root`.
 
 On a new macOS installation, the controller sets `file_root` to `/`. The tools can access paths allowed by the service user's OS permissions.
 

@@ -44,6 +44,24 @@ type WriteArgs struct {
 	Content         string `json:"content" jsonschema:"Exact UTF-8 text up to 64 KiB. No implicit newline conversion."`
 	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"Omit only to create a new file; replacing an existing file requires its current SHA-256 version."`
 }
+
+// OpenAIFile is the ChatGPT fileParams payload; the URL is a temporary secret.
+type OpenAIFile struct {
+	DownloadURL string `json:"download_url"`
+	FileID      string `json:"file_id"`
+	MIMEType    string `json:"mime_type,omitempty"`
+	FileName    string `json:"file_name,omitempty"`
+}
+
+// ReceiveArgs creates a new binary file from a ChatGPT-provided file.
+// Existing destinations are never overwritten.
+type ReceiveArgs struct {
+	ServerID    string     `json:"server_id"`
+	OperationID string     `json:"operation_id"`
+	Path        string     `json:"path" jsonschema:"Absolute destination path; the parent directory must already exist."`
+	File        OpenAIFile `json:"file" jsonschema:"ChatGPT file attachment. Do not manually construct download_url."`
+}
+
 type FileReceipt struct {
 	OperationID   string `json:"operation_id"`
 	Status        string `json:"status"`

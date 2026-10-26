@@ -44,12 +44,17 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 				return auditToolError("audit cannot inspect tool arguments; tool not executed"), nil
 			}
 			info := &requestAudit{id: audit.RequestID(), started: time.Now()}
-			var rawArgs any
-			if len(call.Arguments) != 0 {
-				// Preserve all values, including unknown fields, numeric
-				// notation and explicit nulls. The journal may normalize
-				// insignificant JSON whitespace on serialization.
-				rawArgs = json.RawMessage(call.Arguments)
+			rawArgs, argsErr := auditedArguments(call.Name, call.Arguments)
+			if argsErr != nil {
+				// A malformed file object cannot be sanitized reliably. Never
+				// persist a potentially signed URL or execute an unaudited call.
+				if err := recorder.Write(audit.NewEvent(audit.Event{
+					ServerID: serverID, RequestID: info.id, Tool: call.Name,
+					Phase: "request_rejected", Status: "rejected", Reason: "unsafe_file_arguments",
+				})); err != nil {
+					recorder.Degrade(err)
+				}
+				return auditToolError("file input cannot be safely audited; tool not executed"), nil
 			}
 			var callMeta, inputResponses any
 			if len(call.Meta) != 0 {
@@ -119,6 +124,41 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 			return result, err
 		}
 	}
+}
+
+// auditedArguments preserves original raw inputs for existing tools. Signed
+// file_receive URLs are bearer credentials, so that one field is explicitly
+// redacted; all other supplied fields remain recorded.
+func auditedArguments(tool string, raw json.RawMessage) (any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if tool != "file_receive" {
+		return json.RawMessage(raw), nil
+	}
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &args); err != nil || args == nil {
+		return nil, errors.New("invalid file_receive arguments")
+	}
+	if fileRaw, ok := args["file"]; ok {
+		var file map[string]json.RawMessage
+		if err := json.Unmarshal(fileRaw, &file); err != nil || file == nil {
+			return nil, errors.New("invalid file_receive file object")
+		}
+		if _, ok := file["download_url"]; ok {
+			file["download_url"] = json.RawMessage(`"[REDACTED]"`)
+		}
+		cleanFile, err := json.Marshal(file)
+		if err != nil {
+			return nil, err
+		}
+		args["file"] = cleanFile
+	}
+	clean, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(clean), nil
 }
 
 func rawOperationID(raw json.RawMessage) string {

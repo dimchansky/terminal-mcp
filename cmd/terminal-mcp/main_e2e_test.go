@@ -130,7 +130,7 @@ func TestRealCLIBinarySIGTERMAndAuditFlush(t *testing.T) {
 	defer cancel()
 	client := connectHTTP(t, ctx, address)
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || tools == nil || len(tools.Tools) != 12 {
+	if err != nil || tools == nil || len(tools.Tools) != 13 {
 		t.Fatalf("real CLI tool discovery: %v, %+v", err, tools)
 	}
 	list := mcpList(t, ctx, client)

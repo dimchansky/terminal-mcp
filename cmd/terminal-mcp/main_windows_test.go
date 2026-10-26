@@ -69,7 +69,7 @@ func TestWindowsHTTPMCPAndFileMutation(t *testing.T) {
 	var listed struct {
 		Tools []map[string]any `json:"tools"`
 	}
-	if err := client.rpc("tools/list", map[string]any{}, &listed); err != nil || len(listed.Tools) != 12 {
+	if err := client.rpc("tools/list", map[string]any{}, &listed); err != nil || len(listed.Tools) != 13 {
 		t.Fatalf("Windows tools/list: %v tools=%d", err, len(listed.Tools))
 	}
 	serverID, err := client.serverID()

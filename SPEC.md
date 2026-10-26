@@ -1,6 +1,6 @@
 # Local Terminal MCP — Behavior Specification
 
-**Current interface:** 12 MCP tools. The server reports MCP implementation version `0.2.0`.
+**Current interface:** 13 MCP tools. The server reports MCP implementation version `0.2.0`.
 
 **Platforms:** macOS, Linux and Windows. **Access model:** one trusted local service account.
 
@@ -95,7 +95,7 @@ A tunnel can reconnect while the Go server continues to run. A server restart re
 
 ### Stdio transport
 
-Use `--transport=stdio` when an MCP host starts the server directly. Stdio provides the same 12 tools.
+Use `--transport=stdio` when an MCP host starts the server directly. Stdio provides the same 13 tools.
 
 Stdio uses stdout for MCP data and stderr for diagnostics. It does not require the HTTP token.
 
@@ -343,7 +343,7 @@ Use `terminal_list` to read the limits of the running instance.
 
 ## 9. File tool contract
 
-The five file tools use Go `os.Root`. All file paths must be absolute and inside the configured `file_root`.
+The six file tools use Go `os.Root`. All file paths must be absolute and inside the configured `file_root`.
 
 The macOS controller sets `file_root` to `/` on a new installation. This allows access to paths allowed by the service user's OS permissions.
 
@@ -384,6 +384,34 @@ The server writes one file with an atomic replacement. It returns the new versio
 Without `expected_version`, the server only creates a new file. To replace an existing file, supply its observed version.
 
 The content must be UTF-8 and cannot exceed 64 KiB. The parent directory must exist.
+
+### `file_receive` (ChatGPT file parameters)
+
+**Required:** `server_id`, `operation_id`, `path`, `file`.
+
+The `file` parameter is declared in the tool metadata as
+`_meta["openai/fileParams"]: ["file"]`. Its object schema declares four
+fields: `download_url` and `file_id` (required), `mime_type` and
+`file_name` (optional).
+
+The server downloads the exact HTTP response bytes (without automatic
+decompression) from an HTTPS URL on an approved OpenAI-controlled host.
+Redirects follow the same host and HTTPS restrictions. The client has a
+three-minute timeout, and the maximum downloaded size is 128 MiB.
+
+The destination must be a new regular file path inside `file_root` whose
+parent already exists. The download is streamed to a mode-0600 temporary
+file, synchronized and atomically linked into place without replacing an
+existing destination. Temporary files are removed on failure. A successful
+receipt reports the byte count and SHA-256 version. This command does not
+upload files from the local computer back into ChatGPT and does not modify
+existing binary files.
+
+Audit records all nonsensitive arguments, but redacts the bearer
+`file.download_url`; if the file object is malformed so it cannot be
+sanitized, the request is rejected before dispatch. Accepted transfers
+follow the normal mutation audit and retry ledger, independent of the
+request observation lifetime.
 
 ### Common edit and write limits
 
