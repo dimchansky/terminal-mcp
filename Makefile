@@ -2,6 +2,9 @@
 
 GO ?= go
 GOFMT ?= gofmt
+# Integration tests build, activate, and roll back real binaries. This timeout
+# bounds the complete package suite, not each individual test.
+TEST_TIMEOUT ?= 300s
 GOLANGCI_LINT ?= golangci-lint
 GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
@@ -26,7 +29,7 @@ fmt-check:
 test-go:
 	$(GO) mod verify
 	$(GO) mod tidy -diff
-	$(GO) test -race -count=1 -timeout=120s ./...
+	$(GO) test -race -count=1 -timeout=$(TEST_TIMEOUT) ./...
 	$(GO) vet ./...
 
 lint:
