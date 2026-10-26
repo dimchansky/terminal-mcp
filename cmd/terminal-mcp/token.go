@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -26,7 +26,7 @@ func loadHTTPToken(explicit string) (string, error) {
 		return "", err
 	}
 	if created {
-		fmt.Fprintf(os.Stderr, "terminal-mcp: created local HTTP token at %s (keep it secret)\n", path)
+		slog.Warn("created local HTTP token (keep it secret)", "path", path)
 	}
 	return httpguard.LoadToken(path)
 }
@@ -54,7 +54,7 @@ func ensureDefaultToken(path string) (bool, error) {
 	}
 	defer func() {
 		if err := os.Remove(tmp.Name()); err != nil {
-			fmt.Fprintf(os.Stderr, "terminal-mcp: remove temporary token: %v\n", err)
+			slog.Error("could not remove temporary token", "error", err)
 		}
 	}()
 	var secret [32]byte

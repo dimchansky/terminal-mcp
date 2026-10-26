@@ -83,10 +83,7 @@ The default Windows log paths are:
 | Child command stdout/stderr | Bounded in-memory session journal; **not** persisted to disk |
 | Standalone configuration | `%APPDATA%\terminal-mcp\standalone\config.json` |
 
-The audit rotates at 4 MiB and currently retains three rotated files.
-It records tool calls and arguments, not subprocess stdout/stderr.
-The **server's** stdout and stderr are separate, private files, and are
-not automatically rotated yet. Old `standalone/server.log` remains as
+The audit rotates its active journal at 4 MiB and retains **all** numbered archives. The total active-plus-archive history has a 1 GiB default hard budget (`--audit-max-bytes=N` on `start` or `serve`); reaching it refuses new MCP work without deleting records. It records tool calls and arguments, not subprocess stdout/stderr. Server stderr diagnostics use standard-library `log/slog`, with separate private stdout and stderr files. Those diagnostics are not automatically rotated: stop the server and confirm all writer handles have closed before archiving/renaming the files and restarting. Old `standalone/server.log` remains as
 historical evidence. On the first new default start, the old
 `%APPDATA%\terminal-mcp\audit.jsonl` and all numbered archives are
 copied cold after the former writer releases its lock; originals remain.

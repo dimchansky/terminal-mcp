@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,7 +25,7 @@ func runUpdateWorker(manifest string) error {
 	pending := filepath.Join(filepath.Dir(job.Directory), "pending")
 	defer func() {
 		if err := os.Remove(pending); err != nil {
-			fmt.Fprintf(os.Stderr, "update: remove pending marker: %v\n", err)
+			slog.Error("update: cannot remove pending marker", "error", err)
 		}
 	}()
 	phase := func(status string) error {

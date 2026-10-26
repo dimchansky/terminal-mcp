@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -389,7 +389,7 @@ func (m *Manager) replace(rel, path, expected string, transform func([]byte) ([]
 	}
 	defer func() {
 		if err := parent.Remove(temp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("filesystem: clean up temporary file: %v", err)
+			slog.Error("filesystem: failed to remove temporary file", "error", err)
 		}
 	}()
 	if _, err = f.Write(after); err == nil {

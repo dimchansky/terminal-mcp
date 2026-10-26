@@ -1,6 +1,6 @@
 # Logging and audit redesign — target contract
 
-> **Status: staged implementation; stages 1–5 completed in source, stages 6–7 pending.**
+> **Status: staged implementation; stages 1–6 completed in source, stage 7 pending.**
 > This document is the agreed **target** contract, not a claim that every
 > requirement below is implemented. [SPEC.md](../SPEC.md) and
 > [README.md](../README.md) describe the current checked-out implementation.
@@ -279,7 +279,7 @@ documentation only as each corresponding implementation becomes true.
 | **3 — source complete** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
 | **4 — source complete** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
 | **5 — source complete** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
-| **6** | Standard `slog`, status, and explicit retention policy | stderr diagnostics, usable status, no silently removed audit history, safe diagnostic log rotation plan |
+| **6 — source complete** | Standard `slog`, status, and explicit retention policy | stderr diagnostics, usable status, no silently removed audit history, safe diagnostic log rotation plan |
 | **7** | End-to-end validation and documentation finalization | macOS/Linux/Windows checks, isolated updater/rollback tests, failure injection, `make check`, release readiness review |
 
 For all stages: keep changes minimal and idiomatic Go; prefer existing tested
@@ -571,3 +571,84 @@ existing retention policy. A successful append is not a per-event `fsync`,
 and the local owner or arbitrary code under their UID can still tamper with
 unprotected files. Do not represent this stage as lossless lifetime retention
 or tamper-proof history.
+
+
+## 13. Stage 6 implementation and verification (2026-10-26)
+
+**Source implementation complete; not deployed to the running MCP instance.**
+
+- Replaced repository-owned runtime `log.Printf` and ad-hoc stderr
+  diagnostics with the standard `log/slog` API. Default `slog` writes
+  structured text diagnostics directly to stderr, which detached HTTP
+  servers already persist in `server.stderr.log`. MCP stdio stdout remains
+  reserved for the protocol. CLI data output (JSON) stays on stdout.
+  There is no new logging framework or dependency.
+- The active audit journal remains bounded to 4 MiB. On rotation it is
+  renamed only to the **next increasing archive suffix**, preserving every
+  existing `audit.jsonl.N` untouched, including archives copied from the
+  historical journal. No automatic renaming/deleting of older archives.
+  Old-style `.1`/`.2`/`.3` archives are preserved as-is; newly created
+  suffixes continue beyond the highest existing one.
+- Inventories and sums all numbered archives and the active journal on
+  opening, validating regular-file and private permissions. The total
+  history has a **1 GiB default hard budget**. `audit.OpenWithLimit` and
+  `audit.OpenWithMigrationLimit` accept an explicit positive budget.
+  `--audit-max-bytes=N` is available for `serve`, `start`, and Windows
+  `start`; standalone saves the configured value and passes it to the
+  server process, including subsequent updates/rollbacks via its recorded
+  arguments. Existing history exceeding the budget refuses startup.
+- When an append would exceed the budget, it fails with the distinct
+  `audit_history_limit` error **before** rotation or writing, latches
+  audit degradation, and prevents future new MCP calls. It never removes
+  history to make room. The real outcome of already accepted mutations
+  remains intact if their finish record can no longer fit. The budget
+  covers the *new* audit family; retained duplicate old copies are not
+  included. Increasing `--audit-max-bytes` after ensuring sufficient
+  space and restarting provides controlled recovery without deletion.
+- Live authenticated `/admin/runtime` and CLI `status` include the
+  nonblocking `audit.bytes_used`/`audit.bytes_limit` alongside
+  `ok/degraded/disabled` and the first error. Status also reports
+  `stdout_log`/`stderr_log` only when the current process's descriptors
+  actually refer to the stable diagnostic files; foreground processes
+  without that redirection do not advertise misleading paths.
+- **Diagnostic rotation policy:** stdout/stderr remain append-only while
+  a server runs. Never rename open files expecting the writer to follow,
+  and never use lossy copy-truncate. The supported operator procedure is
+  to stop the service gracefully, verify that no server/update worker
+  retains the old descriptors, rename/archive the now-closed files, then
+  start again. No automatic diagnostic rotation is claimed. Historical
+  logs and audit records are never silently pruned.
+
+**Validation (isolated local macOS tests):**
+
+- `make check`: **PASS** including all eight Go packages under `-race`,
+  `go vet`, module verification, and binary build.
+- `make audit-feedback`: **PASS**.
+- `make lint`: **PASS**, zero issues.
+- Windows amd64 application cross-compilation: **PASS**; native Windows
+  runtime/ACL behavior is not validated by this macOS run.
+- Audit retention and migration fault tests under `-race`: **PASS**,
+  including preservation of more than three numbered archives; byte-exact
+  budget accounting after restart and migration; explicit hard limit;
+  refusal before rotation; rejection of symlinked archives; and previous
+  short-write, truncate, lock and rotation recovery tests.
+- An isolated detached server with an explicit custom history budget:
+  **PASS**. It persisted the limit, reported live bytes in status,
+  identified actual redirected stdout/stderr descriptors, and retained
+  the journal on shutdown.
+- End-to-end background start/update/rollback regressions in the full
+  test suite: **PASS**, including migration and rollback after activation.
+- Additional `-race` integration tests: **PASS**, validating that reaching
+  the hard cap rejects a new MCP mutation, migrated archives count against
+  the cap, and a customized audit budget persists through real isolated
+  binary activation without changing the selected journal path.
+- `git diff --cached --check`: **PASS**.
+
+**Explicit limitations:** A successful JSONL append is **not** a per-event
+`fsync` or guarantee of survival after a crash/power loss. The hard
+budget cannot promise that finish records of already in-flight mutations
+will fit once other activity exhausts storage; the actual receipt is not
+rewritten as an execution failure. Local processes running as the same
+OS user can modify files; external tamper-proof storage is out of scope.
+Diagnostic files have no background rotation or automatic truncation.
+Stage 7 is reserved for final cross-platform integration/release checks.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"terminalmcp/internal/audit"
 	"terminalmcp/internal/mcpserver"
 	"terminalmcp/internal/session"
 )
@@ -32,7 +33,9 @@ func TestParseOptions(t *testing.T) {
 	}{
 		{name: "defaults"},
 		{name: "serve alias", args: []string{"serve", "--transport=stdio"}},
-		{name: "all flags", args: []string{"--transport=stdio", "--file-root=/tmp", "--audit-file=off", "--listen=127.0.0.1:8123", "--token-file=/tmp/token"}},
+		{name: "all flags", args: []string{"--transport=stdio", "--file-root=/tmp", "--audit-file=off", "--audit-max-bytes=131072", "--listen=127.0.0.1:8123", "--token-file=/tmp/token"}},
+		{name: "zero history budget", args: []string{"--audit-max-bytes=0"}, wantErr: "audit-max-bytes must be positive"},
+		{name: "negative history budget", args: []string{"--audit-max-bytes=-1"}, wantErr: "audit-max-bytes must be positive"},
 		{name: "invalid transport", args: []string{"--transport=other"}, wantErr: "transport must be http or stdio"},
 		{name: "unknown flag", args: []string{"--unknown"}, wantErr: "flag provided but not defined"},
 		{name: "positional argument", args: []string{"unexpected"}, wantErr: "unexpected positional arguments"},
@@ -51,7 +54,7 @@ func TestParseOptions(t *testing.T) {
 			}
 			switch tt.name {
 			case "defaults":
-				if got.transport != "http" || got.listen != "127.0.0.1:8090" || got.fileRoot != "" || got.auditFile != "" {
+				if got.transport != "http" || got.listen != "127.0.0.1:8090" || got.fileRoot != "" || got.auditFile != "" || got.auditMaxBytes != audit.DefaultMaxHistoryBytes {
 					t.Fatalf("unexpected defaults: %+v", got)
 				}
 			case "serve alias":
@@ -60,7 +63,7 @@ func TestParseOptions(t *testing.T) {
 				}
 			case "all flags":
 				if got.transport != "stdio" || got.listen != "127.0.0.1:8123" ||
-					got.tokenFile != "/tmp/token" || got.fileRoot != "/tmp" || got.auditFile != "off" {
+					got.tokenFile != "/tmp/token" || got.fileRoot != "/tmp" || got.auditFile != "off" || got.auditMaxBytes != 131072 {
 					t.Fatalf("flags were not applied: %+v", got)
 				}
 			}

@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // eventSink is used only while Log.mu is held. No additional sink mutex
@@ -33,16 +36,24 @@ type fileSink struct {
 	size     int64
 	repair   bool
 	repairTo int64
+	total    int64  // Active file plus all numbered archives, including legacy.
+	limit    int64  // Hard cap; never evict old audit records.
+	next     uint64 // Next strictly increasing archive suffix.
 
-	// Filesystem operations are replaceable in package tests to exercise
-	// partial rotation failures; production uses os.Remove and os.Rename.
-	remove func(string) error
+	// Filesystem renames are replaceable in tests to inject rotation errors.
 	rename func(string, string) error
 }
 
 func openFileSink(path string) (*fileSink, error) {
+	return openFileSinkWithLimit(path, DefaultMaxHistoryBytes)
+}
+
+func openFileSinkWithLimit(path string, limit int64) (*fileSink, error) {
 	if path == "" {
 		return nil, errors.New("audit path is empty")
+	}
+	if limit <= 0 {
+		return nil, errors.New("audit history limit must be positive")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -61,7 +72,7 @@ func openFileSink(path string) (*fileSink, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &fileSink{path: path, lock: lock, remove: os.Remove, rename: os.Rename}
+	s := &fileSink{path: path, lock: lock, limit: limit, rename: os.Rename}
 	if err := s.open(); err != nil {
 		return nil, errors.Join(err, lock.Close())
 	}
@@ -77,7 +88,51 @@ func PrepareDirectory(path string) error { return prepareAuditDir(path) }
 // another process is active would allow two processes to lock different inodes.
 var ErrInUse = errors.New("audit log is already in use")
 
+// scanArchives inventories the existing audit history exactly once per sink.
+// All numbered archives count, including files copied during legacy migration.
+// Archive numbering is append-only; older files are never renamed or removed.
+func (s *fileSink) scanArchives() error {
+	entries, err := os.ReadDir(filepath.Dir(s.path))
+	if err != nil {
+		return err
+	}
+	s.next = 1
+	prefix := filepath.Base(s.path) + "."
+	for _, entry := range entries {
+		suffix, ok := strings.CutPrefix(entry.Name(), prefix)
+		if !ok || suffix == "" || strings.Trim(suffix, "0123456789") != "" {
+			continue
+		}
+		n, parseErr := strconv.ParseUint(suffix, 10, 64)
+		if parseErr != nil || n == 0 || strconv.FormatUint(n, 10) != suffix || n == math.MaxUint64 {
+			return fmt.Errorf("invalid audit archive suffix: %s", entry.Name())
+		}
+		name := filepath.Join(filepath.Dir(s.path), entry.Name())
+		info, err := os.Lstat(name)
+		if err != nil {
+			return err
+		}
+		if err := checkAuditPrivateFile(name, info); err != nil {
+			return err
+		}
+		if info.Size() > math.MaxInt64-s.total {
+			return errors.New("audit archive history size overflows int64")
+		}
+		s.total += info.Size()
+		if n >= s.next {
+			s.next = n + 1
+		}
+	}
+	return nil
+}
+
 func (s *fileSink) open() error {
+	initial := s.next == 0
+	if initial {
+		if err := s.scanArchives(); err != nil {
+			return err
+		}
+	}
 	info, err := os.Lstat(s.path)
 	if err == nil {
 		if err := checkAuditPrivateFile(s.path, info); err != nil {
@@ -102,7 +157,16 @@ func (s *fileSink) open() error {
 		return errors.Join(err, f.Close())
 	}
 	if size != stat.Size() {
-		log.Printf("audit: removed %d bytes from an incomplete JSONL tail", stat.Size()-size)
+		slog.Warn("repaired incomplete audit JSONL tail", "removed_bytes", stat.Size()-size)
+	}
+	if initial {
+		if size > math.MaxInt64-s.total {
+			return errors.Join(errors.New("audit history size overflows int64"), f.Close())
+		}
+		s.total += size
+		if s.total > s.limit {
+			return errors.Join(fmt.Errorf("%w: existing history %d bytes exceeds limit %d", ErrHistoryLimit, s.total, s.limit), f.Close())
+		}
 	}
 	s.f, s.size, s.repair = f, size, false
 	return nil
@@ -138,30 +202,34 @@ func recoverTail(f *os.File, size int64) (int64, error) {
 }
 
 func (s *fileSink) rotate() error {
+	if s.next == math.MaxUint64 {
+		return errors.New("audit archive sequence exhausted")
+	}
+	archive := fmt.Sprintf("%s.%d", s.path, s.next)
+	if _, err := os.Lstat(archive); err == nil {
+		return fmt.Errorf("audit archive already exists; refusing overwrite: %s", archive)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	// A failed Close may nevertheless have closed the descriptor. Never leave
-	// a potentially unusable handle in the sink state.
+	// a potentially unusable handle in the sink state. No historical archive
+	// is renamed or removed, even when the budget is exhausted.
 	f := s.f
 	s.f = nil
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close audit file before rotation: %w", err)
 	}
-	if err := s.remove(s.path + ".3"); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.rename(s.path, archive); err != nil {
 		return err
 	}
-	for i := maxArchives - 1; i >= 1; i-- {
-		old := fmt.Sprintf("%s.%d", s.path, i)
-		next := fmt.Sprintf("%s.%d", s.path, i+1)
-		if err := s.rename(old, next); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	if err := s.rename(s.path, s.path+".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+	s.next++
 	return s.open()
 }
 
 func (s *fileSink) appendLine(line []byte) error {
+	if int64(len(line)) > maxFileBytes {
+		return ErrEventTooLarge
+	}
 	if s.f == nil {
 		if err := s.open(); err != nil {
 			return err
@@ -173,6 +241,12 @@ func (s *fileSink) appendLine(line []byte) error {
 		}
 		s.size, s.repair = s.repairTo, false
 	}
+	// The limit is checked *before* rotation and append. In particular,
+	// exhausting history capacity never triggers deletion of an archive.
+	if int64(len(line)) > s.limit || s.total > s.limit-int64(len(line)) {
+		return fmt.Errorf("%w: %d bytes used, %d bytes requested, %d bytes allowed",
+			ErrHistoryLimit, s.total, len(line), s.limit)
+	}
 	if s.size+int64(len(line)) > maxFileBytes {
 		if err := s.rotate(); err != nil {
 			return fmt.Errorf("audit rotation: %w", err)
@@ -182,6 +256,7 @@ func (s *fileSink) appendLine(line []byte) error {
 	n, writeErr := s.f.Write(line)
 	if writeErr == nil && n == len(line) {
 		s.size += int64(n)
+		s.total += int64(n)
 		return nil
 	}
 	if writeErr == nil {

@@ -165,6 +165,8 @@ type RuntimeInfo struct {
 	WorkingDirectory string       `json:"working_directory"`
 	FileRoot         string       `json:"file_root"`
 	Audit            audit.Status `json:"audit"`
+	StdoutLog        string       `json:"stdout_log,omitempty"`
+	StderrLog        string       `json:"stderr_log,omitempty"`
 	Listen           string       `json:"listen"`
 	Arguments        []string     `json:"arguments"`
 	PID              int          `json:"pid"`

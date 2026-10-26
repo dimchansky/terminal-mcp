@@ -3,7 +3,6 @@ package audit
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -181,7 +180,7 @@ func TestFileSinkRecoversAfterRenameFailure(t *testing.T) {
 	}
 }
 
-func TestFileSinkRemoveFailureIsRetryable(t *testing.T) {
+func TestFileSinkRefusesConflictingArchiveNameBeforeOverwrite(t *testing.T) {
 	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	s, err := openFileSink(path)
 	if err != nil {
@@ -191,14 +190,22 @@ func TestFileSinkRemoveFailureIsRetryable(t *testing.T) {
 	if err := s.appendLine(almostFullLogLine()); err != nil {
 		t.Fatal(err)
 	}
-	s.remove = func(name string) error { return fmt.Errorf("injected remove error for %s", filepath.Base(name)) }
-	line := []byte(strings.Repeat("a", 100) + "\n")
-	if err := s.appendLine(line); err == nil || !strings.Contains(err.Error(), "injected remove error") {
-		t.Fatalf("remove failure not reported: %v", err)
+	independent := []byte("independent archived evidence\n")
+	if err := os.WriteFile(path+".1", independent, 0600); err != nil {
+		t.Fatal(err)
 	}
-	s.remove = os.Remove
+	line := []byte(strings.Repeat("a", 100) + "\n")
+	if err := s.appendLine(line); err == nil || !strings.Contains(err.Error(), "archive already exists") {
+		t.Fatalf("archive naming conflict was not reported: %v", err)
+	}
+	if got, err := os.ReadFile(path + ".1"); err != nil || !bytes.Equal(got, independent) {
+		t.Fatalf("independent audit history was overwritten: %q %v", got, err)
+	}
+	if err := os.Remove(path + ".1"); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.appendLine(line); err != nil {
-		t.Fatalf("could not resume after remove failure: %v", err)
+		t.Fatalf("could not resume after conflicting archive was removed: %v", err)
 	}
 }
 

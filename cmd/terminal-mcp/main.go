@@ -9,7 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,11 +30,12 @@ import (
 )
 
 type options struct {
-	transport string
-	listen    string
-	tokenFile string
-	fileRoot  string
-	auditFile string
+	transport     string
+	listen        string
+	tokenFile     string
+	fileRoot      string
+	auditFile     string
+	auditMaxBytes int64
 }
 
 func parseOptions(args []string) (options, error) {
@@ -48,6 +49,7 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&opts.tokenFile, "token-file", "", "HTTP bearer token file (0600); defaults to TERMINAL_MCP_TOKEN or a generated user token")
 	flags.StringVar(&opts.fileRoot, "file-root", "", "Root directory for file tools (overrides configured file_root)")
 	flags.StringVar(&opts.auditFile, "audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
+	flags.Int64Var(&opts.auditMaxBytes, "audit-max-bytes", audit.DefaultMaxHistoryBytes, "hard limit for active audit plus all numbered archives (default 1 GiB)")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
@@ -57,6 +59,9 @@ func parseOptions(args []string) (options, error) {
 	if opts.transport != "http" && opts.transport != "stdio" {
 		return opts, fmt.Errorf("transport must be http or stdio")
 	}
+	if opts.auditMaxBytes <= 0 {
+		return opts, fmt.Errorf("audit-max-bytes must be positive")
+	}
 	return opts, nil
 }
 
@@ -65,13 +70,13 @@ func main() {
 		switch os.Args[1] {
 		case "start", "status", "stop":
 			if err := standaloneCommand(os.Args[1:]); err != nil {
-				fmt.Fprintln(os.Stderr, "terminal-mcp:", err)
+				slog.Error("terminal-mcp standalone command failed", "error", err)
 				os.Exit(1)
 			}
 			return
 		case "update", "update-status", "_update-worker":
 			if err := updateCommand(os.Args[1:]); err != nil {
-				fmt.Fprintln(os.Stderr, "terminal-mcp:", err)
+				slog.Error("terminal-mcp updater command failed", "error", err)
 				os.Exit(1)
 			}
 			return
@@ -83,7 +88,7 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "terminal-mcp:", err)
+		slog.Error("terminal-mcp server failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -116,7 +121,7 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	}
 	defer files.Close()
 
-	recorder, err := openAudit(opts.auditFile, opts.transport)
+	recorder, err := openAuditWithLimit(opts.auditFile, opts.transport, opts.auditMaxBytes)
 	if err != nil {
 		return fmt.Errorf("required audit initialization failed: %w", err)
 	}
@@ -126,7 +131,7 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 			// executing mutations before closing their audit destination.
 			manager.Close()
 			if err := recorder.Close(); err != nil {
-				log.Printf("audit shutdown: %v", err)
+				slog.Error("audit shutdown failed", "error", err)
 			}
 		}()
 	}
@@ -185,6 +190,10 @@ func recordServerStart(recorder *audit.Log, serverID string) error {
 }
 
 func openAudit(requestedPath, transport string) (*audit.Log, error) {
+	return openAuditWithLimit(requestedPath, transport, audit.DefaultMaxHistoryBytes)
+}
+
+func openAuditWithLimit(requestedPath, transport string, maxBytes int64) (*audit.Log, error) {
 	path := requestedPath
 	if path == "" {
 		if transport != "http" {
@@ -214,9 +223,9 @@ func openAudit(requestedPath, transport string) (*audit.Log, error) {
 		if legacyErr != nil {
 			return nil, legacyErr
 		}
-		recorder, err = audit.OpenWithMigration(path, legacy)
+		recorder, err = audit.OpenWithMigrationLimit(path, legacy, maxBytes)
 	} else {
-		recorder, err = audit.Open(path)
+		recorder, err = audit.OpenWithLimit(path, maxBytes)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open required audit file %q: %w", path, err)
@@ -256,12 +265,13 @@ func standaloneInfo(args []string, serverID, listen, root string, envToken bool)
 	if err != nil {
 		return mcpserver.RuntimeInfo{}, err
 	}
+	stdoutLog, stderrLog := activeServerLogPaths()
 	return mcpserver.RuntimeInfo{
 		ServerID: serverID, Executable: executable,
 		ExecutableSHA256: hex.EncodeToString(hash.Sum(nil)),
 		WorkingDirectory: cwd, FileRoot: root, Listen: listen,
 		Arguments: append([]string(nil), args...), PID: os.Getpid(),
-		EnvToken: envToken,
+		EnvToken: envToken, StdoutLog: stdoutLog, StderrLog: stderrLog,
 	}, nil
 }
 
@@ -316,8 +326,7 @@ func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server 
 		MaxHeaderBytes:    16 << 10,
 		BaseContext:       func(net.Listener) context.Context { return requestBase },
 	}
-	logger := log.New(os.Stderr, "terminal-mcp: ", log.LstdFlags)
-	logger.Printf("listening at http://%s/mcp (full local user privileges)", listener.Addr())
+	slog.Info("listening at http://" + listener.Addr().String() + "/mcp (full local user privileges)")
 	done := make(chan error, 1)
 	go func() { done <- httpServer.Serve(listener) }()
 	select {

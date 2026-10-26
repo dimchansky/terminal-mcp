@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -16,7 +16,9 @@ import (
 
 const (
 	maxFileBytes int64 = 4 << 20
-	maxArchives        = 3
+	// DefaultMaxHistoryBytes bounds the entire audit family. No automatic
+	// retention pruning is performed; reaching the limit denies new work.
+	DefaultMaxHistoryBytes int64 = 1 << 30 // 1 GiB
 )
 
 var (
@@ -24,6 +26,7 @@ var (
 	ErrEventTooLarge = errors.New("audit event exceeds maximum file size")
 	ErrInvalidEvent  = errors.New("audit event cannot be serialized")
 	ErrDegraded      = errors.New("audit_degraded: new MCP work is refused")
+	ErrHistoryLimit  = errors.New("audit_history_limit: storage budget exhausted")
 )
 
 const EventSchemaVersion = 2
@@ -74,6 +77,8 @@ type Log struct {
 	path       string
 	legacyLock *os.File                     // Kept until Close to fence out the old server.
 	failure    atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
+	bytesUsed  atomic.Int64
+	bytesLimit int64
 }
 
 type auditFailure struct{ err error }
@@ -81,9 +86,11 @@ type auditFailure struct{ err error }
 // Status is a read-only snapshot of the audit health. It never waits on file
 // I/O and can be served by authenticated administration during a disk stall.
 type Status struct {
-	State     string `json:"state"`
-	Path      string `json:"path,omitempty"`
-	LastError string `json:"last_error,omitempty"`
+	State      string `json:"state"`
+	Path       string `json:"path,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
+	BytesUsed  int64  `json:"bytes_used,omitempty"`
+	BytesLimit int64  `json:"bytes_limit,omitempty"`
 }
 
 func DisabledStatus() Status { return Status{State: "disabled"} }
@@ -92,7 +99,7 @@ func (l *Log) Status() Status {
 	if l == nil {
 		return DisabledStatus()
 	}
-	s := Status{State: "ok", Path: l.path}
+	s := Status{State: "ok", Path: l.path, BytesUsed: l.bytesUsed.Load(), BytesLimit: l.bytesLimit}
 	if failed := l.failure.Load(); failed != nil {
 		s.State, s.LastError = "degraded", failed.err.Error()
 	}
@@ -115,7 +122,7 @@ func (l *Log) Degrade(err error) {
 		return
 	}
 	if l.failure.CompareAndSwap(nil, &auditFailure{err: err}) {
-		log.Printf("audit DEGRADED; refusing new MCP work until restart: %v", err)
+		slog.Error("audit degraded; refusing new MCP work until restart", "error", err)
 	}
 }
 
@@ -124,14 +131,19 @@ func newLog(sink eventSink) *Log {
 	return &Log{sink: sink}
 }
 
-func Open(path string) (*Log, error) {
-	sink, err := openFileSink(path)
+func Open(path string) (*Log, error) { return OpenWithLimit(path, DefaultMaxHistoryBytes) }
+
+// OpenWithLimit counts the active file and all numbered archives against a
+// configurable hard budget. It never deletes historical audit records.
+func OpenWithLimit(path string, maxHistoryBytes int64) (*Log, error) {
+	sink, err := openFileSinkWithLimit(path, maxHistoryBytes)
 	if err != nil {
 		return nil, err
 	}
-	log := newLog(sink)
-	log.path = sink.path
-	return log, nil
+	l := newLog(sink)
+	l.path, l.bytesLimit = sink.path, maxHistoryBytes
+	l.bytesUsed.Store(sink.total)
+	return l, nil
 }
 
 // Write snapshots an event before taking the sink lock. A nil error means the
@@ -172,6 +184,9 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 		writeErr := fmt.Errorf("audit write: %w", err)
 		l.Degrade(writeErr)
 		return writeErr
+	}
+	if sink, ok := l.sink.(*fileSink); ok {
+		l.bytesUsed.Store(sink.total)
 	}
 	return nil
 }

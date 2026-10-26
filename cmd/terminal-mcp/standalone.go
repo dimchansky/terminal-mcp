@@ -25,6 +25,7 @@ type standaloneConfig struct {
 	TokenFile        string `json:"token_file"`
 	FileRoot         string `json:"file_root"`
 	AuditFile        string `json:"audit_file,omitempty"`
+	AuditMaxBytes    int64  `json:"audit_max_bytes,omitempty"`
 	WorkingDirectory string `json:"working_directory"`
 	Path             string `json:"path"`
 }
@@ -159,6 +160,9 @@ func resolveStandaloneConfig(c standaloneConfig) (standaloneConfig, error) {
 			return c, err
 		}
 	}
+	if c.AuditMaxBytes < 0 {
+		return c, errors.New("audit-max-bytes must be positive")
+	}
 	return c, nil
 }
 
@@ -191,6 +195,8 @@ func listenerInUse(address string) bool {
 func startStandalone(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
 	var listen, tokenFile, fileRoot, auditFile string
+	var auditMaxBytes int64
+	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "hard audit history limit in bytes; 0 keeps saved/default limit")
 	flags.StringVar(&listen, "listen", "", "standalone loopback listening address")
 	flags.StringVar(&tokenFile, "token-file", "", "existing bearer token file")
 	flags.StringVar(&fileRoot, "file-root", "", "root directory for MCP file tools")
@@ -233,6 +239,12 @@ func startStandalone(args []string) error {
 		config.AuditFile = ""
 	} else if auditFile != "" {
 		config.AuditFile = auditFile
+	}
+	if auditMaxBytes < 0 {
+		return errors.New("audit-max-bytes must be positive")
+	}
+	if auditMaxBytes != 0 {
+		config.AuditMaxBytes = auditMaxBytes
 	}
 	config, err = resolveStandaloneConfig(config)
 	if err != nil {
@@ -307,6 +319,9 @@ func startStandalone(args []string) error {
 	}
 	serverArgs := []string{"serve", "--listen=" + config.Listen, "--token-file=" + config.TokenFile,
 		"--file-root=" + config.FileRoot, "--audit-file=" + config.AuditFile}
+	if config.AuditMaxBytes != 0 {
+		serverArgs = append(serverArgs, fmt.Sprintf("--audit-max-bytes=%d", config.AuditMaxBytes))
+	}
 	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = config.WorkingDirectory
 	cmd.Env = append(withoutEnvToken(os.Environ()), "PATH="+config.Path)
@@ -401,6 +416,7 @@ func controlStandalone(action string, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
 			"listen": info.Listen, "file_root": info.FileRoot, "audit": info.Audit,
+			"stdout_log": info.StdoutLog, "stderr_log": info.StderrLog,
 		})
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(stateDir), "updates", "pending")); err == nil {

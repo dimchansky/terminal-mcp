@@ -33,7 +33,7 @@ func newUpdateFixture(t *testing.T, autoToken bool) *updateFixture {
 	return newUpdateFixtureWithAudit(t, autoToken, func(string) string { return "off" })
 }
 
-func newUpdateFixtureWithAudit(t *testing.T, autoToken bool, auditPath func(string) string) *updateFixture {
+func newUpdateFixtureWithAudit(t *testing.T, autoToken bool, auditPath func(string) string, extraServeArgs ...string) *updateFixture {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("builds and restarts real server processes")
@@ -69,6 +69,7 @@ func newUpdateFixtureWithAudit(t *testing.T, autoToken bool, auditPath func(stri
 	}
 	defer func() { _ = logFile.Close() }()
 	serverArgs := []string{"serve", "--listen=" + address, "--audit-file=" + auditPath(home)}
+	serverArgs = append(serverArgs, extraServeArgs...)
 	if !autoToken {
 		serverArgs = append(serverArgs, "--token-file="+token)
 	}

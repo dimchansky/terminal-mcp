@@ -110,7 +110,7 @@ func TestRefusesPublicDirectoryAndSymlink(t *testing.T) {
 	}
 }
 
-func TestConcurrentCallsRotateWithBoundedBackups(t *testing.T) {
+func TestConcurrentCallsRotateWithoutDiscardingEvents(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -142,9 +142,8 @@ func TestConcurrentCallsRotateWithBoundedBackups(t *testing.T) {
 		t.Fatal("expected rotated log:", err)
 	}
 
-	// Count all records across the active file and retained archives. The
-	// test volume fits within the existing four 4-MiB files, so any missing
-	// record here is an actual write/concurrency defect, not retention.
+	// Count all records across the active file and archives. The test
+	// volume fits in a few 4-MiB files, with no eviction permitted.
 	records := 0
 	for _, file := range []string{path, path + ".1", path + ".2", path + ".3"} {
 		data, err := os.ReadFile(file)

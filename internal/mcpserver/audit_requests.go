@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -40,7 +40,7 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 			}
 			call, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 			if !ok || call == nil {
-				log.Printf("audit: cannot inspect raw tools/call parameters; rejecting unrecordable request")
+				slog.Error("audit: cannot inspect raw tools/call parameters; refusing request")
 				return auditToolError("audit cannot inspect tool arguments; tool not executed"), nil
 			}
 			info := &requestAudit{id: audit.RequestID(), started: time.Now()}

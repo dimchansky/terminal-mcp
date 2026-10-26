@@ -25,6 +25,7 @@ type winStandaloneConfig struct {
 	TokenFile        string `json:"token_file"`
 	FileRoot         string `json:"file_root"`
 	AuditFile        string `json:"audit_file,omitempty"`
+	AuditMaxBytes    int64  `json:"audit_max_bytes,omitempty"`
 	WorkingDirectory string `json:"working_directory"`
 	Path             string `json:"path"`
 }
@@ -94,10 +95,12 @@ func standaloneCommand(args []string) error { return windowsStandaloneCommand(ar
 func windowsStart(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
 	var listen, root, token, auditFile string
+	var auditMaxBytes int64
 	flags.StringVar(&listen, "listen", "", "loopback listen address")
 	flags.StringVar(&root, "file-root", "", "root for file tools")
 	flags.StringVar(&token, "token-file", "", "private HTTP bearer token file")
 	flags.StringVar(&auditFile, "audit-file", "", "audit log path; off disables; default restores platform default")
+	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "hard audit history limit in bytes; 0 keeps saved/default limit")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -128,6 +131,12 @@ func windowsStart(args []string) error {
 		cfg.AuditFile = ""
 	} else if auditFile != "" {
 		cfg.AuditFile = auditFile
+	}
+	if auditMaxBytes < 0 {
+		return errors.New("audit-max-bytes must be positive")
+	}
+	if auditMaxBytes != 0 {
+		cfg.AuditMaxBytes = auditMaxBytes
 	}
 	if cfg.AuditFile == "" {
 		cfg.AuditFile, err = defaultAuditPath()
@@ -210,8 +219,12 @@ func windowsStart(args []string) error {
 		return err
 	}
 	defer func() { _ = logs.Close() }()
-	cmd := exec.Command(installed, "serve", "--listen="+cfg.Listen,
-		"--token-file="+cfg.TokenFile, "--file-root="+cfg.FileRoot, "--audit-file="+cfg.AuditFile)
+	serverArgs := []string{"serve", "--listen=" + cfg.Listen,
+		"--token-file=" + cfg.TokenFile, "--file-root=" + cfg.FileRoot, "--audit-file=" + cfg.AuditFile}
+	if cfg.AuditMaxBytes != 0 {
+		serverArgs = append(serverArgs, fmt.Sprintf("--audit-max-bytes=%d", cfg.AuditMaxBytes))
+	}
+	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = cfg.WorkingDirectory
 	cmd.Env = append(withoutEnvToken(os.Environ()), "PATH="+cfg.Path)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -285,6 +298,7 @@ func windowsControl(action string, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
 			"file_root": info.FileRoot, "listen": info.Listen, "audit": info.Audit,
+			"stdout_log": info.StdoutLog, "stderr_log": info.StderrLog,
 		})
 	}
 	if err := client.maintenance(info.ServerID, "begin"); err != nil {

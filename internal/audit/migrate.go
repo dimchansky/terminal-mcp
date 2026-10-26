@@ -19,9 +19,13 @@ import (
 // the new process. Older cooperating servers therefore cannot continue
 // writing to the old path alongside the new one. Sources are only copied,
 // never moved or deleted. The migration is resumable after a crash.
-func OpenWithMigration(path, legacy string) (_ *Log, err error) {
+func OpenWithMigration(path, legacy string) (*Log, error) {
+	return OpenWithMigrationLimit(path, legacy, DefaultMaxHistoryBytes)
+}
+
+func OpenWithMigrationLimit(path, legacy string, maxHistoryBytes int64) (_ *Log, err error) {
 	if legacy == "" {
-		return Open(path)
+		return OpenWithLimit(path, maxHistoryBytes)
 	}
 	destination, err := canonicalAuditPath(path)
 	if err != nil {
@@ -29,13 +33,13 @@ func OpenWithMigration(path, legacy string) (_ *Log, err error) {
 	}
 	source, err := canonicalAuditPath(legacy)
 	if errors.Is(err, os.ErrNotExist) {
-		return Open(path)
+		return OpenWithLimit(path, maxHistoryBytes)
 	}
 	if err != nil {
 		return nil, err
 	}
 	if destination == source {
-		return Open(path)
+		return OpenWithLimit(path, maxHistoryBytes)
 	}
 	if filepath.Base(destination) != filepath.Base(source) {
 		return nil, fmt.Errorf("legacy audit migration requires matching journal filenames")
@@ -69,12 +73,13 @@ func OpenWithMigration(path, legacy string) (_ *Log, err error) {
 	if err = migrateAuditFamily(source, destination); err != nil {
 		return nil, err
 	}
-	sink := &fileSink{path: destination, lock: destLock, remove: os.Remove, rename: os.Rename}
+	sink := &fileSink{path: destination, lock: destLock, limit: maxHistoryBytes, rename: os.Rename}
 	if err = sink.open(); err != nil {
 		return nil, err
 	}
 	l := newLog(sink)
-	l.path, l.legacyLock = destination, oldLock
+	l.path, l.legacyLock, l.bytesLimit = destination, oldLock, maxHistoryBytes
+	l.bytesUsed.Store(sink.total)
 	return l, nil
 }
 

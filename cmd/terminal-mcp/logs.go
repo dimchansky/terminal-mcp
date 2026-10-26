@@ -94,6 +94,35 @@ func (s serverLogs) Close() error {
 	return err
 }
 
+// activeServerLogPaths reports only logs that actually back the current
+// process descriptors. A manually launched foreground server is not assumed
+// to be writing to the shared detached-server log files.
+func activeServerLogPaths() (stdout, stderr string) {
+	dir, err := defaultLogDirectory()
+	if err != nil {
+		return "", ""
+	}
+	for _, stream := range []struct {
+		handle *os.File
+		name   string
+		output *string
+	}{
+		{os.Stdout, "server.stdout.log", &stdout},
+		{os.Stderr, "server.stderr.log", &stderr},
+	} {
+		openInfo, err := stream.handle.Stat()
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, stream.name)
+		fileInfo, err := os.Stat(path)
+		if err == nil && os.SameFile(openInfo, fileInfo) {
+			*stream.output = path
+		}
+	}
+	return stdout, stderr
+}
+
 // The OS retains its own duplicate handles for the detached child after Start.
 // Keep them open for the process lifetime; there is no rename-based log rotation
 // until the explicitly designed descriptor-safe stage 6.
