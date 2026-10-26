@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,19 +40,12 @@ func testReceiver(files *Manager, server *httptest.Server) {
 	transport.DisableCompression = true
 	client.Transport = transport
 	files.receiver.client = client
-	base, _ := url.Parse(server.URL)
-	files.receiver.validate = func(u *url.URL) error {
-		if u.Scheme == base.Scheme && u.Host == base.Host && u.User == nil {
-			return nil
-		}
-		return validateChatGPTDownloadURL(u)
-	}
 }
 
 func receiveInput(id, operation, path, source string) ReceiveArgs {
 	return ReceiveArgs{
 		ServerID: id, OperationID: operation, Path: path,
-		File: OpenAIFile{DownloadURL: source, FileID: "file_test", MIMEType: "application/octet-stream", FileName: "sample.zip"},
+		File: FileReference{DownloadURL: source, FileID: "file_test", MIMEType: "application/octet-stream", FileName: "sample.zip"},
 	}
 }
 
@@ -101,46 +93,73 @@ func TestReceiveBinaryAndReplay(t *testing.T) {
 	}
 }
 
-func TestReceiveURLPolicy(t *testing.T) {
-	allowed := []string{
+func TestReceiveURLSyntaxAllowsAnyHTTPSource(t *testing.T) {
+	accepted := []string{
 		"https://files.oaiusercontent.com/file?id=a",
-		"https://chatgpt.com/backend-api/file/123",
-		"https://api.openai.com/signed",
-		"https://oaisdmntprindiasocentral.blob.core.windows.net/files/00000000-0000-0000-0000-000000000000/raw?sig=test",
-		"https://oaisdmntprnortheu.blob.core.windows.net/files/00000000-0000-0000-0000-000000000000/raw?sig=test",
-	}
-	for _, raw := range allowed {
-		u, err := url.Parse(raw)
-		if err != nil || validateChatGPTDownloadURL(u) != nil {
-			t.Fatalf("trusted URL rejected: %q %v", raw, err)
-		}
-	}
-	blocked := []string{
-		"http://files.oaiusercontent.com/a",
-		"https://127.0.0.1/secret",
-		"https://localhost/file",
-		"https://files.oaiusercontent.com.evil.test/a",
-		"https://example.com/a",
-		"https://user:password@files.oaiusercontent.com/a",
-		"https://files.oaiusercontent.com:8443/a",
 		"https://someoneelse.blob.core.windows.net/files/x/raw?sig=test",
-		"https://oaisdmntprindiasocentral.blob.core.windows.net.evil.test/files/x/raw",
-		"http://oaisdmntprindiasocentral.blob.core.windows.net/files/x/raw",
-		"https://[::1]/a",
-		"https://files.oaiusercontent.com/a#fragment",
+		"https://example.com:8443/download?key=private",
+		"http://127.0.0.1:8080/internal",
+		"http://localhost:5000/file",
+		"http://[::1]:8090/data",
+		"https://username:password@another.example.org/private",
+		"https://files.oaiusercontent.com.evil.test/a",
+		"https://example.com/file#fragment",
 	}
-	for _, raw := range blocked {
-		u, err := url.Parse(raw)
-		if err == nil && validateChatGPTDownloadURL(u) == nil {
-			t.Fatalf("untrusted URL accepted: %q", raw)
+	for _, raw := range accepted {
+		u, err := parseDownloadURL(raw)
+		if err != nil || u.String() != raw {
+			t.Fatalf("valid HTTP(S) URL rejected: %q: %v", raw, err)
 		}
 	}
+
+	invalid := []string{"", "/tmp/archive.zip", "//example.com/archive", "file:///tmp/archive.zip",
+		"ftp://example.com/archive", "https://", "http://", "invalid url", "https://host:invalid-port/data"}
 	files, dir, id := receiveFixture(t)
-	for i, raw := range blocked {
-		out, err := files.Receive(context.Background(), receiveInput(id, "unsafe-"+string(rune('a'+i)), filepath.Join(dir, "unsafe.zip"), raw))
-		if err == nil || out.Receipt.Status == "applied" {
-			t.Fatalf("untrusted source must fail before mutation: %+v %v", out, err)
+	for i, raw := range invalid {
+		if _, err := parseDownloadURL(raw); err == nil {
+			t.Fatalf("unsupported or malformed URL accepted: %q", raw)
 		}
+		out, err := files.Receive(context.Background(), receiveInput(id,
+			"invalid-url-"+string(rune('a'+i)), filepath.Join(dir, "never-created.zip"), raw))
+		if err == nil || out.Receipt.Status == "applied" {
+			t.Fatalf("invalid URL should be rejected without side effects: %+v %v", out, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "never-created.zip")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid URL created file: %v", err)
+	}
+}
+
+func TestReceiveHTTPAndCrossOriginRedirect(t *testing.T) {
+	files, dir, id := receiveFixture(t)
+	payload := append([]byte{0, 255, 128}, bytes.Repeat([]byte{7, 0, 99}, 1024)...)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer target.Close()
+	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/download", http.StatusFound)
+	}))
+	defer redirect.Close()
+	testReceiver(files, redirect)
+
+	for _, tc := range []struct {
+		name, source string
+	}{
+		{"localhost-http", target.URL + "/download"},
+		{"https-to-http-redirect", redirect.URL + "/redirect"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".zip")
+			out, err := files.Receive(context.Background(), receiveInput(id, tc.name, path, tc.source))
+			if err != nil || out.Receipt.Status != "applied" {
+				t.Fatalf("transfer failed: %+v %v", out, err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(got, payload) {
+				t.Fatalf("bytes changed after transfer: got %d bytes, %v", len(got), err)
+			}
+		})
 	}
 }
 
@@ -159,9 +178,9 @@ func TestReceiveFailureCleanupAndRedirect(t *testing.T) {
 			w.Header().Set("Content-Encoding", "gzip")
 			_, _ = w.Write([]byte("no"))
 		}, "Content-Encoding"},
-		{"redirect", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "http://127.0.0.1/blocked?token=private", http.StatusFound)
-		}, "trusted HTTPS"},
+		{"redirect-loop", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/asset?token=private", http.StatusFound)
+		}, "10 redirects"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

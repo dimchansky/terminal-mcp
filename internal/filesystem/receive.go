@@ -24,40 +24,24 @@ const MaxReceiveBytes int64 = 128 << 20
 const receiveTimeout = 3 * time.Minute
 
 type fileReceiver struct {
-	client   *http.Client
-	validate func(*url.URL) error
+	client *http.Client
 }
 
 func newFileReceiver() *fileReceiver {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// A Content-Encoding transformation would change the bytes being saved.
 	transport.DisableCompression = true
-	return &fileReceiver{
-		client:   &http.Client{Transport: transport, Timeout: receiveTimeout},
-		validate: validateChatGPTDownloadURL,
-	}
+	return &fileReceiver{client: &http.Client{Transport: transport, Timeout: receiveTimeout}}
 }
 
-// Only fetch temporary file URLs on OpenAI-controlled HTTPS hosts. This is a
-// network-accessible tool; accepting arbitrary URLs would introduce SSRF.
-func validateChatGPTDownloadURL(u *url.URL) error {
-	if u == nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil ||
-		u.Hostname() == "" || u.Fragment != "" || (u.Port() != "" && u.Port() != "443") {
-		return errors.New("file.download_url must be a trusted HTTPS file URL")
+// parseDownloadURL checks only what net/http needs to fetch a file.
+// Hosts, ports and networks are unrestricted, just like terminal_start.
+func parseDownloadURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, errors.New("file.download_url must be an absolute HTTP or HTTPS URL")
 	}
-	host := strings.ToLower(u.Hostname())
-	// ChatGPT fileParams uses these observed Azure Blob accounts. Match them
-	// exactly: arbitrary *.blob.core.windows.net accounts can be third-party owned.
-	switch host {
-	case "oaisdmntprindiasocentral.blob.core.windows.net", "oaisdmntprnortheu.blob.core.windows.net":
-		return nil
-	}
-	for _, domain := range []string{"oaiusercontent.com", "openai.com", "chatgpt.com"} {
-		if host == domain || strings.HasSuffix(host, "."+domain) {
-			return nil
-		}
-	}
-	return errors.New("file.download_url host is not an approved ChatGPT file host")
+	return u, nil
 }
 
 func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ActionResult, error) {
@@ -68,11 +52,8 @@ func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ActionResult, err
 	if a.File.FileID == "" || len(a.File.FileID) > 512 {
 		return ActionResult{}, errors.New("file.file_id must be nonempty and at most 512 bytes")
 	}
-	u, err := url.Parse(a.File.DownloadURL)
+	u, err := parseDownloadURL(a.File.DownloadURL)
 	if err != nil {
-		return ActionResult{}, errors.New("invalid file.download_url")
-	}
-	if err := m.receiver.validate(u); err != nil {
 		return ActionResult{}, err
 	}
 	// Keep retries bound to the original file identity and URL. No URL is
@@ -127,12 +108,6 @@ func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, e
 	}
 	client := *m.receiver.client
 	client.Timeout = receiveTimeout
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return errors.New("too many file download redirects")
-		}
-		return m.receiver.validate(req.URL)
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		// Avoid repeating the URL in the tool's error text: the complete

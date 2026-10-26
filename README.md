@@ -45,33 +45,30 @@ The server provides 13 MCP tools.
 | `file_search` | Search file content with bounded results. |
 | `file_list` | List the entries in one directory. |
 
-### Receive a binary file from ChatGPT
+### Receive a binary file from an MCP client
 
-The `file_receive` tool uses ChatGPT's `_meta["openai/fileParams"]`
-extension. Supply a ChatGPT file attachment in the top-level `file` parameter
-and an absolute destination `path`, together with the current `server_id`
-and a unique `operation_id`. The `file` object has required
-`file_id` and `download_url` fields and optional `file_name` and
-`mime_type` fields. Do not manually invent a download URL.
+`file_receive` accepts a `file` object with required `download_url` and
+`file_id` fields, optional `file_name` and `mime_type` fields, an absolute
+destination `path`, the current `server_id` and a unique `operation_id`.
+**Any MCP client** can supply the file object directly. ChatGPT can populate
+it automatically through the optional `_meta["openai/fileParams"]` integration.
 
-The server downloads directly via HTTPS from approved OpenAI file hosts and
-the two exact ChatGPT Azure Blob Storage accounts observed in testing
-(`oaisdmntprindiasocentral.blob.core.windows.net` and
-`oaisdmntprnortheu.blob.core.windows.net`), not from arbitrary Azure Blob
-accounts. It streams up to **128 MiB** into a private temporary file and
-publishes it atomically
-only if the destination does not already exist. Its parent directory must exist.
-A successful receipt reports the exact byte count and SHA-256 digest. The
-**entire** tool request, including the temporary signed download URL, file ID,
-file name, unknown fields and other arguments, is preserved in the owner's
-private audit without redaction. The operation is protected by the same retry
-ledger as other filesystem mutations.
+The server downloads over **HTTP or HTTPS from any source**, including third-party
+hosts, arbitrary ports, local/private network addresses, and normal redirects.
+There is no domain, provider or network allowlist. The service already allows
+arbitrary commands with the user's OS permissions; `file_receive` is not a
+separate sandbox or security boundary.
 
-This is **one-way** (ChatGPT to the local computer). Whether ChatGPT can bind
-a particular generated conversation file to this tool is a host integration
-question; the MCP server alone cannot guarantee it. Standard MCP clients
-without the ChatGPT file-parameter extension must provide a suitable HTTPS
-file object themselves.
+The download streams up to **128 MiB** into a private temporary file and
+publishes it atomically only if the destination does not already exist. Its
+parent directory must exist. A successful receipt reports the exact byte count
+and SHA-256 digest. The **entire** tool request, including signed URLs, file IDs,
+unknown fields and other arguments, is preserved in the owner's private audit
+without redaction. The operation uses the same retry ledger as other filesystem
+mutations.
+
+This tool downloads files **to** the local computer; it does not upload local
+files back to an MCP client.
 
 The server supports two process modes:
 

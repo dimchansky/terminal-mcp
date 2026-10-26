@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package mcpserver
 
 import (
@@ -144,10 +146,10 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 
 	const secret = "PRESIGNED_URL_SECRET_MUST_BE_IN_OWNER_AUDIT"
 	const extraSecret = "UNKNOWN_SENSITIVE_FIELD_MUST_BE_IN_OWNER_AUDIT"
-	signedURL := "https://127.0.0.1/private?signature=" + secret
+	signedURL := "http://127.0.0.1:1/private?signature=" + secret
 	path := filepath.Join(dir, "not-created.zip")
-	// The URL is deliberately disallowed: even a rejected call must preserve
-	// exactly what the client attempted to send.
+	// Even schema-rejected calls must preserve exactly what the client
+	// attempted to send, including a local HTTP URL and sensitive parameters.
 	args := map[string]any{
 		"server_id": host.ID(), "operation_id": "receive-secret", "path": path,
 		"file": map[string]any{
@@ -171,18 +173,18 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 	if err != nil || bad == nil || !bad.IsError {
 		t.Fatalf("malformed file object was not rejected: %+v %v", bad, err)
 	}
-	// A schema-valid call reaches the typed handler. Its request_finish must
-	// retain the operation ID just like schema-rejected calls.
+	// A schema-valid call to an unavailable local HTTP source must retain the
+	// operation ID even when its download fails.
 	valid := filesystem.ReceiveArgs{
-		ServerID: host.ID(), OperationID: "schema-valid-disallowed-host", Path: path,
-		File: filesystem.OpenAIFile{
+		ServerID: host.ID(), OperationID: "schema-valid-unavailable-source", Path: path,
+		File: filesystem.FileReference{
 			DownloadURL: signedURL, FileID: "file_123456",
 			FileName: "archive.zip", MIMEType: "application/zip",
 		},
 	}
-	typed, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "file_receive", Arguments: valid})
-	if err != nil || typed == nil || !typed.IsError {
-		t.Fatalf("unsafe schema-valid URL was not rejected: %+v %v", typed, err)
+	typed := call[filesystem.ActionResult](t, ctx, cs, "file_receive", valid)
+	if typed.Receipt.Status != "failed" {
+		t.Fatalf("unavailable local source did not report failure: %+v", typed)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("rejected tool created a file: %v", err)
@@ -197,7 +199,7 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 		case "request_start":
 			starts++
 			input, ok := event.Args.(map[string]any)
-			if !ok || (event.OperationID != "schema-valid-disallowed-host" && input["unknown_sensitive_field"] != extraSecret) {
+			if !ok || (event.OperationID != "schema-valid-unavailable-source" && input["unknown_sensitive_field"] != extraSecret) {
 				t.Fatalf("audit lost unknown sensitive arguments: %+v", event)
 			}
 			switch event.OperationID {
@@ -213,7 +215,7 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 				if input["file"] != malformedURL {
 					t.Fatalf("audit discarded malformed sensitive field: %+v", event)
 				}
-			case "schema-valid-disallowed-host":
+			case "schema-valid-unavailable-source":
 				file, ok := input["file"].(map[string]any)
 				if !ok || file["download_url"] != signedURL {
 					t.Fatalf("audit lost a schema-valid signed URL: %+v", event)
@@ -223,7 +225,7 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 			}
 		case "request_finish":
 			finishes++
-			if event.OperationID != "receive-secret" && event.OperationID != "bad-file-object" && event.OperationID != "schema-valid-disallowed-host" {
+			if event.OperationID != "receive-secret" && event.OperationID != "bad-file-object" && event.OperationID != "schema-valid-unavailable-source" {
 				t.Fatalf("request_finish lost the file_receive operation_id: %+v", event)
 			}
 		case "request_rejected":

@@ -45,21 +45,22 @@ type WriteArgs struct {
 	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"Omit only to create a new file; replacing an existing file requires its current SHA-256 version."`
 }
 
-// OpenAIFile is the ChatGPT fileParams payload; the URL is a temporary secret.
-type OpenAIFile struct {
+// FileReference identifies a remote HTTP(S) file. ChatGPT can populate it
+// using fileParams; other MCP clients can provide the same fields directly.
+type FileReference struct {
 	DownloadURL string `json:"download_url"`
 	FileID      string `json:"file_id"`
 	MIMEType    string `json:"mime_type,omitempty"`
 	FileName    string `json:"file_name,omitempty"`
 }
 
-// ReceiveArgs creates a new binary file from a ChatGPT-provided file.
+// ReceiveArgs creates a new binary file from any HTTP(S) source.
 // Existing destinations are never overwritten.
 type ReceiveArgs struct {
-	ServerID    string     `json:"server_id"`
-	OperationID string     `json:"operation_id"`
-	Path        string     `json:"path" jsonschema:"Absolute destination path; the parent directory must already exist."`
-	File        OpenAIFile `json:"file" jsonschema:"ChatGPT file attachment. Do not manually construct download_url."`
+	ServerID    string        `json:"server_id"`
+	OperationID string        `json:"operation_id"`
+	Path        string        `json:"path" jsonschema:"Absolute destination path; the parent directory must already exist."`
+	File        FileReference `json:"file" jsonschema:"Remote file URL and identifier; ChatGPT can populate this using fileParams."`
 }
 
 type FileReceipt struct {

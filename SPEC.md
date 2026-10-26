@@ -385,23 +385,22 @@ Without `expected_version`, the server only creates a new file. To replace an ex
 
 The content must be UTF-8 and cannot exceed 64 KiB. The parent directory must exist.
 
-### `file_receive` (ChatGPT file parameters)
+### `file_receive` (provider-neutral HTTP(S) file download)
 
 **Required:** `server_id`, `operation_id`, `path`, `file`.
 
-The `file` parameter is declared in the tool metadata as
-`_meta["openai/fileParams"]: ["file"]`. Its object schema declares four
-fields: `download_url` and `file_id` (required), `mime_type` and
-`file_name` (optional).
+The `file` object has `download_url` and `file_id` (required), `mime_type`
+and `file_name` (optional). Any MCP client can supply these fields. The optional
+ChatGPT integration declares `_meta["openai/fileParams"]: ["file"]` to permit
+automatic file binding; it does not limit the allowed sources.
 
-The server downloads the exact HTTP response bytes (without automatic
-decompression) from an HTTPS URL on an approved OpenAI-controlled host,
-including the exact ChatGPT file storage accounts
-`oaisdmntprindiasocentral.blob.core.windows.net` and
-`oaisdmntprnortheu.blob.core.windows.net` observed during integration tests.
-It does not allow arbitrary `*.blob.core.windows.net` accounts.
-Redirects follow the same host and HTTPS restrictions. The client has a
-three-minute timeout, and the maximum downloaded size is 128 MiB.
+The server downloads exact HTTP response bytes (without automatic
+decompression) from **any absolute HTTP or HTTPS URL**, without restrictions
+on hostname, IP address (including loopback and private networks), provider or
+port. Standard Go HTTP redirects are followed, including across hosts and
+between HTTP/HTTPS (up to 10 redirects). There is no URL-source allowlist:
+this service already exposes arbitrary process execution and is not a sandbox.
+The client has a three-minute timeout and a 128 MiB download limit.
 
 The destination must be a new regular file path inside `file_root` whose
 parent already exists. The download is streamed to a mode-0600 temporary

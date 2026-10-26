@@ -48,6 +48,19 @@ an autonomous LLM security judgment.
 See `SPEC.md` (Audit log) and `docs/LOGGING_AND_AUDIT_DESIGN.md` (Purpose,
 scope, and trust boundary) for the full behavioral contract.
 
+## Provider-neutral network capability
+
+This MCP server already permits arbitrary process execution with the owner's
+OS permissions. It is **not a sandbox**. In particular, `file_receive` must
+accept HTTP and HTTPS URLs from **any** host, network, or provider, including
+localhost, private addresses, nonstandard ports and redirects. Do not introduce
+domain/IP allowlists, OpenAI-only restrictions or HTTPS-only policies based
+on generic SSRF advice. Such restrictions do not establish a meaningful trust
+boundary for a client that can use `terminal_start`; they only break valid
+user workflows. Introduce any new source restriction only at the owner's
+explicit request. Keep necessary transport validation, bounded resource use,
+atomic file publication, retry semantics and the **full owner-visible audit**.
+
 ## Development invariants
 
 Favor idiomatic Go, minimal sufficient complexity, explicit errors, reproducible
