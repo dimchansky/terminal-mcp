@@ -18,7 +18,12 @@ const (
 
 var ErrClosed = errors.New("audit log is closed")
 
+const EventSchemaVersion = 2
+
 type Event struct {
+	SchemaVersion int    `json:"schema_version,omitempty"`
+	OperationID   string `json:"operation_id,omitempty"`
+	Receipt       any    `json:"receipt,omitempty"`
 	Time          string `json:"time"`
 	ServerID      string `json:"server_id,omitempty"`
 	RequestID     string `json:"request_id,omitempty"`
@@ -42,6 +47,9 @@ type Event struct {
 // NewEvent timestamps an event before its synchronous write.
 func NewEvent(e Event) Event {
 	e.Time = time.Now().UTC().Format(time.RFC3339Nano)
+	if e.SchemaVersion == 0 {
+		e.SchemaVersion = EventSchemaVersion
+	}
 	return e
 }
 

@@ -233,7 +233,9 @@ The audit records:
 - File paths, line ranges, search terms, action types, versions, and byte counts for file operations.
 - Counts of successful/failed file reads, search result counts, truncation reasons, and SDK schema rejections.
 
-The file tools do not add file content or edit text to the audit. The audit does not copy stdout or stderr.
+New events have `schema_version: 2`. Each tool request has `request_start` and `request_finish`, linked by `request_id`. A newly admitted mutation additionally has `operation_start` and `operation_finish`, correlated with the originating request and `operation_id`. A canceled request can have an unknown outcome even when its mutation later finishes successfully; a replay creates a new request pair, not another operation pair. The operation receipt describes the requested action, **not the eventual exit of a child process**. Schema-invalid requests have a rejected request pair, but their raw invalid arguments are not yet stored (stage 3). Older audit records with `start`, `finish`, or `rejected` remain readable.
+
+The request input projection for file writes/edits currently omits their complete contents (stage 3 will capture them). The new `operation_finish` contains the standard action receipt, which can include a **bounded edit preview with excerpts of old/new text**. File reads do not copy source file bodies into the audit. Child stdout/stderr is not copied into the audit.
 
 **Commands can contain secrets.** The audit records command arguments and terminal input exactly as supplied.
 

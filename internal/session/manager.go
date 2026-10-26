@@ -364,6 +364,9 @@ func (m *Manager) Close() {
 		m.mu.Lock()
 		m.closed = true
 		m.mu.Unlock()
+		// Allow accepted mutations to finish and publish their audit outcomes
+		// before the caller can close the recorder or tear down sessions.
+		m.ops.raw.StopAndWait()
 		m.starts.Wait()
 		m.mu.Lock()
 		ss := make([]*Session, 0, len(m.sessions))
@@ -389,6 +392,9 @@ func (m *Manager) PrepareRestart(id string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("server is shutting down")
+	}
 	if m.starting != 0 {
 		return fmt.Errorf("active_sessions: process launch in progress")
 	}
@@ -426,6 +432,9 @@ func (m *Manager) CancelRestart(id string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("server is shutting down")
+	}
 	m.drainGeneration++
 	m.ops.raw.Resume()
 	return nil
@@ -433,7 +442,7 @@ func (m *Manager) CancelRestart(id string) error {
 func (m *Manager) expireDrain(generation uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.drainGeneration == generation {
+	if !m.closed && m.drainGeneration == generation {
 		m.ops.raw.Resume()
 	}
 }

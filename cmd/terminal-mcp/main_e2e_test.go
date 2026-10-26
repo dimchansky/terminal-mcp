@@ -170,40 +170,56 @@ func TestRealCLIBinarySIGTERMAndAuditFlush(t *testing.T) {
 	if len(contents) == 0 || contents[len(contents)-1] != '\n' {
 		t.Fatalf("audit was not flushed as complete JSONL (bytes=%d)", len(contents))
 	}
-	var started, toolStart, toolFinish int
+	var started, toolStart, toolFinish, operationStart, operationFinish int
 	pairs := make(map[string][]audit.Event)
+	var effectRequestID string
 	for _, line := range strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n") {
 		var event audit.Event
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatalf("invalid audit record: %v", err)
 		}
-		if event.ServerID != list.ServerID || event.Time == "" {
-			t.Fatalf("wrong audit instance/timestamp: %+v", event)
+		if event.ServerID != list.ServerID || event.Time == "" || event.SchemaVersion != audit.EventSchemaVersion {
+			t.Fatalf("wrong audit instance/timestamp/schema: %+v", event)
 		}
 		switch event.Phase {
 		case "server_start":
 			started++
-		case "start":
+		case "request_start", "request_finish":
 			pairs[event.RequestID] = append(pairs[event.RequestID], event)
-			if event.Tool == "terminal_start" {
+			if event.Tool == "terminal_start" && event.Phase == "request_start" {
 				toolStart++
 			}
-		case "finish":
-			pairs[event.RequestID] = append(pairs[event.RequestID], event)
-			if event.Tool == "terminal_start" && event.SessionID == run.Receipt.SessionID && event.Status == "applied" {
+			if event.Tool == "terminal_start" && event.Phase == "request_finish" &&
+				event.SessionID == run.Receipt.SessionID && event.Status == "applied" {
 				toolFinish++
 			}
+		case "operation_start":
+			if event.Tool != "terminal_start" || event.OperationID != "real-sigterm-child" {
+				t.Fatalf("unexpected operation start: %+v", event)
+			}
+			effectRequestID = event.RequestID
+			operationStart++
+		case "operation_finish":
+			if event.Tool != "terminal_start" || event.OperationID != "real-sigterm-child" ||
+				event.Status != "applied" || event.SessionID != run.Receipt.SessionID {
+				t.Fatalf("unexpected operation finish: %+v", event)
+			}
+			operationFinish++
 		default:
 			t.Fatalf("unexpected audit phase: %+v", event)
 		}
 	}
-	if started != 1 || toolStart != 1 || toolFinish != 1 {
-		t.Fatalf("unexpected real CLI audit records: server_start=%d terminal_start=%d terminal_finish=%d", started, toolStart, toolFinish)
+	if started != 1 || toolStart != 1 || toolFinish != 1 || operationStart != 1 || operationFinish != 1 {
+		t.Fatalf("unexpected real CLI audit records: server=%d request=%d/%d operation=%d/%d",
+			started, toolStart, toolFinish, operationStart, operationFinish)
 	}
 	for id, pair := range pairs {
-		if id == "" || len(pair) != 2 || pair[0].Phase != "start" || pair[1].Phase != "finish" ||
-			pair[0].Tool != pair[1].Tool {
-			t.Fatalf("unpaired audit event: request=%s events=%v", id, pair)
+		if id == "" || len(pair) != 2 || pair[0].Phase != "request_start" ||
+			pair[1].Phase != "request_finish" || pair[0].Tool != pair[1].Tool {
+			t.Fatalf("unpaired audit request: id=%s events=%+v", id, pair)
+		}
+		if pair[0].Tool == "terminal_start" && id != effectRequestID {
+			t.Fatalf("effect not linked to originating request: %s != %s", effectRequestID, id)
 		}
 	}
 	if err := syscall.Kill(childPID, 0); !errors.Is(err, syscall.ESRCH) {

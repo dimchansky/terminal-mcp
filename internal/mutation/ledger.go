@@ -17,6 +17,22 @@ type Receipt struct {
 	Data        json.RawMessage `json:"data,omitempty"`
 }
 
+// Observer receives the lifecycle of one newly admitted effect. Replays do not
+// create observer events. Callbacks run outside the ledger mutex and must not
+// panic or retain mutable receipt data.
+type Observer interface {
+	Started(operationID string)
+	Finished(receipt Receipt)
+}
+
+type observerKey struct{}
+
+// WithObserver attaches per-request effect observation without coupling the
+// retry ledger to any particular audit or logging implementation.
+func WithObserver(ctx context.Context, observer Observer) context.Context {
+	return context.WithValue(ctx, observerKey{}, observer)
+}
+
 type operation struct {
 	fingerprint [32]byte
 	done        chan struct{}
@@ -28,6 +44,7 @@ type Ledger struct {
 	entries  map[string]*operation
 	inFlight int
 	frozen   bool
+	active   sync.WaitGroup // Admitted effects, including their audit callbacks.
 }
 
 func ValidID(id string) bool {
@@ -54,6 +71,7 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 		return Receipt{}, false, err
 	}
 	hash := sha256.Sum256(append([]byte(method+"\x00"), b...))
+	observer, _ := ctx.Value(observerKey{}).(Observer)
 	l.mu.Lock()
 	if l.entries == nil {
 		l.entries = make(map[string]*operation)
@@ -76,17 +94,34 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 		op = &operation{fingerprint: hash, done: make(chan struct{})}
 		l.entries[id] = op
 		l.inFlight++
+		l.active.Add(1) // Admission and shutdown fencing are both under mu.
 		go func() {
-			defer func() { l.mu.Lock(); l.inFlight--; close(op.done); l.mu.Unlock() }()
+			// Completion (and audit notification) precedes the ledger receipt
+			// becoming available to the original caller or any replayer.
 			defer func() {
-				if recover() != nil {
-					op.receipt = Receipt{OperationID: id, Status: "unknown", Error: "internal failure; outcome may be unknown; do not retry with a new key"}
-				}
+				l.mu.Lock()
+				l.inFlight--
+				close(op.done)
+				l.mu.Unlock()
+				l.active.Done()
 			}()
-			op.receipt = fn()
+			func() {
+				defer func() {
+					if recover() != nil {
+						op.receipt = Receipt{OperationID: id, Status: "unknown", Error: "internal failure; outcome may be unknown; do not retry with a new key"}
+					}
+				}()
+				if observer != nil {
+					observer.Started(id)
+				}
+				op.receipt = fn()
+			}()
 			op.receipt.OperationID = id
 			if len(op.receipt.Error) > 1024 {
 				op.receipt.Error = strings.ToValidUTF8(op.receipt.Error[:1024], "�") + " [truncated]"
+			}
+			if observer != nil {
+				observer.Finished(op.receipt)
 			}
 		}()
 	}
@@ -111,5 +146,17 @@ func (l *Ledger) Freeze() error {
 	l.frozen = true
 	return nil
 }
+
 func (l *Ledger) Resume()      { l.mu.Lock(); defer l.mu.Unlock(); l.frozen = false }
 func (l *Ledger) Frozen() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.frozen }
+
+// StopAndWait refuses new effects, then waits for all already-admitted
+// effects and their audit callbacks. Admission increments active under mu;
+// freezing while holding the same mutex makes active.Wait safe when empty.
+// Unlike Freeze, this is for irreversible service shutdown.
+func (l *Ledger) StopAndWait() {
+	l.mu.Lock()
+	l.frozen = true
+	l.mu.Unlock()
+	l.active.Wait()
+}

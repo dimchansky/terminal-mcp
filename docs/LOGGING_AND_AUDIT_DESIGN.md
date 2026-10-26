@@ -1,6 +1,6 @@
 # Logging and audit redesign — target contract
 
-> **Status: staged implementation; stage 1 completed in source, stages 2–7 pending.**
+> **Status: staged implementation; stages 1–2 completed in source, stages 3–7 pending.**
 > This document is the agreed **target** contract, not a claim that every
 > requirement below is implemented. [SPEC.md](../SPEC.md) and
 > [README.md](../README.md) describe the current checked-out implementation.
@@ -275,7 +275,7 @@ documentation only as each corresponding implementation becomes true.
 | --- | --- | --- |
 | **0** | Record target contracts and baseline | Clean initial worktree, documented semantic boundaries, baseline `make check`, docs-only commit |
 | **1 — source complete** | Replace audit queue/worker with synchronous `Write` | No `ErrQueueFull` or background worker; concurrent calls and failures tested with `-race`; no queue drops |
-| **2** | Separate MCP request and independent operation lifecycles | Cancellation, replay, conflict, actual completion, panic, shutdown and update fence tests |
+| **2 — source complete** | Separate MCP request and independent operation lifecycles | Cancellation, replay, conflict, actual completion, panic, shutdown and update fence tests |
 | **3** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
 | **4** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
 | **5** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
@@ -329,3 +329,55 @@ schema-rejected arguments, fail-open behavior on audit failure, pre-existing
 audit and diagnostic paths, and three-archive rotation that evicts older
 history. A successful `Write` still is not `fsync` or crash/power-loss
 durability.
+
+
+## 9. Stage 2 implementation and verification (2026-10-26)
+
+**Source implementation complete; not deployed to the running MCP instance.**
+
+- Added `schema_version: 2` and explicit phases `request_start`,
+  `request_finish`, `operation_start`, `operation_finish`. Legacy JSONL
+  remains valid and is not rewritten.
+- An accepted MCP call receives a fresh `request_id`, including a retry. A
+  new ledger mutation receives exactly one effect pair, correlated with
+  `operation_id` and the originating `request_id`. SDK schema rejections
+  receive one request pair and no effect events; raw rejected arguments
+  remain deferred to stage 3.
+- Introduced a minimal per-request `mutation.Observer` connected through
+  context. Notifications are sent by the **effect goroutine** at the real
+  execution and completion boundaries, never by a request's `defer`.
+  Successful replay, conflicting `operation_id`, and rejection before
+  admission do not create a second effect pair.
+- The observer receives the final bounded ledger receipt, including
+  `unknown` after recovery from a panic. An MCP cancellation or deadline
+  may end the request with an `unknown` effect outcome; the effect can still
+  complete and log a later `operation_finish`.
+- `Ledger.StopAndWait` freezes new admissions and waits on a standard
+  `sync.WaitGroup` for all already accepted effect callbacks and audit
+  notifications. The session manager waits for these before tearing down
+  managed sessions; in stdio mode it also waits before closing the auditor.
+  An expired updater fence cannot reopen a closed manager.
+- Preserved existing update `Freeze` semantics (an in-flight effect,
+  including its final audit hook, blocks update). Replays of completed
+  operations continue to share the original receipt.
+- `operation_finish` contains a normal bounded receipt. This may include
+  a `file_edit` preview with fragments of old/new text; the request-input
+  projection still omits full edit/write contents pending stage 3.
+
+**Verification, local macOS:**
+
+- `make check`: **PASS**, including race-enabled package tests, Go module
+  verification, `go vet`, and build.
+- `make audit-feedback`: **PASS**.
+- `go test -race -shuffle=on -count=30 -timeout=180s -run '^(TestObserver|TestStopAndWait|TestFreezeWaitsForOperationAuditFinish|TestManagerCloseWaitsForCanceledRequestEffectAndAuditFinish|TestMCPRequestCancellationDoesNotMisreportCompletedMutation)' ./internal/mutation ./internal/session ./internal/mcpserver`:
+  **PASS**, thirty repeated randomized-order runs.
+- `make lint`: **PASS**, zero issues.
+- Windows amd64 application cross-compile with `GOOS=windows`,
+  `GOARCH=amd64`, `CGO_ENABLED=0`: **PASS**, not a native Windows runtime test.
+- `git diff --check`: **PASS**.
+
+**Intentionally pending:** capture of *complete* `file_write`/`file_edit`
+arguments and rejected raw tool arguments (stage 3); audit-before-effect
+enforcement, fatal enabled-audit startup errors, and sticky degradation
+(stage 4); unified stable diagnostic/audit locations and migration (stage 5);
+diagnostic formatting and lossless retention policy (stage 6).

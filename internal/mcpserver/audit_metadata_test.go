@@ -99,17 +99,17 @@ func TestAuditOutcomesAndRejectedSchema(t *testing.T) {
 	var read, rejected, search int
 	for _, e := range events {
 		switch {
-		case e.Tool == "file_read" && e.Phase == "finish":
+		case e.Tool == "file_read" && e.Phase == "request_finish" && e.Status == "ok":
 			read++
 			if e.Status != "ok" || e.Outcome != "partial" || e.FilesTotal != 2 || e.FilesFailed != 1 {
 				t.Fatalf("missing partial read outcome: %+v", e)
 			}
-		case e.Tool == "file_read" && e.Phase == "rejected":
+		case e.Tool == "file_read" && e.Phase == "request_finish" && e.Status == "rejected":
 			rejected++
 			if e.Reason != "schema_validation" || e.Status != "rejected" || e.Error != "invalid tool arguments" || e.Args != nil {
 				t.Fatalf("invalid rejection event: %+v", e)
 			}
-		case e.Tool == "file_search" && e.Phase == "finish":
+		case e.Tool == "file_search" && e.Phase == "request_finish":
 			search++
 			if e.SearchMatches == nil || *e.SearchMatches != 1 || !e.Truncated || e.Reason != "limit" {
 				t.Fatalf("missing search summary: %+v", e)

@@ -61,6 +61,29 @@ func auditArguments(value any) (any, string) {
 	}
 }
 
+// auditOperationID correlates each mutating MCP request with the independent
+// effect recorded by the shared retry ledger. Read-only calls have no key.
+func auditOperationID(value any) string {
+	switch a := value.(type) {
+	case session.StartArgs:
+		return a.OperationID
+	case session.WriteArgs:
+		return a.OperationID
+	case session.SignalArgs:
+		return a.OperationID
+	case session.ResizeArgs:
+		return a.OperationID
+	case session.CloseArgs:
+		return a.OperationID
+	case filesystem.WriteArgs:
+		return a.OperationID
+	case filesystem.EditArgs:
+		return a.OperationID
+	default:
+		return ""
+	}
+}
+
 func auditProcess(o session.Observation) any {
 	return map[string]any{
 		"state":         o.Session.ProcessState,

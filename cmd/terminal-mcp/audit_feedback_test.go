@@ -20,8 +20,8 @@ import (
 	"terminalmcp/internal/session"
 )
 
-// waitForAudit polls the real JSONL file. The auditor is asynchronous, so a
-// caller must not assume a tool result is already durable on disk.
+// waitForAudit finds a matching synchronous JSONL event. An accepted audit
+// append is visible immediately, but the helper also covers concurrent hooks.
 func waitForAudit(t *testing.T, path, tool, phase string, match func(audit.Event) bool) audit.Event {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -118,7 +118,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 		*run.Observation.Session.Exit.Code != 0 {
 		t.Fatalf("terminal response did not report exit 0: %+v", run)
 	}
-	waitForAudit(t, auditPath, "terminal_start", "finish", func(e audit.Event) bool {
+	waitForAudit(t, auditPath, "terminal_start", "request_finish", func(e audit.Event) bool {
 		return e.Status == "applied" && e.SessionID == run.Receipt.SessionID
 	})
 
@@ -133,7 +133,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 	if !strings.Contains(message, "session_not_found_or_expired") || !strings.Contains(message, "terminal_list") {
 		t.Fatalf("missing recovery advice: %s", message)
 	}
-	waitForAudit(t, auditPath, "terminal_read", "finish", func(e audit.Event) bool {
+	waitForAudit(t, auditPath, "terminal_read", "request_finish", func(e audit.Event) bool {
 		return e.Status == "error" && strings.Contains(e.Error, "terminal_list") && e.SessionID == missingID
 	})
 
@@ -143,7 +143,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 	if len(read.Files) != 2 || read.Files[0].Error != "" || read.Files[1].Error == "" {
 		t.Fatalf("partial read response incorrect: %+v", read)
 	}
-	waitForAudit(t, auditPath, "file_read", "finish", func(e audit.Event) bool {
+	waitForAudit(t, auditPath, "file_read", "request_finish", func(e audit.Event) bool {
 		return e.Status == "ok" && e.Outcome == "partial" && e.FilesTotal == 2 && e.FilesFailed == 1
 	})
 	ambiguous := mcpCall[filesystem.ReadResult](t, ctx, conn, "file_read", filesystem.ReadArgs{
@@ -157,7 +157,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 	if edit.Receipt.Status != "failed" || !strings.Contains(edit.Receipt.Error, "matches 2 locations") {
 		t.Fatalf("ambiguous edit response: %+v", edit)
 	}
-	waitForAudit(t, auditPath, "file_edit", "finish", func(e audit.Event) bool {
+	waitForAudit(t, auditPath, "file_edit", "request_finish", func(e audit.Event) bool {
 		return e.Status == "failed" && strings.Contains(e.Error, "matches 2 locations")
 	})
 	unchanged, err := os.ReadFile(ambiguousPath)
@@ -172,7 +172,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 		if !search.Truncated || search.Reason != "limit" || len(search.Matches) != 1 {
 			t.Fatalf("search response incorrect: %+v", search)
 		}
-		waitForAudit(t, auditPath, "file_search", "finish", func(e audit.Event) bool {
+		waitForAudit(t, auditPath, "file_search", "request_finish", func(e audit.Event) bool {
 			return e.Status == "ok" && e.Outcome == "partial" && e.Reason == "limit" &&
 				e.Truncated && e.SearchMatches != nil && *e.SearchMatches == 1
 		})
@@ -186,7 +186,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 		big.Files[0].NextLine == 0 || len(big.Files[0].Lines) < 100 {
 		t.Fatalf("large read was incorrectly limited: %+v", big.Files)
 	}
-	waitForAudit(t, auditPath, "file_read", "finish", func(e audit.Event) bool {
+	waitForAudit(t, auditPath, "file_read", "request_finish", func(e audit.Event) bool {
 		return e.Outcome == "ok" && e.FilesTotal == 1 && e.Truncated
 	})
 
@@ -198,7 +198,7 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = textFromErrorResult(t, invalid)
-	waitForAudit(t, auditPath, "file_read", "rejected", func(e audit.Event) bool {
+	waitForAudit(t, auditPath, "file_read", "request_finish", func(e audit.Event) bool {
 		return e.Status == "rejected" && e.Reason == "schema_validation" && e.Args == nil
 	})
 
@@ -218,41 +218,66 @@ func TestMCPAuditFeedbackLoop(t *testing.T) {
 	if strings.Contains(string(data), privateText) || strings.Contains(string(data), files[ambiguousPath]) {
 		t.Fatal("audit contains source file content")
 	}
-	pairs := make(map[string][]audit.Event)
+	requests := make(map[string][]audit.Event)
+	operations := make(map[string][]audit.Event)
 	starts, rejected := 0, 0
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		var event audit.Event
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatalf("corrupt audit JSONL after graceful shutdown: %v", err)
 		}
-		if event.ServerID != list.ServerID || event.Time == "" {
-			t.Fatalf("wrong server context: %+v", event)
+		if event.ServerID != list.ServerID || event.Time == "" || event.SchemaVersion != audit.EventSchemaVersion {
+			t.Fatalf("wrong server context/schema: %+v", event)
 		}
 		switch event.Phase {
 		case "server_start":
 			starts++
-		case "rejected":
-			rejected++
-			if event.Tool != "file_read" || event.Args != nil || event.Reason != "schema_validation" {
-				t.Fatalf("invalid schema rejection audit: %+v", event)
+		case "request_start", "request_finish":
+			requests[event.RequestID] = append(requests[event.RequestID], event)
+			if event.Phase == "request_finish" && event.Status == "rejected" {
+				rejected++
+				if event.Tool != "file_read" || event.Args != nil || event.Reason != "schema_validation" {
+					t.Fatalf("invalid schema rejection audit: %+v", event)
+				}
 			}
-		case "start", "finish":
-			pairs[event.RequestID] = append(pairs[event.RequestID], event)
+		case "operation_start", "operation_finish":
+			if event.OperationID == "" {
+				t.Fatalf("operation event has no operation ID: %+v", event)
+			}
+			operations[event.OperationID] = append(operations[event.OperationID], event)
 		default:
 			t.Fatalf("unexpected event phase: %+v", event)
 		}
 	}
-	wantCalls := 8
+	wantCalls := 9 // Eight regular requests and one SDK schema rejection.
 	if rgErr != nil {
 		wantCalls--
 	}
-	if starts != 1 || rejected != 1 || len(pairs) != wantCalls {
-		t.Fatalf("unexpected audit counts: starts=%d rejected=%d toolcalls=%d want=%d", starts, rejected, len(pairs), wantCalls)
+	if starts != 1 || rejected != 1 || len(requests) != wantCalls || len(operations) != 2 {
+		t.Fatalf("unexpected counts: start=%d rejected=%d requests=%d want=%d operations=%d",
+			starts, rejected, len(requests), wantCalls, len(operations))
 	}
-	for requestID, pair := range pairs {
-		if requestID == "" || len(pair) != 2 || pair[0].Phase != "start" ||
-			pair[1].Phase != "finish" || pair[0].Tool != pair[1].Tool {
+	for requestID, pair := range requests {
+		if requestID == "" || len(pair) != 2 || pair[0].Phase != "request_start" ||
+			pair[1].Phase != "request_finish" || pair[0].Tool != pair[1].Tool {
 			t.Fatalf("bad audit request pair: %q %+v", requestID, pair)
 		}
 	}
+	for id, pair := range operations {
+		if len(pair) != 2 || pair[0].Phase != "operation_start" || pair[1].Phase != "operation_finish" ||
+			pair[0].RequestID != pair[1].RequestID || pair[0].Tool != pair[1].Tool ||
+			pair[1].Receipt == nil {
+			t.Fatalf("bad actual operation pair: id=%q events=%+v", id, pair)
+		}
+		if pair[1].Tool == "terminal_start" && (id != "feedback-command" || pair[1].Status != "applied") {
+			t.Fatalf("terminal_start operation was not applied: %+v", pair)
+		}
+		if pair[1].Tool == "file_edit" && (id != "feedback-ambiguous-edit" || pair[1].Status != "failed") {
+			t.Fatalf("failed edit operation missing: %+v", pair)
+		}
+		if request := requests[pair[0].RequestID]; len(request) != 2 || request[0].OperationID != id {
+			t.Fatalf("operation is not linked to originating MCP request: %+v", pair)
+		}
+	}
+
 }

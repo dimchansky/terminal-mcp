@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"terminalmcp/internal/audit"
 	"terminalmcp/internal/filesystem"
+	"terminalmcp/internal/mutation"
 	"terminalmcp/internal/session"
 )
 
@@ -65,13 +67,27 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, descripti
 		id := audit.RequestID()
 		start := time.Now()
 		args, inputSessionID := auditArguments(any(input))
-		if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, RequestID: id, Tool: name, Phase: "start", Args: args, SessionID: inputSessionID})); err != nil {
-			log.Printf("audit start failure (tool still executes): %v", err)
+		operationID := auditOperationID(any(input))
+		if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, RequestID: id, OperationID: operationID, Tool: name, Phase: "request_start", Args: args, SessionID: inputSessionID})); err != nil {
+			log.Printf("audit request_start failure (tool still executes): %v", err)
+		}
+		if !readOnly {
+			ctx = mutation.WithObserver(ctx, &operationAudit{recorder: recorder, serverID: serverID, requestID: id, tool: name})
 		}
 		out, err := fn(ctx, input)
-		finish := audit.Event{ServerID: serverID, RequestID: id, Tool: name, Phase: "finish", Status: "ok", SessionID: inputSessionID, DurationMS: time.Since(start).Milliseconds()}
+		finish := audit.Event{ServerID: serverID, RequestID: id, OperationID: operationID, Tool: name, Phase: "request_finish", Status: "ok", SessionID: inputSessionID, DurationMS: time.Since(start).Milliseconds()}
 		if err != nil {
 			finish.Status = "error"
+			if errors.Is(err, context.Canceled) {
+				finish.Status = "canceled"
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				finish.Status = "deadline"
+			}
+			if !readOnly && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				// The independent effect might still be running or might
+				// have finished before this request observed cancellation.
+				finish.Outcome = "unknown"
+			}
 			finish.Error = err.Error()
 			if len(finish.Error) > 2048 {
 				finish.Error = finish.Error[:2048] + "..."
@@ -126,7 +142,7 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, descripti
 			}
 		}
 		if err := recorder.Write(audit.NewEvent(finish)); err != nil {
-			log.Printf("audit finish failure (tool result unchanged): %v", err)
+			log.Printf("audit request_finish failure (tool result unchanged): %v", err)
 		}
 		return nil, out, err
 	})

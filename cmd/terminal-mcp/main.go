@@ -119,6 +119,9 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	recorder := openAudit(opts.auditFile, opts.transport)
 	if recorder != nil {
 		defer func() {
+			// Stdio has no serveHTTP shutdown defer. Drain independently
+			// executing mutations before closing their audit destination.
+			manager.Close()
 			if err := recorder.Close(); err != nil {
 				log.Printf("audit shutdown: %v", err)
 			}

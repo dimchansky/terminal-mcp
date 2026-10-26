@@ -69,19 +69,45 @@ func TestAuditToolCallsWithCommandArguments(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected two audited tool calls: %s", data)
 	}
-	for _, pair := range events {
-		if len(pair) != 2 || pair[0].Phase != "start" || pair[1].Phase != "finish" || pair[0].Tool != pair[1].Tool {
-			t.Fatalf("bad audit pair: %+v", pair)
+	for id, pair := range events {
+		if id == "" || pair[0].Phase != "request_start" || pair[len(pair)-1].Phase != "request_finish" ||
+			pair[0].Tool != pair[len(pair)-1].Tool {
+			t.Fatalf("bad request lifecycle: %+v", pair)
 		}
-		if pair[0].Tool == "terminal_start" {
-			args, ok := pair[0].Args.(map[string]any)
-			if !ok || args["operation_id"] != "audit-test-1" || pair[1].SessionID != run.Receipt.SessionID {
-				t.Fatalf("missing command/session context: %+v", pair)
+		for _, event := range pair {
+			if event.SchemaVersion != audit.EventSchemaVersion {
+				t.Fatalf("missing audit schema version: %+v", event)
 			}
-			argv, ok := args["argv"].([]any)
-			if !ok || len(argv) != 3 || argv[2] != "printf "+commandArgument {
-				t.Fatalf("command arguments changed: %+v", args)
+		}
+		if pair[0].Tool == "terminal_list" {
+			if len(pair) != 2 {
+				t.Fatalf("read-only tool created operation events: %+v", pair)
 			}
+			continue
+		}
+		if pair[0].Tool != "terminal_start" || len(pair) != 4 ||
+			pair[1].Phase != "operation_start" || pair[2].Phase != "operation_finish" {
+			t.Fatalf("mutation lifecycle is not correlated: %+v", pair)
+		}
+		args, ok := pair[0].Args.(map[string]any)
+		if !ok || args["operation_id"] != "audit-test-1" || pair[3].SessionID != run.Receipt.SessionID {
+			t.Fatalf("missing command/session context: %+v", pair)
+		}
+		argv, ok := args["argv"].([]any)
+		if !ok || len(argv) != 3 || argv[2] != "printf "+commandArgument {
+			t.Fatalf("command arguments changed: %+v", args)
+		}
+		for _, e := range pair {
+			if e.OperationID != "audit-test-1" {
+				t.Fatalf("lost operation correlation: %+v", pair)
+			}
+		}
+		if pair[2].Status != "applied" || pair[2].SessionID != run.Receipt.SessionID {
+			t.Fatalf("operation_finish does not describe successful spawn: %+v", pair[2])
+		}
+		receipt, ok := pair[2].Receipt.(map[string]any)
+		if !ok || receipt["status"] != "applied" || receipt["operation_id"] != "audit-test-1" {
+			t.Fatalf("operation receipt missing: %+v", pair[2])
 		}
 	}
 }
