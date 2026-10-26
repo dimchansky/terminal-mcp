@@ -177,6 +177,10 @@ type RuntimeInfo struct {
 	Arguments        []string     `json:"arguments"`
 	PID              int          `json:"pid"`
 	EnvToken         bool         `json:"env_token"`
+	Draining         bool         `json:"draining"`
+	DrainMode        string       `json:"drain_mode,omitempty"`
+	ActiveOperations int          `json:"active_operations"`
+	ActiveSessions   int          `json:"active_sessions"`
 }
 
 // Maintenance is token/Host/Origin-protected by the same outer HTTP guard as MCP.
@@ -204,11 +208,28 @@ func Maintenance(manager *session.Manager, shutdown ...func()) http.Handler {
 			return
 		}
 		var err error
+		startStopWaiter := false
 		switch a.Action {
 		case "begin":
 			err = manager.PrepareRestart(a.ServerID)
+		case "ready":
+			err = manager.TryFinishDrain(a.ServerID, "update")
 		case "cancel":
 			err = manager.CancelRestart(a.ServerID)
+		case "stop":
+			if len(shutdown) == 0 || shutdown[0] == nil {
+				http.Error(w, "standalone stop unavailable", http.StatusForbidden)
+				return
+			}
+			startStopWaiter, err = manager.BeginDrain(a.ServerID, "stop")
+		case "force":
+			if len(shutdown) < 2 || shutdown[1] == nil {
+				http.Error(w, "forced stop unavailable", http.StatusForbidden)
+				return
+			}
+			if a.ServerID != manager.ID() {
+				err = errors.New("server_instance_changed")
+			}
 		case "shutdown":
 			if len(shutdown) == 0 || shutdown[0] == nil {
 				http.Error(w, "standalone update unavailable", http.StatusForbidden)
@@ -224,9 +245,24 @@ func Maintenance(manager *session.Manager, shutdown ...func()) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"server_id": a.ServerID, "draining": a.Action == "begin"})
-		if a.Action == "shutdown" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_id": a.ServerID, "draining": a.Action == "begin" || a.Action == "stop"})
+		switch {
+		case a.Action == "shutdown":
 			shutdown[0]()
+		case a.Action == "force":
+			go shutdown[1]()
+		case startStopWaiter:
+			// The drain is server-owned, not tied to the lifetime of the
+			// short maintenance request or the CLI that initiated it.
+			go func() {
+				for manager.DrainMode() == "stop" {
+					if manager.TryFinishDrain(a.ServerID, "stop") == nil {
+						shutdown[0]()
+						return
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}()
 		}
 	})
 }

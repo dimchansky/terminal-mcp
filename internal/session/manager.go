@@ -11,18 +11,18 @@ import (
 )
 
 type Manager struct {
-	mu              sync.Mutex
-	id              string
-	limits          Limits
-	sessions        map[string]*Session
-	starting        int
-	starts          sync.WaitGroup
-	closed          bool
-	closeOnce       sync.Once
-	closeDone       chan struct{}
-	ops             ledger
-	startPTY        PTYStarter
-	drainGeneration uint64
+	mu        sync.Mutex
+	id        string
+	limits    Limits
+	sessions  map[string]*Session
+	starting  int
+	starts    sync.WaitGroup
+	closed    bool
+	closeOnce sync.Once
+	closeDone chan struct{}
+	ops       ledger
+	startPTY  PTYStarter
+	drainMode string // "stop" or "update"; empty when accepting new work
 }
 
 func newID() string {
@@ -128,7 +128,8 @@ func (m *Manager) List(_ context.Context, args ListArgs) (ListResult, error) {
 	m.mu.Unlock()
 	sort.Slice(out.Sessions, func(i, j int) bool { return out.Sessions[i].SessionID < out.Sessions[j].SessionID })
 	out.OperationsUsed = m.ops.count()
-	out.Draining = m.ops.raw.Frozen()
+	out.Draining = m.ops.raw.Draining()
+	out.ActiveOperations = m.ops.raw.InFlight()
 	return out, nil
 }
 
@@ -385,15 +386,39 @@ func (m *Manager) Close() {
 	<-m.closeDone
 }
 
-// PrepareRestart atomically excludes new mutations after checking managed jobs are finished.
-func (m *Manager) PrepareRestart(id string) error {
+// BeginDrain closes admission to new work *before* waiting for active
+// mutations and terminal sessions. The mode owns the fence until shutdown
+// or explicit cancellation. A repeat from the same owner is idempotent.
+func (m *Manager) BeginDrain(id, mode string) (bool, error) {
+	if mode != "stop" && mode != "update" {
+		return false, fmt.Errorf("invalid drain mode")
+	}
 	if err := m.checkServer(id); err != nil {
-		return err
+		return false, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return fmt.Errorf("server is shutting down")
+		return false, fmt.Errorf("server is shutting down")
+	}
+	if m.drainMode == mode {
+		return false, nil
+	}
+	if m.drainMode != "" {
+		return false, fmt.Errorf("server already draining for %s", m.drainMode)
+	}
+	m.ops.raw.BeginDrain()
+	m.drainMode = mode
+	return true, nil
+}
+
+// TryFinishDrain checks idleness and atomically erects the final freeze
+// before the caller can close the listener. It deliberately does not wait.
+func (m *Manager) TryFinishDrain(id, mode string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || id != m.id || m.drainMode != mode {
+		return fmt.Errorf("server is not draining for %s", mode)
 	}
 	if m.starting != 0 {
 		return fmt.Errorf("active_sessions: process launch in progress")
@@ -403,29 +428,27 @@ func (m *Manager) PrepareRestart(id string) error {
 		active := s.exit == nil || !s.outputDone
 		s.mu.Unlock()
 		if active {
-			return fmt.Errorf("active_sessions: update requires all managed processes to finish")
+			return fmt.Errorf("active_sessions: waiting for managed processes to finish")
 		}
 	}
-	if err := m.ops.raw.Freeze(); err != nil {
-		return err
-	}
-	m.drainGeneration++
-	generation := m.drainGeneration
-	// A dead updater must not leave a healthy server permanently read-only.
-	time.AfterFunc(time.Minute, func() { m.expireDrain(generation) })
-	return nil
+	return m.ops.raw.Freeze()
 }
 
-// CanShutdownForUpdate accepts only the instance fenced by PrepareRestart.
-func (m *Manager) CanShutdownForUpdate(id string) error {
+func (m *Manager) DrainMode() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || id != m.id || !m.ops.raw.Frozen() {
-		return fmt.Errorf("update shutdown requires a fenced current server")
-	}
-	return nil
+	return m.drainMode
 }
 
+// The updater prepares before requesting shutdown. "begin" never waits for
+// idle work; the separate "ready" action checks the final fence.
+func (m *Manager) PrepareRestart(id string) error {
+	_, err := m.BeginDrain(id, "update")
+	return err
+}
+func (m *Manager) CanShutdownForUpdate(id string) error {
+	return m.TryFinishDrain(id, "update")
+}
 func (m *Manager) CancelRestart(id string) error {
 	if err := m.checkServer(id); err != nil {
 		return err
@@ -435,14 +458,24 @@ func (m *Manager) CancelRestart(id string) error {
 	if m.closed {
 		return fmt.Errorf("server is shutting down")
 	}
-	m.drainGeneration++
+	m.drainMode = ""
 	m.ops.raw.Resume()
 	return nil
 }
-func (m *Manager) expireDrain(generation uint64) {
+
+// AbortManagedSessions is used only by an explicitly requested forced stop.
+// It does not bypass the ledger's audit of other already accepted operations.
+func (m *Manager) AbortManagedSessions() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.closed && m.drainGeneration == generation {
-		m.ops.raw.Resume()
+	ss := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		ss = append(ss, s)
 	}
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, s := range ss {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.close(0) }()
+	}
+	wg.Wait()
 }

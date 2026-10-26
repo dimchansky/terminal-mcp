@@ -29,13 +29,15 @@ const maxContent = 64 << 10
 const MaxReadBytes = 256 << 10
 
 type Manager struct {
-	mu       sync.Mutex
-	host     *session.Manager
-	root     *os.Root
-	path     string
-	alias    string
-	closed   bool
-	receiver *fileReceiver
+	mu            sync.Mutex
+	host          *session.Manager
+	root          *os.Root
+	path          string
+	alias         string
+	closed        bool
+	receiver      *fileReceiver
+	receiveCtx    context.Context
+	cancelReceive context.CancelFunc
 }
 
 func New(host *session.Manager, path string) (*Manager, error) {
@@ -51,10 +53,21 @@ func New(host *session.Manager, path string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{host: host, root: root, path: physical, alias: abs, receiver: newFileReceiver()}, nil
+	receiveCtx, cancelReceive := context.WithCancel(context.Background())
+	return &Manager{host: host, root: root, path: physical, alias: abs, receiver: newFileReceiver(), receiveCtx: receiveCtx, cancelReceive: cancelReceive}, nil
 }
 func (m *Manager) Root() string { return m.path }
-func (m *Manager) Close()       { m.mu.Lock(); defer m.mu.Unlock(); m.closed = true; _ = m.root.Close() }
+
+// AbortTransfers is reserved for explicit forced shutdown; graceful drain
+// never cancels downloads that the mutation ledger has accepted.
+func (m *Manager) AbortTransfers() { m.cancelReceive() }
+func (m *Manager) Close() {
+	m.cancelReceive()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+	_ = m.root.Close()
+}
 
 func (m *Manager) relative(path string) (string, error) {
 	if len(path) == 0 || len(path) > 4096 || strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) {

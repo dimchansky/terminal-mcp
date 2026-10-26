@@ -45,7 +45,8 @@ type Ledger struct {
 	mu       sync.Mutex
 	entries  map[string]*operation
 	inFlight int
-	frozen   bool
+	draining bool           // Reject new work; allow controls of existing terminal sessions.
+	frozen   bool           // Final fence: no more mutations of any kind.
 	active   sync.WaitGroup // Admitted effects, including their audit callbacks.
 }
 
@@ -85,9 +86,9 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 			return Receipt{}, true, fmt.Errorf("operation_id_conflict: the key was already used for different effect arguments")
 		}
 	} else {
-		if l.frozen {
+		if l.frozen || (l.draining && method != "write" && method != "signal" && method != "close") {
 			l.mu.Unlock()
-			return Receipt{}, false, fmt.Errorf("server_draining: new mutations are paused for update")
+			return Receipt{}, false, fmt.Errorf("server_draining: new work is refused during shutdown or update")
 		}
 		if len(l.entries) >= limit {
 			l.mu.Unlock()
@@ -176,12 +177,27 @@ func (l *Ledger) Freeze() error {
 	if l.inFlight != 0 {
 		return fmt.Errorf("mutations_in_flight")
 	}
+	l.draining = true
 	l.frozen = true
 	return nil
 }
 
-func (l *Ledger) Resume()      { l.mu.Lock(); defer l.mu.Unlock(); l.frozen = false }
-func (l *Ledger) Frozen() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.frozen }
+// BeginDrain atomically closes admission for new work BEFORE waiting for
+// already admitted operations. Existing-session controls remain available.
+func (l *Ledger) BeginDrain() {
+	l.mu.Lock()
+	l.draining = true
+	l.mu.Unlock()
+}
+
+func (l *Ledger) Resume() {
+	l.mu.Lock()
+	l.draining, l.frozen = false, false
+	l.mu.Unlock()
+}
+func (l *Ledger) Frozen() bool   { l.mu.Lock(); defer l.mu.Unlock(); return l.frozen }
+func (l *Ledger) Draining() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.draining }
+func (l *Ledger) InFlight() int  { l.mu.Lock(); defer l.mu.Unlock(); return l.inFlight }
 
 // StopAndWait refuses new effects, then waits for all already-admitted
 // effects and their audit callbacks. Admission increments active under mu;
@@ -189,7 +205,7 @@ func (l *Ledger) Frozen() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.froz
 // Unlike Freeze, this is for irreversible service shutdown.
 func (l *Ledger) StopAndWait() {
 	l.mu.Lock()
-	l.frozen = true
+	l.draining, l.frozen = true, true
 	l.mu.Unlock()
 	l.active.Wait()
 }

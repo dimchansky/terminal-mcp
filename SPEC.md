@@ -515,8 +515,11 @@ binary with different bytes (never silently upgrades or downgrades).
 `status` and `stop` use authenticated local HTTP and can be called through
 any copy of the CLI without installing that copy. Status exposes the real
 executable path, its exact SHA-256, descriptive embedded Go revision when
-available, PID, listening address, audit health and working directory. A manual stop must not interrupt active
-managed processes or pending mutations. Background mode does not automatically
+available, PID, listening address, audit health, drain state, active work counts
+and working directory. A manual `stop` immediately blocks admission of new work
+and returns `draining` if existing operations or managed processes are active;
+the server shuts down itself once all such work and its audit finish.
+`stop --force` explicitly aborts transfers and managed processes instead. Background mode does not automatically
 start at login or restart after an unexpected crash.
 
 Standalone settings live at
@@ -547,8 +550,10 @@ reads the saved status. The worker:
    and saves a checksum-verified rollback binary.
 2. Copies and preflights a separately built candidate on a temporary loopback
    port, exercising real MCP calls, a process launch, and file access.
-3. Waits for managed processes to finish and acquires an authenticated
-   maintenance fence. New mutations are refused while it is held.
+3. Atomically establishes the authenticated maintenance drain fence **before**
+   waiting for managed processes and accepted mutations to complete. Newly
+   created work is refused, but existing-session controls and read-only status
+   requests remain usable. Once idle, a final fence prevents more mutations.
 4. Requests shutdown of the exact current server instance and waits for
    the old process to exit. It does not kill an arbitrary numeric PID.
 5. Atomically installs the candidate and checks the new instance, executable
@@ -566,9 +571,10 @@ reads the saved status. The worker:
    candidate file is automatically deleted.
 
 The update briefly disconnects MCP clients and loses in-memory process
-sessions and mutation receipts. The fence has a generation-scoped
-60-second expiration to avoid indefinite read-only operation after an updater
-failure. The recorded outcome is `applied`, `failed` or `rolled_back`;
+sessions and mutation receipts. There is no time limit on graceful draining;
+the updater runs independently of the requesting MCP call. If it crashes while
+waiting, the server remains draining until explicitly recovered rather than
+silently reopening admission. The recorded outcome is `applied`, `failed` or `rolled_back`;
 `queued` alone is not confirmation of success.
 
 An interrupted shutdown acknowledgment or a crashed worker may require

@@ -83,8 +83,7 @@ func TestManagerCloseWaitsForCanceledRequestEffectAndAuditFinish(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Manager.Close did not finish after audit hook")
 	}
-	m.expireDrain(m.drainGeneration) // A delayed updater timer must not unfreeze a closed manager.
 	if !m.ops.raw.Frozen() {
-		t.Fatal("expired update timer reopened a closed mutation ledger")
+		t.Fatal("closed manager reopened its mutation ledger")
 	}
 }

@@ -383,13 +383,18 @@ func startStandalone(args []string) error {
 func controlStandalone(action string, args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp "+action, flag.ContinueOnError)
 	var listen, tokenFile string
+	var force bool
 	flags.StringVar(&listen, "listen", "", "standalone loopback listening address")
 	flags.StringVar(&tokenFile, "token-file", "", "bearer token file")
+	flags.BoolVar(&force, "force", false, "forcibly terminate active work (stop only)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("%s takes no positional arguments", action)
+	}
+	if force && action != "stop" {
+		return fmt.Errorf("--force is only supported by stop")
 	}
 	stateDir, err := standaloneDirectory()
 	if err != nil {
@@ -431,6 +436,8 @@ func controlStandalone(action string, args []string) error {
 	if action == "status" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
+			"draining": info.Draining, "drain_mode": info.DrainMode,
+			"active_operations": info.ActiveOperations, "active_sessions": info.ActiveSessions,
 			"listen": info.Listen, "file_root": info.FileRoot, "audit": info.Audit,
 			"executable":        info.Executable,
 			"revision":          verifiedRunningRevision(info.Executable, info.ExecutableSHA256, info.Revision),
@@ -439,21 +446,41 @@ func controlStandalone(action string, args []string) error {
 			"stdout_log":        info.StdoutLog, "stderr_log": info.StderrLog,
 		})
 	}
+	if force {
+		// The server first aborts managed process groups and file downloads.
+		// If it is genuinely wedged, an explicit --force also allows killing
+		// the verified current server process after a short grace.
+		if err := client.maintenance(info.ServerID, "force"); err != nil {
+			return fmt.Errorf("cannot request forced stop: %w", err)
+		}
+		if err := waitForExit(info.PID, 5*time.Second); err != nil {
+			current, checkErr := client.runtime()
+			if checkErr == nil && current.ServerID == info.ServerID && current.PID == info.PID {
+				if killErr := syscall.Kill(info.PID, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+					return killErr
+				}
+			} else {
+				return fmt.Errorf("forced stop not confirmed; instance identity may have changed: %w", err)
+			}
+			if err := waitForExit(info.PID, 5*time.Second); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"status": "stopped", "forced": true, "server_id": info.ServerID})
+	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(stateDir), "updates", "pending")); err == nil {
 		return errors.New("standalone update in progress; stop refused")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := client.maintenance(info.ServerID, "begin"); err != nil {
-		return fmt.Errorf("cannot stop a server with active sessions or mutations: %w", err)
+	if err := client.maintenance(info.ServerID, "stop"); err != nil {
+		return fmt.Errorf("cannot begin graceful drain: %w", err)
 	}
-	if err := client.maintenance(info.ServerID, "shutdown"); err != nil {
-		return fmt.Errorf("shutdown acknowledgement was lost; verify status manually: %w", err)
-	}
-	if err := waitForExit(info.PID, 20*time.Second); err != nil {
-		return err
+	status := "stopped"
+	if waitForExit(info.PID, 800*time.Millisecond) != nil {
+		status = "draining"
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"status": "stopped", "server_id": info.ServerID,
+		"status": status, "server_id": info.ServerID,
 	})
 }

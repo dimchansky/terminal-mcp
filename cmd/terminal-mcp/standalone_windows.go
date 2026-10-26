@@ -276,8 +276,14 @@ func windowsStart(args []string) error {
 }
 
 func windowsControl(action string, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("%s takes no arguments", action)
+	flags := flag.NewFlagSet("terminal-mcp "+action, flag.ContinueOnError)
+	var force bool
+	flags.BoolVar(&force, "force", false, "forcibly terminate active work (stop only)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || (force && action != "stop") {
+		return fmt.Errorf("invalid arguments for %s", action)
 	}
 	dir, err := windowsStateDir()
 	if err != nil {
@@ -310,6 +316,8 @@ func windowsControl(action string, args []string) error {
 	if action == "status" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
+			"draining": info.Draining, "drain_mode": info.DrainMode,
+			"active_operations": info.ActiveOperations, "active_sessions": info.ActiveSessions,
 			"file_root": info.FileRoot, "listen": info.Listen, "audit": info.Audit,
 			"executable":        info.Executable,
 			"revision":          verifiedRunningRevision(info.Executable, info.ExecutableSHA256, info.Revision),
@@ -318,18 +326,36 @@ func windowsControl(action string, args []string) error {
 			"stdout_log":        info.StdoutLog, "stderr_log": info.StderrLog,
 		})
 	}
-	if err := client.maintenance(info.ServerID, "begin"); err != nil {
+	if force {
+		if err := client.maintenance(info.ServerID, "force"); err != nil {
+			return err
+		}
+	} else if err := client.maintenance(info.ServerID, "stop"); err != nil {
 		return err
 	}
-	if err := client.maintenance(info.ServerID, "shutdown"); err != nil {
-		return err
+	deadline := time.Now().Add(800 * time.Millisecond)
+	if force {
+		deadline = time.Now().Add(5 * time.Second)
 	}
-	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if !windowsListenerInUse(cfg.Listen) {
-			return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": "stopped"})
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"status": "stopped", "forced": force})
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return errors.New("server did not stop within deadline")
+	if !force {
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": "draining"})
+	}
+	current, err := client.runtime()
+	if err != nil || current.ServerID != info.ServerID || current.PID != info.PID {
+		return errors.New("forced stop not confirmed: server identity changed or unavailable")
+	}
+	process, err := os.FindProcess(info.PID)
+	if err != nil {
+		return err
+	}
+	if err := process.Kill(); err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"status": "stopped", "forced": true})
 }

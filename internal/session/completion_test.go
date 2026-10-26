@@ -99,24 +99,30 @@ func TestCompletionValidation(t *testing.T) {
 	}
 }
 
-func TestDrainRefusesActiveAndBlocksNewMutations(t *testing.T) {
+func TestDrainClosesAdmissionBeforeWaitingForActiveProcess(t *testing.T) {
 	m := testManager(t)
 	r, err := m.Start(context.Background(), StartArgs{ServerID: m.id, OperationID: "live", Argv: []string{"/bin/sh", "-c", "sleep .2"}, CloseOnExit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = m.PrepareRestart(m.id); err == nil {
-		t.Fatal("drained a live process")
+	if err = m.PrepareRestart(m.id); err != nil {
+		t.Fatalf("drain should begin while the process is active: %v", err)
+	}
+	if !m.ops.raw.Draining() {
+		t.Fatal("drain gate did not close immediately")
+	}
+	if err := m.CanShutdownForUpdate(m.id); err == nil {
+		t.Fatal("attempted to shut down an active process")
+	}
+	if _, err = m.Start(context.Background(), StartArgs{ServerID: m.id, OperationID: "blocked", Argv: []string{"/bin/true"}}); err == nil {
+		t.Fatal("accepted new work after drain began")
 	}
 	_, err = m.Read(context.Background(), ReadArgs{SessionID: r.Receipt.SessionID, WaitFor: "completion", WaitMS: 3000})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = m.PrepareRestart(m.id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = m.Start(context.Background(), StartArgs{ServerID: m.id, OperationID: "blocked", Argv: []string{"/bin/true"}}); err == nil {
-		t.Fatal("new mutation during drain")
+	if err = m.CanShutdownForUpdate(m.id); err != nil {
+		t.Fatalf("idle manager did not acquire final fence: %v", err)
 	}
 	list, err := m.List(context.Background(), ListArgs{})
 	if err != nil || !list.Draining {
@@ -133,24 +139,24 @@ func TestDrainRefusesActiveAndBlocksNewMutations(t *testing.T) {
 	}
 }
 
-func TestOldMaintenanceLeaseCannotThawNewDrain(t *testing.T) {
+func TestExplicitCancelOnlyRestoresAdmission(t *testing.T) {
 	m := testManager(t)
 	if err := m.PrepareRestart(m.id); err != nil {
 		t.Fatal(err)
 	}
-	old := m.drainGeneration
+	if !m.ops.raw.Draining() {
+		t.Fatal("missing drain state")
+	}
 	if err := m.CancelRestart(m.id); err != nil {
 		t.Fatal(err)
+	}
+	if m.ops.raw.Draining() {
+		t.Fatal("cancel failed to release admission")
 	}
 	if err := m.PrepareRestart(m.id); err != nil {
 		t.Fatal(err)
 	}
-	m.expireDrain(old)
-	if !m.ops.raw.Frozen() {
-		t.Fatal("old lease thawed new drain")
-	}
-	m.expireDrain(m.drainGeneration)
-	if m.ops.raw.Frozen() {
-		t.Fatal("expired lease did not thaw")
+	if !m.ops.raw.Draining() {
+		t.Fatal("second drain did not close admission")
 	}
 }

@@ -209,8 +209,9 @@ be launched through the running server's `terminal_start` tool. A temporary,
 independent copy of the binary performs the update after the initiating command
 finishes. It checks the candidate using an authenticated MCP connection on an
 ephemeral port (including a real process launch and file listing), waits for
-managed sessions to finish, acquires the existing maintenance fence, and asks
-the old instance to stop itself. It then atomically installs and starts the
+for the verified candidate before atomically closing admission to new work,
+then drains all already accepted downloads, mutations, and managed processes
+(without a fixed drain deadline) and asks the old instance to stop itself. It then atomically installs and starts the
 new binary, verifies the new instance and MCP metadata, and attempts rollback
 if the new version fails.
 
@@ -243,11 +244,27 @@ Self-update requires an on-disk token; servers using only the
 `TERMINAL_MCP_TOKEN` environment variable must first be restarted with a token
 file. If the old binary was overwritten after starting, the updater refuses
 the operation rather than guess at a rollback. It also refuses to interrupt
-active managed processes; the wait is bounded. If the shutdown acknowledgement
+active managed processes; it enters draining mode before waiting for them.
+If the shutdown acknowledgement
 is lost, the worker does not assume permission to restart a deliberately stopped
 server; manual recovery may be needed. A crash of the updater can leave a pending
 marker requiring manual inspection. There is no permanent supervisor,
 so an unexpected crash after a successful update is not automatically restarted.
+
+### Graceful stop and explicit force
+
+`terminal-mcp stop` first enters **draining**: it refuses new work but lets
+previously accepted operations, downloads and managed processes finish. It
+returns `draining` while work remains; the server stops automatically when
+idle, after completing audit. Existing-session input, signal and close controls
+remain available so an interactive process can finish. Repeating `stop` is
+idempotent. There is no arbitrary grace deadline that kills active work.
+
+`terminal-mcp stop --force` is an explicit operator override: abort active
+transfers, terminate managed process groups and stop the server; if the server
+cannot exit promptly, the controller may kill its verified current PID. This
+can leave incomplete operation audit and interrupted downloads. Use `status`
+to inspect `draining`, `drain_mode`, `active_operations` and `active_sessions`.
 
 ## Configuration and logs
 

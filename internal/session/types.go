@@ -204,12 +204,13 @@ type SessionCounts struct {
 }
 
 type ListResult struct {
-	Counts         SessionCounts `json:"counts"`
-	Draining       bool          `json:"draining"`
-	ServerID       string        `json:"server_id"`
-	Limits         Limits        `json:"limits"`
-	Sessions       []Summary     `json:"sessions"`
-	Modes          []string      `json:"modes"`
-	Keys           []string      `json:"keys"`
-	OperationsUsed int           `json:"operations_used"`
+	Counts           SessionCounts `json:"counts"`
+	Draining         bool          `json:"draining"`
+	ServerID         string        `json:"server_id"`
+	Limits           Limits        `json:"limits"`
+	Sessions         []Summary     `json:"sessions"`
+	Modes            []string      `json:"modes"`
+	Keys             []string      `json:"keys"`
+	OperationsUsed   int           `json:"operations_used"`
+	ActiveOperations int           `json:"active_operations"`
 }

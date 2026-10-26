@@ -177,7 +177,14 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	}
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	return serveHTTP(serveCtx, manager, server, listener, token, &updateServer{info: info, recorder: recorder, shutdown: cancel})
+	return serveHTTP(serveCtx, manager, server, listener, token, &updateServer{
+		info: info, recorder: recorder, shutdown: cancel,
+		force: func() {
+			files.AbortTransfers()
+			manager.AbortManagedSessions()
+			cancel()
+		},
+	})
 }
 
 func recordServerStart(recorder *audit.Log, serverID string) error {
@@ -237,6 +244,7 @@ type updateServer struct {
 	info     mcpserver.RuntimeInfo
 	recorder *audit.Log
 	shutdown context.CancelFunc
+	force    func()
 }
 
 func standaloneInfo(args []string, serverID, listen, root string, envToken bool) (mcpserver.RuntimeInfo, error) {
@@ -282,12 +290,17 @@ func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token st
 	mux.Handle("/mcp", mcpserver.HTTP(server))
 	if len(standalone) != 0 && standalone[0] != nil {
 		state := standalone[0]
-		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager, state.shutdown))
+		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager, state.shutdown, state.force))
 		mux.HandleFunc("GET /admin/runtime", func(w http.ResponseWriter, r *http.Request) {
 			// Do not wait for the audit sink here. A status query must work
 			// even while the disk is failing or a tool write is blocked.
 			info := state.info
 			info.Audit = state.recorder.Status()
+			info.DrainMode = manager.DrainMode()
+			info.Draining = info.DrainMode != ""
+			state, _ := manager.List(r.Context(), session.ListArgs{})
+			info.ActiveOperations = state.ActiveOperations
+			info.ActiveSessions = state.Counts.Running
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 		})

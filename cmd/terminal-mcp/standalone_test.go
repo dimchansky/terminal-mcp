@@ -227,17 +227,54 @@ func TestStandaloneStopDoesNotInterruptActiveSession(t *testing.T) {
 		t.Fatalf("cannot launch active session: %+v %v", start, err)
 	}
 	output, err := standaloneTestCommand(binary, home, "stop")
-	if err == nil || !strings.Contains(string(output), "active_sessions") {
-		t.Fatalf("manual stop interrupted active job or returned wrong error: %v %s", err, output)
+	if err != nil || !strings.Contains(string(output), `"status":"draining"`) {
+		t.Fatalf("stop must begin graceful drain with an active session: %v %s", err, output)
 	}
 	current, err := client.runtime()
-	if err != nil || current.ServerID != info.ServerID {
-		t.Fatalf("server stopped despite active session: %+v %v", current, err)
+	if err != nil || current.ServerID != info.ServerID || !current.Draining {
+		t.Fatalf("server stopped or was not draining: %+v %v", current, err)
 	}
-	time.Sleep(3 * time.Second)
-	output, err = standaloneTestCommand(binary, home, "stop")
+	if err := waitForExit(info.PID, 5*time.Second); err != nil {
+		t.Fatalf("graceful stop did not complete after process exit: %v", err)
+	}
+}
+
+func TestStandaloneForceStopTerminatesManagedProcess(t *testing.T) {
+	home, binary := standaloneTestBinary(t)
+	addr, err := reserveProbePort()
 	if err != nil {
-		t.Fatalf("stop after idle: %v %s", err, output)
+		t.Fatal(err)
+	}
+	token := filepath.Join(home, ".config", "terminal-mcp", "token")
+	if out, err := standaloneTestCommand(binary, home, "start", "--listen="+addr, "--audit-file=off"); err != nil {
+		t.Fatalf("start: %v %s", err, out)
+	}
+	defer func() { _, _ = standaloneTestCommand(binary, home, "stop", "--force") }()
+	client, err := newUpdateClient(addr, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := client.runtime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var start struct {
+		Receipt struct {
+			Status string `json:"status"`
+		} `json:"receipt"`
+	}
+	if err := client.tool("terminal_start", map[string]any{
+		"server_id": info.ServerID, "operation_id": "force-stop-process",
+		"argv": []string{"/bin/sleep", "90"}, "close_on_exit": false,
+	}, &start); err != nil || start.Receipt.Status != "applied" {
+		t.Fatalf("cannot launch managed job: %+v %v", start, err)
+	}
+	if out, err := standaloneTestCommand(binary, home, "stop", "--force"); err != nil ||
+		!strings.Contains(string(out), `"forced":true`) {
+		t.Fatalf("forced stop failed: %v %s", err, out)
+	}
+	if err := waitForExit(info.PID, 5*time.Second); err != nil {
+		t.Fatalf("server survived explicit --force: %v", err)
 	}
 }
 

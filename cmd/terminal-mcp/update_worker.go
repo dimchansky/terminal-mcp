@@ -228,9 +228,13 @@ func verifyRunningInstance(client *updateClient, want mcpserver.RuntimeInfo) err
 }
 
 func waitForIdleFence(client *updateClient, serverID string) error {
-	deadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(deadline) {
-		err := client.maintenance(serverID, "begin")
+	// Shut the admission gate *first*. New terminal processes and downloads
+	// cannot postpone the update indefinitely while old work is draining.
+	if err := client.maintenance(serverID, "begin"); err != nil {
+		return err
+	}
+	for {
+		err := client.maintenance(serverID, "ready")
 		if err == nil {
 			return nil
 		}
@@ -240,11 +244,10 @@ func waitForIdleFence(client *updateClient, serverID string) error {
 		}
 		info, infoErr := client.runtime()
 		if infoErr != nil || info.ServerID != serverID {
-			return errors.New("running server changed while waiting for idle sessions")
+			return errors.New("running server changed while draining for update")
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return errors.New("update blocked: active managed sessions or mutations")
 }
 
 func waitForExit(pid int, timeout time.Duration) error {

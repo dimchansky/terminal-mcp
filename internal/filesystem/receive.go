@@ -100,7 +100,7 @@ func (m *Manager) receiveFile(rel, path string, source *url.URL) (FileReceipt, e
 
 	// The ledger owns the effect lifetime. A bounded independent deadline lets
 	// an accepted transfer complete after an MCP client request is cancelled.
-	downloadCtx, cancel := context.WithTimeout(context.Background(), receiveTimeout)
+	downloadCtx, cancel := context.WithTimeout(m.receiveCtx, receiveTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, source.String(), nil)
 	if err != nil {

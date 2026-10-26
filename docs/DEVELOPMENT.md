@@ -323,8 +323,9 @@ make status
 ```
 
 The Go updater preserves the original binary, tests a candidate on another
-loopback port, waits until managed commands are idle, acquires the existing
-maintenance fence and restarts a new standalone instance. A failed readiness
+loopback port, first atomically closes admission to new operations, then waits
+without an arbitrary drain deadline for accepted mutations and managed
+processes. It acquires the final fence and restarts the standalone instance. A failed readiness
 check triggers a rollback attempt. The connection interruption loses live
 session state but not the preserved token or on-disk audit.
 
