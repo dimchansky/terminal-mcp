@@ -16,32 +16,39 @@ const (
 	maxArchives        = 3
 )
 
-var ErrClosed = errors.New("audit log is closed")
+var (
+	ErrClosed        = errors.New("audit log is closed")
+	ErrEventTooLarge = errors.New("audit event exceeds maximum file size")
+	ErrInvalidEvent  = errors.New("audit event cannot be serialized")
+)
 
 const EventSchemaVersion = 2
 
 type Event struct {
-	SchemaVersion int    `json:"schema_version,omitempty"`
-	OperationID   string `json:"operation_id,omitempty"`
-	Receipt       any    `json:"receipt,omitempty"`
-	Time          string `json:"time"`
-	ServerID      string `json:"server_id,omitempty"`
-	RequestID     string `json:"request_id,omitempty"`
-	Tool          string `json:"tool"`
-	Phase         string `json:"phase"`
-	Status        string `json:"status,omitempty"`
-	DurationMS    int64  `json:"duration_ms,omitempty"`
-	SessionID     string `json:"session_id,omitempty"`
-	Args          any    `json:"args,omitempty"`
-	Replayed      bool   `json:"replayed,omitempty"`
-	Error         string `json:"error,omitempty"`
-	Process       any    `json:"process,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	FilesTotal    int    `json:"files_total,omitempty"`
-	FilesFailed   int    `json:"files_failed,omitempty"`
-	SearchMatches *int   `json:"search_matches,omitempty"`
-	Truncated     bool   `json:"truncated,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	SchemaVersion  int    `json:"schema_version,omitempty"`
+	OperationID    string `json:"operation_id,omitempty"`
+	Receipt        any    `json:"receipt,omitempty"`
+	Time           string `json:"time"`
+	ServerID       string `json:"server_id,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	Tool           string `json:"tool"`
+	Phase          string `json:"phase"`
+	Status         string `json:"status,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	Args           any    `json:"args,omitempty"`
+	CallMeta       any    `json:"call_meta,omitempty"`
+	InputResponses any    `json:"input_responses,omitempty"`
+	RequestState   string `json:"request_state,omitempty"`
+	Replayed       bool   `json:"replayed,omitempty"`
+	Error          string `json:"error,omitempty"`
+	Process        any    `json:"process,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	FilesTotal     int    `json:"files_total,omitempty"`
+	FilesFailed    int    `json:"files_failed,omitempty"`
+	SearchMatches  *int   `json:"search_matches,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // NewEvent timestamps an event before its synchronous write.
@@ -85,11 +92,11 @@ func (l *Log) Write(e Event) error {
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
 	}
 	line = append(line, '\n')
 	if int64(len(line)) > maxFileBytes {
-		return errors.New("audit event exceeds maximum file size")
+		return fmt.Errorf("%w: %d bytes, limit %d", ErrEventTooLarge, len(line), maxFileBytes)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()

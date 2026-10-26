@@ -1,6 +1,6 @@
 # Logging and audit redesign — target contract
 
-> **Status: staged implementation; stages 1–2 completed in source, stages 3–7 pending.**
+> **Status: staged implementation; stages 1–3 completed in source, stages 4–7 pending.**
 > This document is the agreed **target** contract, not a claim that every
 > requirement below is implemented. [SPEC.md](../SPEC.md) and
 > [README.md](../README.md) describe the current checked-out implementation.
@@ -276,7 +276,7 @@ documentation only as each corresponding implementation becomes true.
 | **0** | Record target contracts and baseline | Clean initial worktree, documented semantic boundaries, baseline `make check`, docs-only commit |
 | **1 — source complete** | Replace audit queue/worker with synchronous `Write` | No `ErrQueueFull` or background worker; concurrent calls and failures tested with `-race`; no queue drops |
 | **2 — source complete** | Separate MCP request and independent operation lifecycles | Cancellation, replay, conflict, actual completion, panic, shutdown and update fence tests |
-| **3** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
+| **3 — source complete** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
 | **4** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
 | **5** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
 | **6** | Standard `slog`, status, and explicit retention policy | stderr diagnostics, usable status, no silently removed audit history, safe diagnostic log rotation plan |
@@ -381,3 +381,63 @@ arguments and rejected raw tool arguments (stage 3); audit-before-effect
 enforcement, fatal enabled-audit startup errors, and sticky degradation
 (stage 4); unified stable diagnostic/audit locations and migration (stage 5);
 diagnostic formatting and lossless retention policy (stage 6).
+
+## 10. Stage 3 implementation and verification (2026-10-26)
+
+**Source implementation complete; not deployed to the running MCP instance.**
+
+- Moved `request_start` recording to an SDK receiving middleware that
+  accesses `CallToolParamsRaw.Arguments` **before** schema validation or
+  typed Go unmarshaling. Valid inputs and rejected inputs share this
+  mechanism, with complete JSON argument values including unknown fields.
+  Request IDs are passed through context to the typed request handler;
+  the handler is no longer allowed to silently bypass middleware.
+- The input now includes exact `file_write.content`, complete
+  `file_edit.edits` (both `old_text` and `new_text`), supplied
+  `terminal_start.argv` and `env`, and exact text, key and base64 terminal
+  inputs. The SDK's recognized `_meta`, `inputResponses` and
+  `requestState` fields are also recorded if provided.
+- Existing SDK schema rejections keep their correlated
+  `request_start`/`request_finish` pairs, but the start event now carries
+  their full raw arguments. The previous fragile post-hoc projection of
+  typed file-tool values has been removed. No redaction or masking occurs.
+- `audit.Write` now distinguishes `ErrEventTooLarge` and
+  `ErrInvalidEvent`. A tool call whose complete encoded request event
+  exceeds the 4 MiB JSONL record limit, or cannot be serialized, is
+  **refused before dispatch** with a clear MCP error. Only a small
+  `request_rejected` event (with the reason and no misleading partial
+  arguments) is written. No mutation is admitted in this path.
+  Ordinary filesystem append/rotation failures remain fail-open until
+  stage 4; this exception does not implement the full fail-closed policy.
+- A syntactically invalid/unparseable JSON-RPC message rejected before
+  `CallToolParamsRaw`, or unauthenticated HTTP traffic, is outside this
+  tool-action audit. Serialization can normalize insignificant whitespace,
+  key ordering and escapes; all decoded input **values** are retained.
+  Original byte-for-byte wire framing is not promised.
+- Existing event and operation lifecycles remain unchanged. Historical
+  JSONL records are preserved. No new Go module dependency was added.
+
+**Verification, local macOS:**
+
+- `make check`: **PASS**, all eight race-enabled package suites, module
+  verification, `go vet`, and binary build.
+- `make audit-feedback`: **PASS**, checking a real MCP client/server audit
+  loop with invalid schema input.
+- `go test -race -shuffle=on -count=12 -timeout=180s -run
+  '^(TestAuditFullFileInputsAndRejectedRawArguments|TestOversizedAuditedRequestIsRejectedBeforeEffect|TestAuditKeepsTerminalEnvironmentAndExactInput|TestMCPRequestCancellationDoesNotMisreportCompletedMutation)$'
+  ./internal/mcpserver`: **PASS**, twelve repeated randomized-order runs.
+- Integration tests check complete real file mutations, rejected raw
+  arguments with unknown nested fields, JSON and Unicode escaping, call
+  metadata, inherited invocation correlation, exact terminal env and
+  input/base64, and an oversize request refused before execution.
+  A near-limit (but representable) request is executed and recorded
+  without truncation. Audit-package tests verify typed error sentinels.
+- `make lint`: **PASS**, zero issues.
+- Windows amd64 application cross-compilation: **PASS** (not native
+  Windows runtime validation).
+- `git diff --check`: **PASS**.
+
+**Intentionally pending:** fail-closed behavior for write failures and
+initialization, sticky audit degradation (stage 4); stable log path and
+controlled data migration (stage 5); diagnostic logger and explicit
+non-evicting audit retention policy (stage 6).

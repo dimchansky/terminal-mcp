@@ -30,7 +30,7 @@ func NewWithAudit(manager *session.Manager, recorder *audit.Log, files ...*files
 	})
 	serverID := manager.ID()
 	if recorder != nil {
-		s.AddReceivingMiddleware(auditValidationRejections(recorder, serverID))
+		s.AddReceivingMiddleware(auditToolRequests(recorder, serverID))
 	}
 	add(s, recorder, serverID, "terminal_list", "List current server_id, limits, session counts and unclosed sessions. By default omit closed retained sessions; set include_closed=true to inspect them. Counts always cover all retained sessions. Call this before starting a session.", true, manager.List)
 	add(s, recorder, serverID, "terminal_start", "Start a real local process once with argv, without an implicit shell. For one-shot commands use close_on_exit=true and wait_for=completion: after exit and output drain the server closes I/O automatically while retaining output. wait_ms only bounds observation, never process lifetime. A deadline or output limit can return a live session; continue with terminal_read using next_cursor. pipes preserves stdout/stderr; pty supports interactive terminals. With close_on_exit=false explicitly close your completed one-shot sessions.", false, manager.Start)
@@ -64,13 +64,17 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, descripti
 			out, err := fn(ctx, input)
 			return nil, out, err
 		}
-		id := audit.RequestID()
-		start := time.Now()
-		args, inputSessionID := auditArguments(any(input))
-		operationID := auditOperationID(any(input))
-		if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, RequestID: id, OperationID: operationID, Tool: name, Phase: "request_start", Args: args, SessionID: inputSessionID})); err != nil {
-			log.Printf("audit request_start failure (tool still executes): %v", err)
+		request := auditRequestFromContext(ctx)
+		if request == nil {
+			var zero O
+			// Do not silently run a tool whose original raw input has
+			// bypassed the audit middleware.
+			return nil, zero, errors.New("audit middleware unavailable; tool not executed")
 		}
+		request.handled = true
+		id, start := request.id, request.started
+		inputSessionID := auditSessionID(any(input))
+		operationID := auditOperationID(any(input))
 		if !readOnly {
 			ctx = mutation.WithObserver(ctx, &operationAudit{recorder: recorder, serverID: serverID, requestID: id, tool: name})
 		}

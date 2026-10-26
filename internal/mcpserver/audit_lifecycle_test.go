@@ -52,6 +52,7 @@ func TestMCPRequestCancellationDoesNotMisreportCompletedMutation(t *testing.T) {
 	}
 	manager := session.New(nil)
 	server := mcp.NewServer(&mcp.Implementation{Name: "audited-lifecycle-test", Version: "1"}, nil)
+	server.AddReceivingMiddleware(auditToolRequests(recorder, manager.ID()))
 
 	effectStarted := make(chan struct{})
 	release := make(chan struct{})

@@ -310,12 +310,15 @@ func TestInvalidAndOversizedEventsNeverReachSink(t *testing.T) {
 	if err := writer.Write(Event{Tool: "terminal_list", Phase: "start"}); err == nil {
 		t.Fatal("accepted event without timestamp")
 	}
-	if err := writer.Write(NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: make(chan int)})); err == nil {
-		t.Fatal("accepted event that cannot be serialized")
+	if err := writer.Write(NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: make(chan int)})); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("event that cannot be serialized must return ErrInvalidEvent: %v", err)
+	}
+	if err := writer.Write(NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: json.RawMessage("{")})); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("invalid raw JSON must return ErrInvalidEvent: %v", err)
 	}
 	huge := NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: strings.Repeat("x", int(maxFileBytes))})
-	if err := writer.Write(huge); err == nil {
-		t.Fatal("accepted event exceeding file size limit")
+	if err := writer.Write(huge); !errors.Is(err, ErrEventTooLarge) {
+		t.Fatalf("oversized event must return ErrEventTooLarge: %v", err)
 	}
 	if got := writes.Load(); got != 0 {
 		t.Fatalf("invalid events reached sink: %d", got)
