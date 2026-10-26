@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +22,7 @@ var (
 	ErrClosed        = errors.New("audit log is closed")
 	ErrEventTooLarge = errors.New("audit event exceeds maximum file size")
 	ErrInvalidEvent  = errors.New("audit event cannot be serialized")
+	ErrDegraded      = errors.New("audit_degraded: new MCP work is refused")
 )
 
 const EventSchemaVersion = 2
@@ -67,6 +70,51 @@ type Log struct {
 	sink     eventSink
 	closed   bool
 	closeErr error
+	path     string
+	failure  atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
+}
+
+type auditFailure struct{ err error }
+
+// Status is a read-only snapshot of the audit health. It never waits on file
+// I/O and can be served by authenticated administration during a disk stall.
+type Status struct {
+	State     string `json:"state"`
+	Path      string `json:"path,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+func DisabledStatus() Status { return Status{State: "disabled"} }
+
+func (l *Log) Status() Status {
+	if l == nil {
+		return DisabledStatus()
+	}
+	s := Status{State: "ok", Path: l.path}
+	if failed := l.failure.Load(); failed != nil {
+		s.State, s.LastError = "degraded", failed.err.Error()
+	}
+	return s
+}
+
+// Ready is a nonblocking admission check. Only the first failure matters;
+// writing a later finish event never silently re-enables the server.
+func (l *Log) Ready() error {
+	if failed := l.failure.Load(); failed != nil {
+		return errors.Join(ErrDegraded, failed.err)
+	}
+	return nil
+}
+
+// Degrade latches the first audit failure and emits one immediate diagnostic
+// outside the audit sink. The service requires a controlled restart to recover.
+func (l *Log) Degrade(err error) {
+	if l == nil || err == nil {
+		return
+	}
+	if l.failure.CompareAndSwap(nil, &auditFailure{err: err}) {
+		log.Printf("audit DEGRADED; refusing new MCP work until restart: %v", err)
+	}
 }
 
 // newLog allows deterministic sink failure and concurrency tests.
@@ -79,14 +127,24 @@ func Open(path string) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newLog(sink), nil
+	log := newLog(sink)
+	log.path = sink.path
+	return log, nil
 }
 
 // Write snapshots an event before taking the sink lock. A nil error means the
 // entire JSONL record was reported written by the OS, not that it was fsynced.
 // An append error is returned immediately and may leave a failed partial record
 // for the sink to repair. Concurrent writers wait instead of dropping events.
-func (l *Log) Write(e Event) error {
+func (l *Log) Write(e Event) error { return l.write(e, false) }
+
+// Start is for pre-effect events. The health check and append occur under the
+// *same* mutex, so no later admission can race with an earlier sink failure.
+// Completion events use Write, which still attempts to record the true outcome
+// of already-admitted operations even after degradation.
+func (l *Log) Start(e Event) error { return l.write(e, true) }
+
+func (l *Log) write(e Event, requireHealthy bool) error {
 	if e.Time == "" {
 		return errors.New("audit event has no time; use NewEvent")
 	}
@@ -103,8 +161,15 @@ func (l *Log) Write(e Event) error {
 	if l.closed {
 		return ErrClosed
 	}
+	if requireHealthy {
+		if err := l.Ready(); err != nil {
+			return err
+		}
+	}
 	if err := l.sink.appendLine(line); err != nil {
-		return fmt.Errorf("audit write: %w", err)
+		writeErr := fmt.Errorf("audit write: %w", err)
+		l.Degrade(writeErr)
+		return writeErr
 	}
 	return nil
 }
@@ -118,6 +183,9 @@ func (l *Log) Close() error {
 	if !l.closed {
 		l.closed = true
 		l.closeErr = l.sink.close()
+		if l.closeErr != nil {
+			l.Degrade(l.closeErr)
+		}
 	}
 	return l.closeErr
 }

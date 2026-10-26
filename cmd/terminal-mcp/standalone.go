@@ -397,7 +397,7 @@ func controlStandalone(action string, args []string) error {
 	if action == "status" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
-			"listen": info.Listen, "file_root": info.FileRoot,
+			"listen": info.Listen, "file_root": info.FileRoot, "audit": info.Audit,
 		})
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(stateDir), "updates", "pending")); err == nil {

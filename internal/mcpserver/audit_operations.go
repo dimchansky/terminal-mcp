@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"encoding/json"
-	"log"
 	"time"
 
 	"terminalmcp/internal/audit"
@@ -20,17 +19,17 @@ type operationAudit struct {
 	started   time.Time // Only accessed by the admitted mutation's goroutine.
 }
 
-func (a *operationAudit) Started(operationID string) {
+func (a *operationAudit) Started(operationID string) error {
 	a.started = time.Now()
 	event := audit.NewEvent(audit.Event{
 		ServerID: a.serverID, RequestID: a.requestID, Tool: a.tool,
 		OperationID: operationID, Phase: "operation_start",
 	})
-	if err := a.recorder.Write(event); err != nil {
-		// Stage 2 retains existing fail-open behavior. Blocking a new effect
-		// after an audit error is introduced in the later fail-closed stage.
-		log.Printf("audit operation_start failure (operation still executes): %v", err)
+	if err := a.recorder.Start(event); err != nil {
+		a.recorder.Degrade(err)
+		return err // Ledger must not reserve the retry key or invoke the effect.
 	}
+	return nil
 }
 
 func (a *operationAudit) Finished(receipt mutation.Receipt) {
@@ -51,6 +50,8 @@ func (a *operationAudit) Finished(receipt mutation.Receipt) {
 		}
 	}
 	if err := a.recorder.Write(audit.NewEvent(event)); err != nil {
-		log.Printf("audit operation_finish failure (operation outcome unchanged): %v", err)
+		// This mutation already ran. Keep its actual receipt unchanged;
+		// degrade the auditor to refuse *future* admissions.
+		a.recorder.Degrade(err)
 	}
 }

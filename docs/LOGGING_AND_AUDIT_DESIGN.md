@@ -1,6 +1,6 @@
 # Logging and audit redesign — target contract
 
-> **Status: staged implementation; stages 1–3 completed in source, stages 4–7 pending.**
+> **Status: staged implementation; stages 1–4 completed in source, stages 5–7 pending.**
 > This document is the agreed **target** contract, not a claim that every
 > requirement below is implemented. [SPEC.md](../SPEC.md) and
 > [README.md](../README.md) describe the current checked-out implementation.
@@ -277,7 +277,7 @@ documentation only as each corresponding implementation becomes true.
 | **1 — source complete** | Replace audit queue/worker with synchronous `Write` | No `ErrQueueFull` or background worker; concurrent calls and failures tested with `-race`; no queue drops |
 | **2 — source complete** | Separate MCP request and independent operation lifecycles | Cancellation, replay, conflict, actual completion, panic, shutdown and update fence tests |
 | **3 — source complete** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
-| **4** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
+| **4 — source complete** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
 | **5** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
 | **6** | Standard `slog`, status, and explicit retention policy | stderr diagnostics, usable status, no silently removed audit history, safe diagnostic log rotation plan |
 | **7** | End-to-end validation and documentation finalization | macOS/Linux/Windows checks, isolated updater/rollback tests, failure injection, `make check`, release readiness review |
@@ -441,3 +441,65 @@ diagnostic formatting and lossless retention policy (stage 6).
 initialization, sticky audit degradation (stage 4); stable log path and
 controlled data migration (stage 5); diagnostic logger and explicit
 non-evicting audit retention policy (stage 6).
+
+
+## 11. Stage 4 implementation and verification (2026-10-26)
+
+**Source implementation complete; not deployed to the running MCP instance.**
+
+- `audit.Log.Start` synchronously appends pre-dispatch/pre-effect events,
+  checking sticky health while holding the **same sink mutex** as writes.
+  New requests never invoke their handlers without a successful
+  `request_start`. Already admitted requests continue to use `Write`
+  to attempt their true finish/receipt events even after degradation.
+- The first sink failure or a failed post-effect event sets a permanent
+  instance-scoped `degraded` state. An atomic, nonblocking health snapshot
+  (`ok`, `degraded`, `disabled`, path and first error) remains accessible
+  even if an audit writer is stalled. The first error emits **one**
+  best-effort stderr diagnostic outside the sink; no recursive logging,
+  background queues, or new dependencies are required.
+- The audit-enabled server **refuses startup** if its directory, permissions,
+  exclusive lock, audit file open, or required `server_start` write fails.
+  Explicit `--audit-file=off` and the default stdio opt-out remain valid.
+- `mutation.Observer.Started` now returns an error. The actual mutation
+  goroutine refuses execution on a failed pre-effect audit, reports
+  `operation_not_executed`, and releases the unused `operation_id` for
+  a later safe retry. It never does blocking audit I/O with the ledger
+  mutex held. Existing in-flight mutation receipts are unchanged if
+  `operation_finish` fails after the action was applied; the audit becomes
+  degraded and rejects subsequent new MCP requests.
+- Standalone authenticated `/admin/runtime` and CLI `status` expose
+  the live audit snapshot. Administrative `begin`/`shutdown` remain
+  accessible even when the audit is degraded, still honoring existing
+  active-session and mutation-fencing safeguards. Status is read without
+  waiting for file I/O.
+- Full raw MCP inputs, operation lifecycle events, JSONL format, rotation,
+  existing audit path and old journals are retained. No automated migration
+  or release of the running server was performed.
+
+**Verification, local macOS:**
+
+- `make check`: **PASS**, including race tests for all Go packages, module
+  verification, `go vet`, and application build.
+- `make audit-feedback`: **PASS**.
+- `go test -race -shuffle=on -count=20 -timeout=180s` with the focused
+  stage-4 failure/startup/status patterns in `internal/audit`,
+  `internal/mutation`, `internal/mcpserver`, and
+  `cmd/terminal-mcp`: **PASS**, 20 randomized repetitions.
+- `make lint`: **PASS**, zero issues.
+- Windows amd64 application cross-compile: **PASS** (no native Windows run).
+- `git diff --check`: **PASS**.
+- Fault tests exercise immediate disk-error propagation, sticky failure
+  even after a successful later write, failed rotation and recovery,
+  concurrent status during a stalled sink, pre-effect veto without
+  reservation or execution, a panicking pre-effect observer, preserved
+  `applied` receipt when operation-finish audit is too large,
+  invalid startup paths, exclusive-lock conflicts, failed server-start
+  audit writes, and authenticated status/maintenance during degradation.
+
+**Remaining limitations:** a successful append is not an `fsync`;
+power failure or crashes may lose recently written events. The existing
+three-archive rotation can evict old audit history (stage 6). The
+self-managed stdout/stderr file paths and update/rollback migration
+remain stage 5. A process with the local user's own privileges can still
+tamper with the audit, as documented in the original trust boundary.

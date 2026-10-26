@@ -246,14 +246,14 @@ func TestServeHTTPCleansUpIdleManagedSessions(t *testing.T) {
 }
 
 func TestRunWithContextStdioNoAuditRequired(t *testing.T) {
-	// Keep stdio available when a caller selects a bad optional audit path.
+	// Stdio defaults to disabled auditing unless an explicit path is selected.
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	fileRoot := t.TempDir()
 	go func() {
-		done <- runWithContext(ctx, []string{"--transport=stdio", "--file-root=" + fileRoot, "--audit-file=/dev/null/audit.jsonl"}, serverTransport)
+		done <- runWithContext(ctx, []string{"--transport=stdio", "--file-root=" + fileRoot}, serverTransport)
 	}()
 	client := mcp.NewClient(&mcp.Implementation{Name: "stdio-audit-test", Version: "1"}, nil)
 	conn, err := client.Connect(ctx, clientTransport, nil)
@@ -266,7 +266,7 @@ func TestRunWithContextStdioNoAuditRequired(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("stdio failed due to optional audit: %v", err)
+			t.Fatalf("stdio failed when audit was not enabled: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("stdio did not stop")

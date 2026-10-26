@@ -116,7 +116,10 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	}
 	defer files.Close()
 
-	recorder := openAudit(opts.auditFile, opts.transport)
+	recorder, err := openAudit(opts.auditFile, opts.transport)
+	if err != nil {
+		return fmt.Errorf("required audit initialization failed: %w", err)
+	}
 	if recorder != nil {
 		defer func() {
 			// Stdio has no serveHTTP shutdown defer. Drain independently
@@ -132,7 +135,9 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 		if stdio == nil {
 			stdio = &mcp.StdioTransport{MaxLineLength: httpguard.MaxBody}
 		}
-		recordServerStart(recorder, manager.ID())
+		if err := recordServerStart(recorder, manager.ID()); err != nil {
+			return fmt.Errorf("required audit startup event failed: %w", err)
+		}
 		err := server.Run(ctx, stdio)
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -150,7 +155,10 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	if err != nil {
 		return err
 	}
-	recordServerStart(recorder, manager.ID())
+	if err := recordServerStart(recorder, manager.ID()); err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("required audit startup event failed: %w", err)
+	}
 	if len(args) == 0 || args[0] != "serve" {
 		return serveHTTP(ctx, manager, server, listener, token)
 	}
@@ -164,33 +172,31 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	}
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	return serveHTTP(serveCtx, manager, server, listener, token, &updateServer{info: info, shutdown: cancel})
+	return serveHTTP(serveCtx, manager, server, listener, token, &updateServer{info: info, recorder: recorder, shutdown: cancel})
 }
 
-func recordServerStart(recorder *audit.Log, serverID string) {
+func recordServerStart(recorder *audit.Log, serverID string) error {
 	if recorder == nil {
-		return
+		return nil
 	}
-	if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, Tool: "server", Phase: "server_start", Status: "ok"})); err != nil {
-		log.Printf("audit server_start failure: %v", err)
-	}
+	return recorder.Start(audit.NewEvent(audit.Event{
+		ServerID: serverID, Tool: "server", Phase: "server_start", Status: "ok",
+	}))
 }
 
-func openAudit(requestedPath, transport string) *audit.Log {
+func openAudit(requestedPath, transport string) (*audit.Log, error) {
 	path := requestedPath
 	if path == "" && transport == "http" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			log.Printf("audit unavailable; server will continue without audit: %v", err)
-			return nil
+			return nil, fmt.Errorf("resolve default audit path: %w", err)
 		}
 		if runtime.GOOS == "darwin" {
 			path = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl")
 		} else if runtime.GOOS == "windows" {
 			config, err := os.UserConfigDir()
 			if err != nil {
-				log.Printf("audit unavailable: %v", err)
-				return nil
+				return nil, fmt.Errorf("resolve Windows audit path: %w", err)
 			}
 			path = filepath.Join(config, "terminal-mcp", "audit.jsonl")
 		} else {
@@ -202,22 +208,22 @@ func openAudit(requestedPath, transport string) *audit.Log {
 		}
 	}
 	if path == "" || path == "off" {
-		return nil
+		// Only stdio default or deliberate --audit-file=off disables auditing.
+		return nil, nil
 	}
 	if err := audit.PrepareDirectory(filepath.Dir(path)); err != nil {
-		log.Printf("audit unavailable; server will continue without audit: %v", err)
-		return nil
+		return nil, fmt.Errorf("prepare audit directory %q: %w", filepath.Dir(path), err)
 	}
 	recorder, err := audit.Open(path)
 	if err != nil {
-		log.Printf("audit unavailable; server will continue without audit: %v", err)
-		return nil
+		return nil, fmt.Errorf("open required audit file %q: %w", path, err)
 	}
-	return recorder
+	return recorder, nil
 }
 
 type updateServer struct {
 	info     mcpserver.RuntimeInfo
+	recorder *audit.Log
 	shutdown context.CancelFunc
 }
 
@@ -265,8 +271,12 @@ func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token st
 		state := standalone[0]
 		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager, state.shutdown))
 		mux.HandleFunc("GET /admin/runtime", func(w http.ResponseWriter, r *http.Request) {
+			// Do not wait for the audit sink here. A status query must work
+			// even while the disk is failing or a tool write is blocked.
+			info := state.info
+			info.Audit = state.recorder.Status()
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(state.info)
+			_ = json.NewEncoder(w).Encode(info)
 		})
 	} else {
 		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))

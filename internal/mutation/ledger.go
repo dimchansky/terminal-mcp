@@ -17,11 +17,11 @@ type Receipt struct {
 	Data        json.RawMessage `json:"data,omitempty"`
 }
 
-// Observer receives the lifecycle of one newly admitted effect. Replays do not
-// create observer events. Callbacks run outside the ledger mutex and must not
-// panic or retain mutable receipt data.
+// Observer receives the lifecycle of one newly admitted effect. Started
+// can veto execution if its pre-effect audit cannot be recorded. Callbacks
+// run outside the ledger mutex; replays do not generate another lifecycle.
 type Observer interface {
-	Started(operationID string)
+	Started(operationID string) error
 	Finished(receipt Receipt)
 }
 
@@ -37,6 +37,7 @@ type operation struct {
 	fingerprint [32]byte
 	done        chan struct{}
 	receipt     Receipt
+	startErr    error // No effect was executed; this key must not be reserved.
 }
 
 type Ledger struct {
@@ -100,20 +101,37 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 			// becoming available to the original caller or any replayer.
 			defer func() {
 				l.mu.Lock()
+				if op.startErr != nil {
+					// A rejected pre-effect audit must not consume a retry key.
+					// Replayers already waiting on op.done receive startErr.
+					delete(l.entries, id)
+				}
 				l.inFlight--
 				close(op.done)
 				l.mu.Unlock()
 				l.active.Done()
 			}()
+			if observer != nil {
+				// Even a broken observer cannot cause an unaudited mutation.
+				startErr := func() (err error) {
+					defer func() {
+						if p := recover(); p != nil {
+							err = fmt.Errorf("pre-effect observer panicked: %v", p)
+						}
+					}()
+					return observer.Started(id)
+				}()
+				if startErr != nil {
+					op.startErr = fmt.Errorf("operation_not_executed: pre-effect audit failed: %w", startErr)
+					return
+				}
+			}
 			func() {
 				defer func() {
 					if recover() != nil {
 						op.receipt = Receipt{OperationID: id, Status: "unknown", Error: "internal failure; outcome may be unknown; do not retry with a new key"}
 					}
 				}()
-				if observer != nil {
-					observer.Started(id)
-				}
 				op.receipt = fn()
 			}()
 			op.receipt.OperationID = id
@@ -128,6 +146,9 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 	l.mu.Unlock()
 	select {
 	case <-op.done:
+		if op.startErr != nil {
+			return Receipt{}, replayed, op.startErr
+		}
 		return op.receipt, replayed, nil
 	case <-ctx.Done():
 		return Receipt{}, replayed, ctx.Err()

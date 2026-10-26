@@ -30,9 +30,8 @@ func auditRequestFromContext(ctx context.Context) *requestAudit {
 // unmarshalling and schema validation. Unknown and invalid argument fields
 // must not be silently discarded when the SDK turns them into Go structs.
 //
-// Oversized/unrepresentable audit inputs are denied *before* the tool runs.
-// Other append errors still use the existing temporary fail-open policy;
-// enforcing fail-closed on I/O errors is the separate stage 4.
+// A complete request_start must be written before dispatch. Failed appends,
+// degraded audit health, and unrepresentable input all refuse new tool work.
 func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -66,7 +65,7 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 				CallMeta: callMeta, InputResponses: inputResponses,
 				RequestState: call.RequestState,
 			})
-			if err := recorder.Write(start); err != nil {
+			if err := recorder.Start(start); err != nil {
 				switch {
 				case errors.Is(err, audit.ErrEventTooLarge), errors.Is(err, audit.ErrInvalidEvent):
 					reason := "audit_record_too_large"
@@ -83,11 +82,12 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 						Error: err.Error(),
 					})
 					if logErr := recorder.Write(rejection); logErr != nil {
-						log.Printf("audit oversized-input rejection recording failed: %v", logErr)
+						recorder.Degrade(logErr)
 					}
 					return auditToolError("audit input cannot be fully recorded: " + err.Error() + "; tool not executed"), nil
 				default:
-					log.Printf("audit request_start failure (tool still executes): %v", err)
+					recorder.Degrade(err)
+					return auditToolError("audit_unavailable: " + err.Error() + "; tool not executed"), nil
 				}
 			}
 
@@ -113,7 +113,7 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 					finish.Error = strings.ToValidUTF8(finish.Error[:2048], "�") + "..."
 				}
 				if writeErr := recorder.Write(audit.NewEvent(finish)); writeErr != nil {
-					log.Printf("audit early request_finish failure (tool result unchanged): %v", writeErr)
+					recorder.Degrade(writeErr)
 				}
 			}
 			return result, err

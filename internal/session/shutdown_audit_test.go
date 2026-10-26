@@ -16,7 +16,10 @@ type shutdownObserver struct {
 	releaseFinal chan struct{}
 }
 
-func (o *shutdownObserver) Started(string) { close(o.started) }
+func (o *shutdownObserver) Started(string) error {
+	close(o.started)
+	return nil
+}
 func (o *shutdownObserver) Finished(mutation.Receipt) {
 	close(o.finishing)
 	<-o.releaseFinal

@@ -112,7 +112,7 @@ func TestAuditToolCallsWithCommandArguments(t *testing.T) {
 	}
 }
 
-func TestAuditUnavailableDoesNotPreventToolExecution(t *testing.T) {
+func TestAuditUnavailableRefusesToolExecution(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -138,12 +138,23 @@ func TestAuditUnavailableDoesNotPreventToolExecution(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	list := call[session.ListResult](t, context.Background(), client, "terminal_list", struct{}{})
-	started := call[session.ActionResult](t, context.Background(), client, "terminal_start", session.StartArgs{
-		ServerID: list.ServerID, OperationID: "audit-unavailable-run", Argv: []string{"/usr/bin/true"},
-		CloseOnExit: true, WaitFor: "completion", WaitMS: 2000,
-	})
-	if started.Receipt.Status != "applied" {
-		t.Fatalf("audit failure prevented execution: %+v", started)
+	for _, tc := range []struct {
+		name string
+		args any
+	}{
+		{"terminal_list", struct{}{}},
+		{"terminal_start", session.StartArgs{
+			ServerID: manager.ID(), OperationID: "audit-unavailable-run",
+			Argv: []string{"/usr/bin/true"}, CloseOnExit: true,
+		}},
+	} {
+		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
+		if err != nil || result == nil || !result.IsError {
+			t.Fatalf("%s executed with closed auditor: result=%+v err=%v", tc.name, result, err)
+		}
+	}
+	info, err := manager.List(context.Background(), session.ListArgs{})
+	if err != nil || info.OperationsUsed != 0 || info.Counts.Running != 0 {
+		t.Fatalf("audit failure allowed new operation: info=%+v err=%v", info, err)
 	}
 }

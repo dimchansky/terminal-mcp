@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -145,8 +144,10 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, descripti
 				}
 			}
 		}
-		if err := recorder.Write(audit.NewEvent(finish)); err != nil {
-			log.Printf("audit request_finish failure (tool result unchanged): %v", err)
+		if writeErr := recorder.Write(audit.NewEvent(finish)); writeErr != nil {
+			// The tool may already have changed state; preserve its real
+			// receipt, but block every subsequent new MCP request.
+			recorder.Degrade(writeErr)
 		}
 		return nil, out, err
 	})
@@ -158,15 +159,16 @@ func HTTP(s *mcp.Server) http.Handler {
 
 // RuntimeInfo describes only standalone HTTP processes eligible for self-update.
 type RuntimeInfo struct {
-	ServerID         string   `json:"server_id"`
-	Executable       string   `json:"executable"`
-	ExecutableSHA256 string   `json:"executable_sha256"`
-	WorkingDirectory string   `json:"working_directory"`
-	FileRoot         string   `json:"file_root"`
-	Listen           string   `json:"listen"`
-	Arguments        []string `json:"arguments"`
-	PID              int      `json:"pid"`
-	EnvToken         bool     `json:"env_token"`
+	ServerID         string       `json:"server_id"`
+	Executable       string       `json:"executable"`
+	ExecutableSHA256 string       `json:"executable_sha256"`
+	WorkingDirectory string       `json:"working_directory"`
+	FileRoot         string       `json:"file_root"`
+	Audit            audit.Status `json:"audit"`
+	Listen           string       `json:"listen"`
+	Arguments        []string     `json:"arguments"`
+	PID              int          `json:"pid"`
+	EnvToken         bool         `json:"env_token"`
 }
 
 // Maintenance is token/Host/Origin-protected by the same outer HTTP guard as MCP.

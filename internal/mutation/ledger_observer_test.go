@@ -22,8 +22,9 @@ func newChannelObserver() *channelObserver {
 	return &channelObserver{events: make(chan observedEvent, 8)}
 }
 
-func (o *channelObserver) Started(id string) {
+func (o *channelObserver) Started(id string) error {
 	o.events <- observedEvent{phase: "start", id: id}
+	return nil
 }
 
 func (o *channelObserver) Finished(receipt Receipt) {
@@ -135,7 +136,10 @@ type blockingFinishObserver struct {
 	release   chan struct{}
 }
 
-func (o *blockingFinishObserver) Started(string) { close(o.started) }
+func (o *blockingFinishObserver) Started(string) error {
+	close(o.started)
+	return nil
+}
 func (o *blockingFinishObserver) Finished(Receipt) {
 	close(o.finishing)
 	<-o.release

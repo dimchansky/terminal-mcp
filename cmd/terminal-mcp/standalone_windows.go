@@ -269,7 +269,7 @@ func windowsControl(action string, args []string) error {
 	if action == "status" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
-			"file_root": info.FileRoot, "listen": info.Listen,
+			"file_root": info.FileRoot, "listen": info.Listen, "audit": info.Audit,
 		})
 	}
 	if err := client.maintenance(info.ServerID, "begin"); err != nil {
