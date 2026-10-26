@@ -285,7 +285,7 @@ func TestStandaloneGracefulStopDrainsActiveFileReceive(t *testing.T) {
 		Status      string `json:"status"`
 	}
 	if err := client.tool("file_receive", map[string]any{
-		"server_id": info.ServerID, "operation_id": "graceful-receive",
+		"server_id": info.ServerID, "operation_id": "graceful-receive", "wait_ms": 0,
 		"path": dest, "file": map[string]any{
 			"file_id": "third-party-file", "download_url": source.URL + "/download",
 		},
@@ -300,8 +300,8 @@ func TestStandaloneGracefulStopDrainsActiveFileReceive(t *testing.T) {
 	var progress struct {
 		Status string `json:"status"`
 	}
-	if err := client.tool("file_receive_status", map[string]string{
-		"server_id": info.ServerID, "operation_id": "graceful-receive",
+	if err := client.tool("file_receive_result", map[string]any{
+		"server_id": info.ServerID, "operation_id": "graceful-receive", "wait_ms": 0,
 	}, &progress); err != nil || progress.Status != "running" {
 		t.Fatalf("download was not running: %+v %v", progress, err)
 	}

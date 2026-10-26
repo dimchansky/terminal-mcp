@@ -45,21 +45,21 @@ func receiveInput(id, operation, path, source string) ReceiveArgs {
 	return ReceiveArgs{ServerID: id, OperationID: operation, Path: path,
 		File: FileReference{DownloadURL: source, FileID: "file_test", MIMEType: "application/octet-stream", FileName: "sample.zip"}}
 }
-func receiveStatusEventually(t *testing.T, files *Manager, id, operation string) ReceiveStatusResult {
+func receiveStatusEventually(t *testing.T, files *Manager, id, operation string) ReceiveResult {
 	t.Helper()
 	until := time.Now().Add(6 * time.Second)
 	for time.Now().Before(until) {
-		result, err := files.ReceiveStatus(context.Background(), ReceiveStatusArgs{ServerID: id, OperationID: operation})
+		wait := 200
+		result, err := files.ReceiveResult(context.Background(), ReceiveResultArgs{ServerID: id, OperationID: operation, WaitMS: &wait})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if result.Status != "running" {
 			return result
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("file_receive did not finish")
-	return ReceiveStatusResult{}
+	return ReceiveResult{}
 }
 
 func TestReceiveBinaryAndReplay(t *testing.T) {
@@ -75,7 +75,7 @@ func TestReceiveBinaryAndReplay(t *testing.T) {
 	path := filepath.Join(dir, "archive.zip")
 	a := receiveInput(id, "receive-binary", path, server.URL+"/download?token=private")
 	out, err := files.Receive(context.Background(), a)
-	if err != nil || out.OperationID != a.OperationID || out.Replayed {
+	if err != nil || out.OperationID != a.OperationID || out.Replayed == nil || *out.Replayed || out.Status != "completed" || out.Receipt == nil {
 		t.Fatalf("receive: %+v err=%v", out, err)
 	}
 	finished := receiveStatusEventually(t, files, id, a.OperationID)
@@ -98,7 +98,7 @@ func TestReceiveBinaryAndReplay(t *testing.T) {
 
 	for range 3 {
 		again, err := files.Receive(context.Background(), a)
-		if err != nil || !again.Replayed || again.Status != "completed" || fetched.Load() != 1 {
+		if err != nil || again.Replayed == nil || !*again.Replayed || again.Status != "completed" || fetched.Load() != 1 {
 			t.Fatalf("retry must not download twice: %+v %v calls=%d", again, err, fetched.Load())
 		}
 		status := receiveStatusEventually(t, files, id, a.OperationID)
@@ -120,10 +120,10 @@ func TestReceiveBinaryAndReplay(t *testing.T) {
 	if _, err := files.Receive(context.Background(), a); err == nil || !strings.Contains(err.Error(), "operation_id_conflict") {
 		t.Fatalf("reused operation ID with different path: %v", err)
 	}
-	if _, err := files.ReceiveStatus(context.Background(), ReceiveStatusArgs{ServerID: id, OperationID: "does-not-exist"}); err == nil {
+	if _, err := files.ReceiveResult(context.Background(), ReceiveResultArgs{ServerID: id, OperationID: "does-not-exist"}); err == nil {
 		t.Fatal("unknown operation unexpectedly had status")
 	}
-	if _, err := files.ReceiveStatus(context.Background(), ReceiveStatusArgs{ServerID: "old-server", OperationID: "receive-binary"}); err == nil {
+	if _, err := files.ReceiveResult(context.Background(), ReceiveResultArgs{ServerID: "old-server", OperationID: "receive-binary"}); err == nil {
 		t.Fatal("old server ID unexpectedly had status")
 	}
 }
@@ -257,6 +257,8 @@ func TestReceiveProgressKnownAndUnknownLength(t *testing.T) {
 			}))
 			defer server.Close()
 			a := receiveInput(id, "progress-"+name, filepath.Join(dir, name+".bin"), server.URL+"/file")
+			zero := 0
+			a.WaitMS = &zero
 			start := time.Now()
 			ack, err := files.Receive(context.Background(), a)
 			if err != nil || ack.OperationID != a.OperationID || time.Since(start) > time.Second {
@@ -267,10 +269,10 @@ func TestReceiveProgressKnownAndUnknownLength(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("source never sent first block")
 			}
-			var mid ReceiveStatusResult
+			var mid ReceiveResult
 			deadline := time.Now().Add(3 * time.Second)
 			for time.Now().Before(deadline) {
-				mid, err = files.ReceiveStatus(context.Background(), ReceiveStatusArgs{ServerID: id, OperationID: a.OperationID})
+				mid, err = files.ReceiveResult(context.Background(), ReceiveResultArgs{ServerID: id, OperationID: a.OperationID, WaitMS: &zero})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -316,6 +318,8 @@ func TestReceiveClientCancellationDoesNotAbortAdmittedTransfer(t *testing.T) {
 	defer server.Close()
 	testReceiver(files, server)
 	a := receiveInput(id, "receive-cancelled", filepath.Join(dir, "received.bin"), server.URL+"/asset")
+	zero := 0
+	a.WaitMS = &zero
 	ctx, cancel := context.WithCancel(context.Background())
 	start, err := files.Receive(ctx, a)
 	if err != nil || start.OperationID != a.OperationID {
@@ -323,7 +327,7 @@ func TestReceiveClientCancellationDoesNotAbortAdmittedTransfer(t *testing.T) {
 	}
 	<-started
 	cancel()
-	mid, err := files.ReceiveStatus(context.Background(), ReceiveStatusArgs{ServerID: id, OperationID: a.OperationID})
+	mid, err := files.ReceiveResult(context.Background(), ReceiveResultArgs{ServerID: id, OperationID: a.OperationID, WaitMS: &zero})
 	if err != nil || mid.Status != "running" {
 		t.Fatalf("request cancellation stopped background work: %+v %v", mid, err)
 	}
@@ -345,6 +349,8 @@ func TestReceiveAbortCancelsActiveTransfer(t *testing.T) {
 	}))
 	defer server.Close()
 	a := receiveInput(id, "aborted", filepath.Join(dir, "aborted.bin"), server.URL+"/asset")
+	zero := 0
+	a.WaitMS = &zero
 	if _, err := files.Receive(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}

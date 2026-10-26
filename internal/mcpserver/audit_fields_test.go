@@ -25,7 +25,7 @@ func TestAuditCorrelationIdentifiers(t *testing.T) {
 		{filesystem.WriteArgs{OperationID: "file-write"}, "file-write", ""},
 		{filesystem.EditArgs{OperationID: "file-edit"}, "file-edit", ""},
 		{filesystem.ReceiveArgs{OperationID: "file-receive"}, "file-receive", ""},
-		{filesystem.ReceiveStatusArgs{OperationID: "receive-status"}, "receive-status", ""},
+		{filesystem.ReceiveResultArgs{OperationID: "receive-status"}, "receive-status", ""},
 		{filesystem.ReadArgs{}, "", ""},
 		{filesystem.SearchArgs{}, "", ""},
 		{filesystem.ListArgs{}, "", ""},

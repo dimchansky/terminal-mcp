@@ -91,13 +91,20 @@ Inspect `exit`, `output_done`, `output_incomplete`, `has_more`, and `gap`. A com
 
 ### Independent file downloads
 
-`file_receive` returns an immediate acknowledgement after the pre-effect
-audit is committed. The independent effect continues without holding the
-MCP request open. Query `file_receive_status` using the same `server_id`
-and `operation_id` for in-memory byte progress or repeated final receipts.
-Progress is not added to the audit for each block; original full signed
-URLs and eventual effect receipts remain auditable. Status survives an
-expired file URL, but never survives the server process restart.
+`file_receive` starts an independent transfer after the pre-effect audit,
+then observes its completion for `wait_ms` (default 2000 ms). If it finishes
+quickly, the same tool call returns the final receipt. Otherwise it returns
+`running` with progress. Use `file_receive_result` with the same `server_id`
+and `operation_id` and optional `wait_ms` (default 20000 ms) to wait for
+completion or receive the latest snapshot when its observation wait expires.
+Both tools accept 0..20000 ms; zero is immediate. Progress changes do not
+wake waiting calls, and none of these timeouts cancel the transfer.
+
+`wait_ms` is excluded from the mutation retry fingerprint; repeat `file_receive`
+with the same inputs and a different wait to observe without re-downloading.
+Full signed URLs and final effect receipts remain in the owner's audit, but
+each progress block is not logged. Final results survive an expired signed
+URL, not a server restart.
 
 Never weaken graceful draining to accommodate a long transfer: `stop`
 and `update` close new-work admission first and wait for all accepted

@@ -41,8 +41,8 @@ The server provides 14 MCP tools.
 | `file_read` | Read UTF-8 text with line numbers and a file version. |
 | `file_edit` | Replace exact text after a version check. |
 | `file_write` | Create a file or replace a file with a version check. |
-| `file_receive` | Start a binary download from any HTTP(S) URL without waiting for completion. |
-| `file_receive_status` | Read download progress and the final result, repeatedly. |
+| `file_receive` | Start a binary download and optionally wait up to 20 seconds for its result. |
+| `file_receive_result` | Wait up to 20 seconds for a download's result, or inspect its progress. |
 | `file_search` | Search file content with bounded results. |
 | `file_list` | List the entries in one directory. |
 
@@ -60,22 +60,35 @@ There is no domain, provider or network allowlist. The service already allows
 arbitrary commands with the user's OS permissions; `file_receive` is not a
 separate sandbox or security boundary.
 
-`file_receive` **acknowledges quickly** after admission and the required
-pre-effect audit: it returns `operation_id`, `status`, `stage`, and `replayed`
-without waiting for the actual download. The independent transfer continues
-when the client disconnects or the original MCP call reaches its deadline.
-Call `file_receive_status(server_id, operation_id)` to inspect:
+`file_receive` starts the transfer after the required pre-effect audit.
+Optional `wait_ms` defaults to **2000 ms** (range **0..20000 ms**). It
+returns the final receipt immediately if the download finishes during that
+wait. Otherwise it returns `running` with the latest progress, while the
+download continues independently of the MCP request.
 
-- `running` with stages `queued`, `connecting`, `downloading`, `finalizing`;
-  `bytes_downloaded` is always known, while `total_bytes` and `percent`
-  are `null` when the remote server does not provide `Content-Length`.
-- `completed` with `percent: 100`, the final byte count, destination,
-  timestamp, and immutable `receipt` containing the SHA-256 version.
-- `failed` with the preserved failure receipt and bytes downloaded so far.
+If the download is still running, use `file_receive_result` with `server_id`
+and `operation_id`. Its optional `wait_ms` defaults to **20000 ms** (range
+**0..20000 ms**). It waits for **completion**, not for each progress update.
+On observation timeout it returns `running` and the latest progress; repeat
+as needed. Explicit `wait_ms: 0` returns the current snapshot immediately.
+Neither tool's observation deadline cancels the transfer.
 
-Status calls never restart a download and may be repeated after completion,
-including after a signed download URL expires. Results remain only in memory
-until this server instance exits; a new `server_id` cannot retrieve them.
+Both tools return the same fields: `operation_id`, `status`, `stage`, `path`,
+`bytes_downloaded`, `total_bytes`, `percent`, `started_at`, and (when finished)
+`completed_at` and the final `receipt`. Only `file_receive` additionally
+returns `replayed` (true when this operation was already admitted).
+
+- `running`: stages `queued`, `connecting`, `downloading`, `finalizing`;
+  if the server does not provide Content-Length, `total_bytes` and `percent`
+  remain `null`.
+- `completed`: `percent: 100`, final byte count, SHA-256 receipt and time.
+- `failed`: preserved error receipt and bytes downloaded up to failure.
+
+Repeated `file_receive_result` calls never restart a download, even after its
+signed URL expires. Retrying `file_receive` with the same operation ID and
+identical file/path but **different `wait_ms`** observes the same transfer;
+no second download is started. Results remain in memory until the server
+instance exits; a new `server_id` cannot retrieve them.
 
 The download streams directly to a private mode-0600 temporary file; it has
 **no arbitrary total-size or overall transfer-duration limit**. It publishes

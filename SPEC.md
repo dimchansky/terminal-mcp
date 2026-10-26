@@ -403,12 +403,17 @@ on hostname, IP address (including loopback and private networks), provider or
 port. Standard Go HTTP redirects are followed, including across hosts and
 between HTTP/HTTPS (up to 10 redirects). There is no URL-source allowlist:
 this service already exposes arbitrary process execution and is not a sandbox.
-The command accepts a transfer into the shared mutation ledger, waits
-only for successful pre-effect audit admission, and returns promptly with
-`operation_id`, `status`, `stage`, and `replayed`. The independently
-executing transfer can outlive its initiating MCP request. There is no fixed
-overall download timeout or hardcoded maximum total size. Network, disk and
-server lifetime limits still apply.
+The command accepts a transfer into the shared mutation ledger after the
+pre-effect audit succeeds. Optional `wait_ms` is **0..20000 milliseconds**,
+default **2000**; an explicit zero returns immediately. The call waits up
+to that long for the actual transfer to complete, then returns a final receipt
+if ready, or `running` with the latest progress. Observation timeout or client
+disconnect never cancels an admitted transfer. The initial response has the
+same result fields as `file_receive_result`, plus `replayed` (always present).
+`wait_ms` is excluded from the effect fingerprint: retrying the same action
+with a different observation wait never starts a second download. There is
+no fixed overall transfer timeout or hardcoded maximum total size. Network,
+disk and server lifetime limits still apply.
 
 The destination must be a new regular file path inside `file_root` whose
 parent already exists. Downloaded bytes stream into a private mode-0600
@@ -417,25 +422,35 @@ atomically linked into place, never overwriting existing content. Temporary
 files are removed on handled failure. A successful receipt reports byte count
 and SHA-256. This command does not upload local files to an MCP client.
 
-### `file_receive_status` (read-only progress and final outcome)
+### `file_receive_result` (read-only wait for completion or progress)
 
 **Required:** `server_id`, `operation_id`.
 
-Returns an in-memory snapshot with `status`, `stage`, `path`,
-`bytes_downloaded`, `total_bytes`, `percent`, `started_at`, optionally
-`completed_at` and `receipt`. A running operation can report `queued`,
-`connecting`, `downloading`, or `finalizing`. Unknown Content-Length is
-represented by null `total_bytes` and `percent`, never a fabricated
-percentage. Completed operations report `completed`, 100%, exact bytes and
-the final receipt; failures report `failed`, downloaded bytes and failure
-receipt. An operation that cannot be classified reports `unknown`.
+**Optional:** `wait_ms` (**0..20000 milliseconds**, default **20000**).
+An explicit zero returns the current snapshot. If the operation is running
+and `wait_ms` is positive, wait for **completion** up to that duration, then
+return its latest progress if still running. Changes to byte progress do not
+wake the waiting request; neither the observation deadline nor a disconnected
+client terminates the underlying download. The HTTP write timeout is 30 seconds,
+so maximum observation waits are capped at 20 seconds.
 
-Repeated status calls never trigger a new transfer. Final results remain
-queryable for the life of the same server instance, even when the signed URL
-has expired or the output file has subsequently changed. Nothing is persisted
-to restore operation snapshots after a restart; operations from an old
-`server_id` are unavailable. Graceful stop/update waits for admitted effects
-and their completion audit, while explicit `stop --force` may cancel transfers.
+Both `file_receive` and `file_receive_result` return a common result shape
+with `operation_id`, `status`, `stage`, `path`, `bytes_downloaded`,
+`total_bytes`, `percent`, `started_at`, optionally `completed_at` and
+`receipt`. Only `file_receive` additionally includes the `replayed` boolean.
+
+A running operation can report `queued`, `connecting`, `downloading`, or
+`finalizing`. Unknown Content-Length uses null `total_bytes` and `percent`;
+no fabricated percentage is reported. Completed transfers return
+`completed`, 100%, exact bytes and SHA-256 receipt, while failures report
+`failed` and the error receipt. An unclassifiable outcome reports `unknown`.
+
+Repeated result calls never trigger a new transfer. Final results remain
+available during the current server instance's lifetime even if the source
+URL expires or the file is later modified. No operation snapshots persist
+across process restarts; an old `server_id` cannot retrieve them. Graceful
+stop/update waits for accepted downloads and completion audit, while explicit
+`stop --force` may cancel them.
 
 The owner's audit preserves all submitted inputs, including the full signed
 `file.download_url`, malformed and unknown fields. A schema-invalid call

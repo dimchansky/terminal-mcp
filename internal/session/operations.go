@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"terminalmcp/internal/mutation"
+	"time"
 )
 
 type ledger struct{ raw mutation.Ledger }
@@ -47,6 +48,14 @@ func (m *Manager) StartMutation(ctx context.Context, serverID, id, method string
 		return mutation.Snapshot{}, false, err
 	}
 	return m.ops.raw.Start(ctx, m.limits.MaxOperations, id, method, effect, fn)
+}
+
+// WaitMutation bounds observation, never the effect lifetime.
+func (m *Manager) WaitMutation(ctx context.Context, serverID, id, method string, wait time.Duration) (mutation.Snapshot, error) {
+	if err := m.checkServer(serverID); err != nil {
+		return mutation.Snapshot{}, err
+	}
+	return m.ops.raw.WaitSnapshot(ctx, id, method, wait)
 }
 
 func (m *Manager) MutationSnapshot(serverID, id, method string) (mutation.Snapshot, error) {

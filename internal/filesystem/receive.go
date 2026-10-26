@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"terminalmcp/internal/mutation"
 )
@@ -41,22 +42,45 @@ func parseDownloadURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// Receive admits a download and acknowledges it after its pre-effect audit
-// is committed, without waiting for the network transfer to finish.
-func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ReceiveStartResult, error) {
+// Observation waits are shorter than the HTTP server's 30-second write deadline.
+// They never constrain the lifetime of the independently running transfer.
+const (
+	defaultReceiveWaitMS = 2000
+	defaultResultWaitMS  = 20000
+	maxReceiveWaitMS     = 20000
+)
+
+func receiveWaitMS(requested *int, fallback int) (time.Duration, error) {
+	ms := fallback
+	if requested != nil {
+		ms = *requested
+	}
+	if ms < 0 || ms > maxReceiveWaitMS {
+		return 0, fmt.Errorf("wait_ms must be between 0 and %d", maxReceiveWaitMS)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// Receive admits a download after the pre-effect audit, optionally observing
+// completion for a bounded time. Its wait_ms is not part of the retry identity.
+func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ReceiveResult, error) {
+	wait, err := receiveWaitMS(a.WaitMS, defaultReceiveWaitMS)
+	if err != nil {
+		return ReceiveResult{}, err
+	}
 	rel, err := m.relative(a.Path)
 	if err != nil {
-		return ReceiveStartResult{}, err
+		return ReceiveResult{}, err
 	}
 	if a.File.FileID == "" || len(a.File.FileID) > 512 {
-		return ReceiveStartResult{}, errors.New("file.file_id must be nonempty and at most 512 bytes")
+		return ReceiveResult{}, errors.New("file.file_id must be nonempty and at most 512 bytes")
 	}
 	u, err := parseDownloadURL(a.File.DownloadURL)
 	if err != nil {
-		return ReceiveStartResult{}, err
+		return ReceiveResult{}, err
 	}
 	effect := a
-	effect.ServerID, effect.OperationID = "", ""
+	effect.ServerID, effect.OperationID, effect.WaitMS = "", "", nil
 	snapshot, replayed, err := m.host.StartMutation(ctx, a.ServerID, a.OperationID, "file_receive", effect,
 		func(report func(mutation.Progress)) mutation.Receipt {
 			receipt, receiveErr := m.receiveFile(rel, a.Path, u, report)
@@ -71,21 +95,39 @@ func (m *Manager) Receive(ctx context.Context, a ReceiveArgs) (ReceiveStartResul
 			return mutation.Receipt{Status: status, Error: message, Data: data}
 		})
 	if err != nil {
-		return ReceiveStartResult{}, err
+		return ReceiveResult{}, err
 	}
-	return ReceiveStartResult{OperationID: a.OperationID, Status: snapshot.Status,
-		Stage: snapshot.Progress.Stage, Replayed: replayed}, nil
+	if wait > 0 {
+		snapshot, err = m.host.WaitMutation(ctx, a.ServerID, a.OperationID, "file_receive", wait)
+		if err != nil {
+			return ReceiveResult{}, err
+		}
+	}
+	out, err := receiveResult(snapshot)
+	if err != nil {
+		return ReceiveResult{}, err
+	}
+	out.Replayed = &replayed
+	return out, nil
 }
 
-// ReceiveStatus reads the in-memory ledger. It never starts a transfer and
-// repeat reads return the same final receipt even after the URL expires.
-func (m *Manager) ReceiveStatus(_ context.Context, a ReceiveStatusArgs) (ReceiveStatusResult, error) {
-	snapshot, err := m.host.MutationSnapshot(a.ServerID, a.OperationID, "file_receive")
+// ReceiveResult waits for a previously admitted transfer, never restarting it.
+// Completed receipts remain available until this server instance exits.
+func (m *Manager) ReceiveResult(ctx context.Context, a ReceiveResultArgs) (ReceiveResult, error) {
+	wait, err := receiveWaitMS(a.WaitMS, defaultResultWaitMS)
 	if err != nil {
-		return ReceiveStatusResult{}, err
+		return ReceiveResult{}, err
 	}
+	snapshot, err := m.host.WaitMutation(ctx, a.ServerID, a.OperationID, "file_receive", wait)
+	if err != nil {
+		return ReceiveResult{}, err
+	}
+	return receiveResult(snapshot)
+}
+
+func receiveResult(snapshot mutation.Snapshot) (ReceiveResult, error) {
 	p := snapshot.Progress
-	out := ReceiveStatusResult{
+	out := ReceiveResult{
 		OperationID: snapshot.OperationID, Status: snapshot.Status,
 		Stage: p.Stage, Path: p.Path,
 		BytesDownloaded: p.BytesDownloaded, TotalBytes: p.TotalBytes,
@@ -102,7 +144,7 @@ func (m *Manager) ReceiveStatus(_ context.Context, a ReceiveStatusArgs) (Receive
 		var receipt FileReceipt
 		if len(snapshot.Receipt.Data) != 0 {
 			if err := json.Unmarshal(snapshot.Receipt.Data, &receipt); err != nil {
-				return ReceiveStatusResult{}, err
+				return ReceiveResult{}, err
 			}
 		}
 		receipt.OperationID, receipt.Status, receipt.Error =

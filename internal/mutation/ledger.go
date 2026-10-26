@@ -119,6 +119,32 @@ func (l *Ledger) Start(ctx context.Context, limit int, id, method string, effect
 	}
 }
 
+// WaitSnapshot waits for an operation's final receipt up to the observation
+// deadline. The effect is independent of the requesting context and timeout.
+func (l *Ledger) WaitSnapshot(ctx context.Context, id, method string, wait time.Duration) (Snapshot, error) {
+	if wait <= 0 {
+		return l.Snapshot(id, method)
+	}
+	l.mu.Lock()
+	op := l.entries[id]
+	if op == nil || op.method != method {
+		l.mu.Unlock()
+		return Snapshot{}, fmt.Errorf("operation_not_found: no %s operation with this ID in the current server instance", method)
+	}
+	done := op.done
+	l.mu.Unlock()
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	case <-ctx.Done():
+		return Snapshot{}, ctx.Err()
+	}
+	return l.Snapshot(id, method)
+}
+
 func (l *Ledger) Snapshot(id, method string) (Snapshot, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

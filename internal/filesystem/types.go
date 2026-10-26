@@ -63,23 +63,19 @@ type ReceiveArgs struct {
 	OperationID string        `json:"operation_id"`
 	Path        string        `json:"path" jsonschema:"Absolute destination path; the parent directory must already exist."`
 	File        FileReference `json:"file" jsonschema:"Remote file URL and identifier; ChatGPT can populate this using fileParams."`
+	WaitMS      *int          `json:"wait_ms,omitempty" jsonschema:"Optional observation wait, 0..20000 milliseconds; default 2000. Does not limit download lifetime. Explicit zero returns immediately."`
 }
 
-// ReceiveStartResult acknowledges an independent download without waiting
-// for its bytes. Query progress or the final receipt with file_receive_status.
-type ReceiveStartResult struct {
-	OperationID string `json:"operation_id"`
-	Status      string `json:"status"`
-	Stage       string `json:"stage"`
-	Replayed    bool   `json:"replayed"`
-}
-
-type ReceiveStatusArgs struct {
+// ReceiveResultArgs retrieves an existing transfer; it never starts work.
+type ReceiveResultArgs struct {
 	ServerID    string `json:"server_id"`
 	OperationID string `json:"operation_id"`
+	WaitMS      *int   `json:"wait_ms,omitempty" jsonschema:"Optional observation wait, 0..20000 milliseconds; default 20000. Explicit zero returns current state immediately."`
 }
 
-type ReceiveStatusResult struct {
+// ReceiveResult is the shared response shape for both receive and result.
+// Replayed is present only for file_receive, including on first admission.
+type ReceiveResult struct {
 	OperationID     string       `json:"operation_id"`
 	Status          string       `json:"status"`
 	Stage           string       `json:"stage"`
@@ -90,6 +86,7 @@ type ReceiveStatusResult struct {
 	StartedAt       time.Time    `json:"started_at"`
 	CompletedAt     *time.Time   `json:"completed_at,omitempty"`
 	Receipt         *FileReceipt `json:"receipt,omitempty"`
+	Replayed        *bool        `json:"replayed,omitempty"`
 }
 
 type FileReceipt struct {

@@ -63,13 +63,16 @@ atomic file publication, retry semantics and the **full owner-visible audit**.
 
 ## Async downloads and lifecycle invariants
 
-`file_receive` must acknowledge promptly after admission and pre-effect
-audit, without waiting for network I/O to finish. Use `file_receive_status`
-for byte progress and repeatedly accessible `completed` or `failed`
-results. Keep snapshots only in the current server instance's memory;
-do not persist them across restarts. Never invent total size or percentage
-when the remote server does not send a usable Content-Length. Do not impose
-an arbitrary overall download timeout or hard-coded total size cap.
+`file_receive` must begin downloads independently of request lifetime after
+the required pre-effect audit. Both `file_receive` and `file_receive_result`
+return the same progress or final receipt. Optional `wait_ms` governs only
+observation: default 2000 for receive, 20000 for result, 0 for an immediate
+snapshot, maximum 20000. A progress update must not wake a result wait;
+only effect completion or the observation deadline does. Varying `wait_ms`
+never changes retry identity or starts another download. Keep snapshots
+only in the current server's memory; do not persist them across restarts.
+Never invent total size or percentage when Content-Length is unknown.
+Do not impose an arbitrary overall download timeout or hard-coded size cap.
 
 Normal `stop`, `update`, SIGINT and SIGTERM must first atomically close
 admission for new work, then wait for already accepted mutations, downloads,

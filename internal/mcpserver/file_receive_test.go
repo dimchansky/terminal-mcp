@@ -106,6 +106,43 @@ func TestFileReceivePublishesChatGPTFileParamsSchema(t *testing.T) {
 	if !slices.Equal(required, []string{"download_url", "file_id"}) {
 		t.Fatalf("file required fields must be exactly [download_url file_id], got %v", required)
 	}
+	if _, ok := properties["wait_ms"]; !ok {
+		t.Fatalf("receive schema lacks optional wait_ms: %s", encoded)
+	}
+	for _, field := range schema["required"].([]any) {
+		if field == "wait_ms" {
+			t.Fatalf("wait_ms must be optional: %s", encoded)
+		}
+	}
+	var resultTool *mcp.Tool
+	for _, candidate := range list.Tools {
+		if candidate.Name == "file_receive_status" {
+			t.Fatal("obsolete file_receive_status is still advertised")
+		}
+		if candidate.Name == "file_receive_result" {
+			resultTool = candidate
+		}
+	}
+	if resultTool == nil || resultTool.Annotations == nil || !resultTool.Annotations.ReadOnlyHint {
+		t.Fatalf("file_receive_result must be available and read-only: %+v", resultTool)
+	}
+	raw, err := json.Marshal(resultTool.InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resultSchema map[string]any
+	if err := json.Unmarshal(raw, &resultSchema); err != nil {
+		t.Fatal(err)
+	}
+	resultProperties, ok := resultSchema["properties"].(map[string]any)
+	if !ok || resultProperties["wait_ms"] == nil {
+		t.Fatalf("result schema lacks optional wait_ms: %s", raw)
+	}
+	for _, field := range resultSchema["required"].([]any) {
+		if field == "wait_ms" {
+			t.Fatalf("result wait_ms must be optional: %s", raw)
+		}
+	}
 }
 
 func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
@@ -175,22 +212,23 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 	}
 	// A schema-valid call to an unavailable local HTTP source must retain the
 	// operation ID even when its download fails.
+	zero := 0
 	valid := filesystem.ReceiveArgs{
-		ServerID: host.ID(), OperationID: "schema-valid-unavailable-source", Path: path,
+		ServerID: host.ID(), OperationID: "schema-valid-unavailable-source", Path: path, WaitMS: &zero,
 		File: filesystem.FileReference{
 			DownloadURL: signedURL, FileID: "file_123456",
 			FileName: "archive.zip", MIMEType: "application/zip",
 		},
 	}
-	typed := call[filesystem.ReceiveStartResult](t, ctx, cs, "file_receive", valid)
+	typed := call[filesystem.ReceiveResult](t, ctx, cs, "file_receive", valid)
 	if typed.OperationID != valid.OperationID {
 		t.Fatalf("async submission did not return operation ID: %+v", typed)
 	}
-	var failed filesystem.ReceiveStatusResult
+	var failed filesystem.ReceiveResult
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		failed = call[filesystem.ReceiveStatusResult](t, ctx, cs,
-			"file_receive_status", filesystem.ReceiveStatusArgs{ServerID: host.ID(), OperationID: valid.OperationID})
+		failed = call[filesystem.ReceiveResult](t, ctx, cs,
+			"file_receive_result", filesystem.ReceiveResultArgs{ServerID: host.ID(), OperationID: valid.OperationID})
 		if failed.Status != "running" {
 			break
 		}
@@ -199,8 +237,8 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 	if failed.Status != "failed" || failed.Receipt == nil {
 		t.Fatalf("unavailable local source did not report failure: %+v", failed)
 	}
-	again := call[filesystem.ReceiveStatusResult](t, ctx, cs,
-		"file_receive_status", filesystem.ReceiveStatusArgs{ServerID: host.ID(), OperationID: valid.OperationID})
+	again := call[filesystem.ReceiveResult](t, ctx, cs,
+		"file_receive_result", filesystem.ReceiveResultArgs{ServerID: host.ID(), OperationID: valid.OperationID})
 	if again.Status != "failed" || again.Receipt.Error != failed.Receipt.Error {
 		t.Fatalf("terminal status changed after reread: %+v vs %+v", failed, again)
 	}
@@ -235,8 +273,8 @@ func TestFileReceiveAuditsFullSensitiveInputsEvenOnRejection(t *testing.T) {
 				}
 			case "schema-valid-unavailable-source":
 				file, ok := input["file"].(map[string]any)
-				if !ok || file["download_url"] != signedURL {
-					t.Fatalf("audit lost the schema-valid signed URL: %+v", event)
+				if !ok || file["download_url"] != signedURL || input["wait_ms"] != float64(0) {
+					t.Fatalf("audit lost signed URL or requested observation wait: %+v", event)
 				}
 			default:
 				t.Fatalf("unexpected operation: %+v", event)
