@@ -1,6 +1,6 @@
 # Logging and audit redesign — target contract
 
-> **Status: staged implementation; stages 1–6 completed in source, stage 7 pending.**
+> **Status: stages 0–7 implemented and validated in source; Windows native runtime checks remain a release gate.**
 > This document is the agreed **target** contract, not a claim that every
 > requirement below is implemented. [SPEC.md](../SPEC.md) and
 > [README.md](../README.md) describe the current checked-out implementation.
@@ -280,7 +280,7 @@ documentation only as each corresponding implementation becomes true.
 | **4 — source complete** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
 | **5 — source complete** | Stable split diagnostic logs and audit path, plus migration | stdout/stderr captured separately, stable after update/rollback, old archives preserved, no simultaneous old/new audit writers |
 | **6 — source complete** | Standard `slog`, status, and explicit retention policy | stderr diagnostics, usable status, no silently removed audit history, safe diagnostic log rotation plan |
-| **7** | End-to-end validation and documentation finalization | macOS/Linux/Windows checks, isolated updater/rollback tests, failure injection, `make check`, release readiness review |
+| **7 — source complete** | End-to-end validation and documentation finalization | macOS/Linux race suites, Windows cross-checks, isolated update/rollback, failure injection, `make check`, explicit Windows native release gate |
 
 For all stages: keep changes minimal and idiomatic Go; prefer existing tested
 components over new libraries when they do not remove real complexity. Do not
@@ -652,3 +652,24 @@ rewritten as an execution failure. Local processes running as the same
 OS user can modify files; external tamper-proof storage is out of scope.
 Diagnostic files have no background rotation or automatic truncation.
 Stage 7 is reserved for final cross-platform integration/release checks.
+
+
+## 14. Stage 7 independent review and final integration checks (2026-10-26)
+
+**Stages 0–7 completed and committed in source, subject to the platform release gates described below. This is not an installed-server update or a published release.** The final risk assessment, exact test matrix, and controlled rollout checklist are in [RELEASE_READINESS.md](RELEASE_READINESS.md).
+
+An independent end-to-end review exposed and corrected three important failure modes:
+
+1. **Audit failure with blocked stderr:** The first degradation diagnostic had been emitted while holding the audit sink mutex. The failure is now latched atomically before releasing the mutex, but its one best-effort `slog` diagnostic is written **after** unlock. Tests block the diagnostic handler and verify that health, refusal of new effects, `Close`, and repeated `Close` remain available.
+2. **Completion observer panic after a real mutation:** The ledger now recovers a panic in `Observer.Finished` without crashing the MCP server, losing the true receipt, or duplicating an effect during replay. The MCP audit observer also latches `degraded` when its finish path unexpectedly panics, so further new tool calls are refused.
+3. **Linux exited-process detection:** On Linux, `kill(pid, 0)` succeeds for an unreaped zombie even though the process has exited and released file descriptors. The updater/standalone shutdown logic now additionally detects Linux `/proc/PID/stat` zombie/dead states. A native-Linux regression test keeps a real child unreaped to reproduce this case. A chmod-based rollback fault test was also made explicitly conditional on running unprivileged, because root can override its injected permissions; an independent bad-restart rollback test still covers recovery as root.
+
+**Validated in isolated environments:**
+
+- macOS arm64 (Go 1.27.3): `make check` **PASS** (all eight packages under the race detector, modules, `go vet`, binary build); `make lint` **PASS** (zero issues); `make audit-feedback` **PASS**.
+- macOS focused hardening: `go test -race -shuffle=on -count=20` for blocked audit diagnostics, completion-observer panic, update fences and shutdown **PASS**.
+- Linux/amd64 userland under Docker emulation on an ARM64 host (Go 1.26.5, offline, source read-only, UID 65534): `go test -race -count=1 -timeout=240s ./...` **PASS** in all eight packages, including real-process updater and rollback tests. Root-run chmod injection was separately checked as a reported skip, not a false failure.
+- Linux/amd64 and Windows/amd64 cross-compilation of relevant test binaries: **PASS**. `GOOS=linux go vet ./...` and `GOOS=windows go vet ./...`: **PASS**. Windows native runtime/ACL tests **not executed** on this Mac; they remain an explicit Windows release gate.
+- Audit failure injection includes disk stalls, partial writes, retention budget exhaustion, replay/cancellation, migration conflicts, panic, blocked stderr and schema rejections. No Go module or external logging framework was added.
+
+**Release recommendation:** The tested source is a candidate for a **controlled macOS/Linux rollout only with the owner's explicit permission**. Do not infer native Windows runtime readiness from cross-compilation. Do not push, publish or deploy automatically. The live MCP server's `server_id` is not changed by these stage commits. Expected residual limits remain: no per-event `fsync`/power-loss guarantee, no tamper-proof protection against the OS user, no automatic detached-process supervision, a fail-closed hard history budget, and offline-only diagnostic log rotation.

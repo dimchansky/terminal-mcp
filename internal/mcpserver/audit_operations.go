@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"terminalmcp/internal/audit"
@@ -33,6 +34,13 @@ func (a *operationAudit) Started(operationID string) error {
 }
 
 func (a *operationAudit) Finished(receipt mutation.Receipt) {
+	defer func() {
+		if p := recover(); p != nil {
+			// Completion panics happen after the effect ran. Keep the
+			// real ledger receipt, but refuse later unaudited actions.
+			a.recorder.Degrade(fmt.Errorf("operation_finish audit observer panicked: %v", p))
+		}
+	}()
 	event := audit.Event{
 		ServerID: a.serverID, RequestID: a.requestID, Tool: a.tool,
 		OperationID: receipt.OperationID, Phase: "operation_finish",

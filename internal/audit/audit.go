@@ -118,12 +118,20 @@ func (l *Log) Ready() error {
 // Degrade latches the first audit failure and emits one immediate diagnostic
 // outside the audit sink. The service requires a controlled restart to recover.
 func (l *Log) Degrade(err error) {
-	if l == nil || err == nil {
-		return
+	if l != nil && l.markDegraded(err) {
+		reportDegraded(err)
 	}
-	if l.failure.CompareAndSwap(nil, &auditFailure{err: err}) {
-		slog.Error("audit degraded; refusing new MCP work until restart", "error", err)
-	}
+}
+
+// markDegraded is deliberately nonblocking: the first error is visible to
+// Ready and Status immediately, even if stderr subsequently stalls. Callers
+// can mark the failure while holding Log.mu, but must report it after unlock.
+func (l *Log) markDegraded(err error) bool {
+	return err != nil && l.failure.CompareAndSwap(nil, &auditFailure{err: err})
+}
+
+func reportDegraded(err error) {
+	slog.Error("audit degraded; refusing new MCP work until restart", "error", err)
 }
 
 // newLog allows deterministic sink failure and concurrency tests.
@@ -171,23 +179,32 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 		return fmt.Errorf("%w: %d bytes, limit %d", ErrEventTooLarge, len(line), maxFileBytes)
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return ErrClosed
 	}
 	if requireHealthy {
 		if err := l.Ready(); err != nil {
+			l.mu.Unlock()
 			return err
 		}
 	}
 	if err := l.sink.appendLine(line); err != nil {
 		writeErr := fmt.Errorf("audit write: %w", err)
-		l.Degrade(writeErr)
+		// Record the first failure before releasing the sink mutex:
+		// another request cannot slip through admission while degraded
+		// state is still unregistered.
+		first := l.markDegraded(writeErr)
+		l.mu.Unlock()
+		if first {
+			reportDegraded(writeErr) // Slow stderr must not hold Log.mu.
+		}
 		return writeErr
 	}
 	if sink, ok := l.sink.(*fileSink); ok {
 		l.bytesUsed.Store(sink.total)
 	}
+	l.mu.Unlock()
 	return nil
 }
 
@@ -196,19 +213,24 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 // the same error; concurrent Close calls cannot close the sink twice.
 func (l *Log) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	if !l.closed {
-		l.closed = true
-		l.closeErr = l.sink.close()
-		if l.legacyLock != nil {
-			l.closeErr = errors.Join(l.closeErr, l.legacyLock.Close())
-			l.legacyLock = nil
-		}
-		if l.closeErr != nil {
-			l.Degrade(l.closeErr)
-		}
+	if l.closed {
+		result := l.closeErr
+		l.mu.Unlock()
+		return result
 	}
-	return l.closeErr
+	l.closed = true
+	l.closeErr = l.sink.close()
+	if l.legacyLock != nil {
+		l.closeErr = errors.Join(l.closeErr, l.legacyLock.Close())
+		l.legacyLock = nil
+	}
+	first := l.markDegraded(l.closeErr)
+	result := l.closeErr
+	l.mu.Unlock()
+	if first {
+		reportDegraded(result) // Keep best-effort stderr outside Log.mu.
+	}
+	return result
 }
 
 func RequestID() string {

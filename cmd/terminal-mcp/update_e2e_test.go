@@ -276,6 +276,12 @@ func TestStandaloneUpdaterRejectsUnstartableCandidate(t *testing.T) {
 }
 
 func TestStandaloneUpdaterRollsBackFailedActivation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		// Root can bypass the directory permissions used for this
+		// particular fault injection. The bad-restart rollback test
+		// provides a privilege-independent recovery scenario.
+		t.Skip("chmod-based activation denial requires an unprivileged test user")
+	}
 	f := newUpdateFixture(t, false)
 	var started struct {
 		Receipt struct {

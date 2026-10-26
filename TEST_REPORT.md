@@ -1,11 +1,13 @@
 # Validation Report
 
+> **Historical report (2026-10-24).** The results below describe the earlier implementation, not the completed October 26 audit/logging redesign. In particular, references to an audit queue/worker, bounded three-archive retention, omitted file content in the audit, and earlier CI runs are not claims about the current source. See the [stage 7 release-readiness and cross-platform validation report](docs/RELEASE_READINESS.md) and [current specification](SPEC.md). A local source test is not a deployed-server test.
+
 | Item | Value |
 | --- | --- |
 | Date | 2026-10-24 |
 | Project | Local Terminal MCP |
 | Platforms | macOS and Linux |
-| Status | Local checks and the last verified CI run passed. |
+| Status | Historical checks passed on their stated dates; consult the stage 7 report for current results. |
 
 This report describes checks that were executed. It separates verified behavior from behavior that has not received a full test.
 

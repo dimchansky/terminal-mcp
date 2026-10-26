@@ -130,6 +130,43 @@ func TestObserverExcludesConflictAndReportsRecoveredPanic(t *testing.T) {
 	assertNoObserved(t, second)
 }
 
+// A failed completion observer must not crash the service, undo a real effect,
+// or create a second independently executed operation on replay.
+type panicFinishObserver struct{ finishes atomic.Int32 }
+
+func (*panicFinishObserver) Started(string) error { return nil }
+func (o *panicFinishObserver) Finished(Receipt) {
+	o.finishes.Add(1)
+	panic("injected completion observer panic")
+}
+
+func TestPanickingFinishObserverKeepsAppliedReceiptAndShutdownProgress(t *testing.T) {
+	var ledger Ledger
+	observer := &panicFinishObserver{}
+	var effects atomic.Int32
+	fn := func() Receipt {
+		effects.Add(1)
+		return Receipt{Status: "applied"}
+	}
+	result, replayed, err := ledger.Do(WithObserver(context.Background(), observer), 3,
+		"completion-panic", "file_write", "original", fn)
+	if err != nil || replayed || result.Status != "applied" || effects.Load() != 1 ||
+		observer.finishes.Load() != 1 {
+		t.Fatalf("panicking finish observer changed effect: result=%+v replayed=%v err=%v effects=%d observer=%d",
+			result, replayed, err, effects.Load(), observer.finishes.Load())
+	}
+	replay, replayed, err := ledger.Do(context.Background(), 3,
+		"completion-panic", "file_write", "original", fn)
+	if err != nil || !replayed || replay.Status != "applied" || effects.Load() != 1 ||
+		observer.finishes.Load() != 1 {
+		t.Fatalf("replay after completion panic duplicated effect: %+v replayed=%v err=%v", replay, replayed, err)
+	}
+	if err := ledger.Freeze(); err != nil {
+		t.Fatalf("completion observer panic left mutation in flight: %v", err)
+	}
+	ledger.StopAndWait() // Must not hang after the recovered panic.
+}
+
 type blockingFinishObserver struct {
 	started   chan struct{}
 	finishing chan struct{}

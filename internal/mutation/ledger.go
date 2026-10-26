@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 )
@@ -139,7 +140,18 @@ func (l *Ledger) Do(ctx context.Context, limit int, id, method string, effect an
 				op.receipt.Error = strings.ToValidUTF8(op.receipt.Error[:1024], "�") + " [truncated]"
 			}
 			if observer != nil {
-				observer.Finished(op.receipt)
+				func() {
+					defer func() {
+						if p := recover(); p != nil {
+							// The effect has already run. A broken completion
+							// observer must not crash the whole MCP server or
+							// overwrite the stored, replayable receipt.
+							slog.Error("mutation completion observer panicked; outcome remains recorded in ledger",
+								"operation_id", id, "panic", p)
+						}
+					}()
+					observer.Finished(op.receipt)
+				}()
 			}
 		}()
 	}

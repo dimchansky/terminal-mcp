@@ -237,7 +237,10 @@ func waitForIdleFence(client *updateClient, serverID string) error {
 func waitForExit(pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) ||
+			(err == nil && processZombie(pid)) {
+			// On Linux an unreaped zombie still responds to kill(pid, 0),
+			// despite having exited and released its sockets/descriptors.
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
