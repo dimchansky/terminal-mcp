@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -66,7 +65,7 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, descripti
 		id := audit.RequestID()
 		start := time.Now()
 		args, inputSessionID := auditArguments(any(input))
-		if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, RequestID: id, Tool: name, Phase: "start", Args: args, SessionID: inputSessionID})); err != nil && !errors.Is(err, audit.ErrQueueFull) {
+		if err := recorder.Write(audit.NewEvent(audit.Event{ServerID: serverID, RequestID: id, Tool: name, Phase: "start", Args: args, SessionID: inputSessionID})); err != nil {
 			log.Printf("audit start failure (tool still executes): %v", err)
 		}
 		out, err := fn(ctx, input)
@@ -126,7 +125,7 @@ func add[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, descripti
 				}
 			}
 		}
-		if err := recorder.Write(audit.NewEvent(finish)); err != nil && !errors.Is(err, audit.ErrQueueFull) {
+		if err := recorder.Write(audit.NewEvent(finish)); err != nil {
 			log.Printf("audit finish failure (tool result unchanged): %v", err)
 		}
 		return nil, out, err

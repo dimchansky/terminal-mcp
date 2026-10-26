@@ -16,7 +16,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 - [Specification](SPEC.md) — Read the behavior and limits of each tool.
 - [Development guide](docs/DEVELOPMENT.md) — Read the complete file-tool and update procedures.
 - [Validation report](TEST_REPORT.md) — See the verified checks and their limits.
-- [Logging and audit redesign](docs/LOGGING_AND_AUDIT_DESIGN.md) — Accepted target contracts and staged plan (**not yet implemented**).
+- [Logging and audit redesign](docs/LOGGING_AND_AUDIT_DESIGN.md) — Accepted target contracts, staged progress, and remaining work.
 
 The server supports macOS, Linux and Windows. It needs Go 1.25 or later.
 On Windows, use the [native setup guide](docs/WINDOWS.md); the Makefile is
@@ -237,7 +237,7 @@ The file tools do not add file content or edit text to the audit. The audit does
 
 **Commands can contain secrets.** The audit records command arguments and terminal input exactly as supplied.
 
-The auditor makes each timestamp before it queues an event. One worker owns the JSONL writer and its file rotation. The queue holds at most 1,024 waiting events and 8 MiB of encoded data, including the event in flight. MCP tool calls do not wait for disk writes. If the queue fills, new audit events can be lost; the worker reports the total in diagnostics. Disk-write failures are counted separately and reported at shutdown. On shutdown, the auditor processes all accepted events, syncs the file, closes it, and releases the lock. A disk error does not stop any MCP tool call.
+The auditor timestamps each event before writing it. Each `Write` serializes a complete JSONL record synchronously under a mutex. Concurrent callers wait for the sink rather than enqueueing or dropping events. A successful `Write` means that the OS reported the whole record written, **not** that it was fsynced or would survive power loss. Write, rotation, and serialization errors are returned immediately and logged by MCP callers. On shutdown, `Close` syncs and closes the file and releases the lock, reporting errors from those steps. **For now, MCP calls still execute when auditing fails**, including if the audit cannot open on startup; fail-closed enforcement is a later stage. A slow disk can delay a tool call or shutdown.
 
 The audit files and persistent `<audit path>.lock` file have mode `0600`; the state directory has private permissions. The server uses an exclusive advisory lock to reject a second concurrent writer of the same journal. The active file is limited to 4 MiB. The server keeps up to three rotated files. On startup, the auditor removes a partial final JSONL line left by an interrupted write.
 

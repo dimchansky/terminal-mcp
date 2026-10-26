@@ -2,11 +2,11 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,38 +120,40 @@ func TestConcurrentCallsRotateWithBoundedBackups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const workers = 6
-	const perWorker = 9000
+	const workers, perWorker = 6, 9000
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < perWorker; j++ {
-				for {
-					err := log.Write(NewEvent(Event{RequestID: RequestID(), Tool: "file_read", Phase: "finish", Status: "ok"}))
-					if err == nil {
-						break
-					}
-					if !errors.Is(err, ErrQueueFull) {
-						t.Errorf("write: %v", err)
-						return
-					}
-					runtime.Gosched()
+			for range perWorker {
+				if err := log.Write(NewEvent(Event{RequestID: RequestID(), Tool: "file_read", Phase: "finish", Status: "ok"})); err != nil {
+					t.Errorf("write: %v", err)
+					return
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	// The stress test intentionally retries when the bounded queue is full.
-	// Rejected attempts still count as lost audit events.
-	if err := log.Close(); err != nil && !strings.Contains(err.Error(), "audit dropped") {
+	if err := log.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".1"); err != nil {
 		t.Fatal("expected rotated log:", err)
 	}
-	for _, file := range []string{path, path + ".1"} {
+
+	// Count all records across the active file and retained archives. The
+	// test volume fits within the existing four 4-MiB files, so any missing
+	// record here is an actual write/concurrency defect, not retention.
+	records := 0
+	for _, file := range []string{path, path + ".1", path + ".2", path + ".3"} {
+		data, err := os.ReadFile(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 		info, err := os.Stat(file)
 		if err != nil {
 			t.Fatal(err)
@@ -159,9 +161,24 @@ func TestConcurrentCallsRotateWithBoundedBackups(t *testing.T) {
 		if info.Size() > maxFileBytes || info.Mode().Perm() != 0600 {
 			t.Fatalf("bad rotation size/permission: %s %+v", file, info)
 		}
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			t.Fatalf("incomplete JSONL tail: %s", file)
+		}
+		for _, line := range bytes.Split(bytes.TrimSuffix(data, []byte{'\n'}), []byte{'\n'}) {
+			if len(line) == 0 {
+				continue
+			}
+			if !json.Valid(line) {
+				t.Fatalf("invalid JSONL record in %s: %.100s", file, line)
+			}
+			records++
+		}
 	}
-	if err := log.Write(NewEvent(Event{Tool: "terminal_list", Phase: "start"})); err == nil {
-		t.Fatal("accepted write after close")
+	if records != workers*perWorker {
+		t.Fatalf("kept %d audit records, want %d", records, workers*perWorker)
+	}
+	if err := log.Write(NewEvent(Event{Tool: "terminal_list", Phase: "start"})); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Write after Close: %v", err)
 	}
 }
 
@@ -199,53 +216,52 @@ func TestEventKeepsTimeFromCaller(t *testing.T) {
 	}
 }
 
-func TestQueueIsNonblockingAndCloseDrains(t *testing.T) {
+func TestCloseWaitsForInFlightSynchronousWrite(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	var processed atomic.Int64
-	log := newLog(&testSink{write: func([]byte) error {
-		if processed.Add(1) == 1 {
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	var writes, closes atomic.Int64
+	log := newLog(&testSink{
+		write: func([]byte) error {
+			writes.Add(1)
 			close(entered)
 			<-release
-		}
-		return nil
-	}})
+			return nil
+		},
+		finish: func() error { closes.Add(1); return nil },
+	})
 	event := NewEvent(Event{Tool: "terminal_list", Phase: "start"})
-	if err := log.Write(event); err != nil {
-		t.Fatal(err)
-	}
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- log.Write(event) }()
 	<-entered
-	for i := 0; i < queueCapacity; i++ {
-		if err := log.Write(event); err != nil {
-			t.Fatalf("queue slot %d: %v", i, err)
-		}
-	}
-	start := time.Now()
-	if err := log.Write(event); !errors.Is(err, ErrQueueFull) {
-		t.Fatalf("expected full queue, got %v", err)
-	}
-	if time.Since(start) > time.Second {
-		t.Fatal("queue overflow blocked the caller")
-	}
-	done := make(chan error, 1)
-	go func() { done <- log.Close() }()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- log.Close() }()
 	select {
-	case err := <-done:
-		t.Fatalf("Close did not wait for queued events: %v", err)
+	case err := <-closeDone:
+		t.Fatalf("Close returned before pending Write completed: %v", err)
 	case <-time.After(40 * time.Millisecond):
 	}
 	close(release)
-	if err := <-done; err == nil || !strings.Contains(err.Error(), "dropped") {
-		t.Fatalf("Close must report dropped event: %v", err)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
 	}
-	if got := processed.Load(); got != int64(queueCapacity+1) {
-		t.Fatalf("processed %d, want %d", got, queueCapacity+1)
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if writes.Load() != 1 || closes.Load() != 1 {
+		t.Fatalf("write/close counts = %d/%d, want 1/1", writes.Load(), closes.Load())
 	}
 	if err := log.Write(event); !errors.Is(err, ErrClosed) {
-		t.Fatalf("write after close: %v", err)
+		t.Fatalf("Write after Close: %v", err)
 	}
-	if err := log.Close(); err == nil {
-		t.Fatal("second Close must report earlier loss")
+	if err := log.Close(); err != nil {
+		t.Fatalf("repeated Close: %v", err)
 	}
 }
 
@@ -285,23 +301,72 @@ func TestRecoverIncompleteLineOnOpen(t *testing.T) {
 	}
 }
 
-func TestWriteFailureDoesNotStopQueueWorker(t *testing.T) {
-	var count atomic.Int64
+func TestInvalidAndOversizedEventsNeverReachSink(t *testing.T) {
+	var writes atomic.Int64
 	writer := newLog(&testSink{write: func([]byte) error {
-		if count.Add(1) == 1 {
-			return errors.New("temporary disk error")
-		}
+		writes.Add(1)
 		return nil
 	}})
-	for i := 0; i < 3; i++ {
-		if err := writer.Write(NewEvent(Event{Tool: "terminal_list", Phase: "start"})); err != nil {
-			t.Fatal(err)
+	if err := writer.Write(Event{Tool: "terminal_list", Phase: "start"}); err == nil {
+		t.Fatal("accepted event without timestamp")
+	}
+	if err := writer.Write(NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: make(chan int)})); err == nil {
+		t.Fatal("accepted event that cannot be serialized")
+	}
+	huge := NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: strings.Repeat("x", int(maxFileBytes))})
+	if err := writer.Write(huge); err == nil {
+		t.Fatal("accepted event exceeding file size limit")
+	}
+	if got := writes.Load(); got != 0 {
+		t.Fatalf("invalid events reached sink: %d", got)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseReturnsSameSinkError(t *testing.T) {
+	var closes atomic.Int64
+	sentinel := errors.New("injected sync error")
+	writer := newLog(&testSink{finish: func() error {
+		closes.Add(1)
+		return sentinel
+	}})
+	if err := writer.Close(); !errors.Is(err, sentinel) {
+		t.Fatalf("Close did not return sink error: %v", err)
+	}
+	if err := writer.Close(); !errors.Is(err, sentinel) {
+		t.Fatalf("repeated Close lost original error: %v", err)
+	}
+	if got := closes.Load(); got != 1 {
+		t.Fatalf("sink Close called %d times, want once", got)
+	}
+}
+
+func TestWriteIsVisibleOnDiskBeforeClose(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
 		}
+	}()
+	event := NewEvent(Event{ServerID: "before-close", Tool: "terminal_start", Phase: "start"})
+	if err := writer.Write(event); err != nil {
+		t.Fatal(err)
 	}
-	if err := writer.Close(); err == nil || !strings.Contains(err.Error(), "temporary disk error") {
-		t.Fatalf("expected diagnostic error from background worker: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := count.Load(); got != 3 {
-		t.Fatalf("worker stopped after write error: %d events processed", got)
+	var got Event
+	if err := json.Unmarshal(bytes.TrimSpace(data), &got); err != nil {
+		t.Fatalf("Write returned before record was complete: %v", err)
+	}
+	if got.Time != event.Time || got.ServerID != event.ServerID || got.Tool != event.Tool {
+		t.Fatalf("audit entry not visible after successful Write: %+v", got)
 	}
 }

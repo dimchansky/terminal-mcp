@@ -27,7 +27,7 @@ To repeat the core race tests three times, run:
 make check-core
 ```
 
-To check MCP responses against JSONL audit events, run `make audit-feedback`. This isolated Go integration test starts a temporary stdio server and file root. It verifies outcomes, error messages, `server_id`, schema rejections, and log records. It waits briefly for asynchronous events and closes the server before its final JSONL check.
+To check MCP responses against JSONL audit events, run `make audit-feedback`. This isolated Go integration test starts a temporary stdio server and file root. It verifies outcomes, error messages, `server_id`, schema rejections, and log records. It inspects the synchronously appended events and closes the server before its final JSONL check.
 
 These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu with Go 1.25. It also runs linting and a dependency vulnerability scan in a separate Ubuntu quality job with Go 1.27.
 
@@ -327,11 +327,11 @@ The audit file is:
 ~/Library/Application Support/LocalTerminalMCP/audit.jsonl
 ```
 
-The active file is at most 4 MiB. The server keeps up to three rotated files. A bounded queue holds up to 1,024 waiting events and 8 MiB, counting its in-flight record. One worker owns a private file sink (append, repair, rotation, sync) while concurrent producers only enqueue encoded events. A private `<audit path>.lock` file enforces one cooperating writer process. Do not unlink the lock file: advisory locks refer to an inode, and removing it while in use could allow two processes to acquire different locks.
+The active file is at most 4 MiB. The server keeps up to three rotated files. Each `audit.Write` serializes a complete JSONL record and appends it under one mutex; there is no worker or queue. Concurrent calls wait for the same sink instead of dropping events under load. A private `<audit path>.lock` file enforces one cooperating writer process. Do not unlink the lock file: advisory locks refer to an inode, and removing it while in use could allow two processes to acquire different locks.
 
-Event timestamps are set before enqueue. Every event has a `server_id`. A `server_start` event identifies a newly started instance. Accepted tool calls have a `request_id` and `start`/`finish` phases. Input rejected by the SDK has one `rejected` event without input contents. Submission does not wait for disk I/O. If the queue is full, the new event is lost; the worker logs a drop count. The MCP call continues even if the auditor fails.
+Event timestamps are set before the synchronous write. Every event has a `server_id`. A `server_start` event identifies a newly started instance. Accepted tool calls currently have a `request_id` and `start`/`finish` phases. Input rejected by the SDK has one `rejected` event without input contents. `Write` waits for disk I/O and immediately reports an error if the sink fails; the MCP adapter logs the error. **Until fail-closed enforcement is implemented, the MCP call still continues if audit writing fails.**
 
-When the service closes, `audit.Close()` waits for all accepted events to be processed. It syncs and closes the file and releases the process lock. A slow disk can delay shutdown. The returned error includes the first write failure plus a count of failed records and a separate count of queue rejections; a successful retry does not erase evidence of earlier loss. An incomplete JSONL tail is removed when the log opens. If audit initialization fails, including because another writer holds the lock, the server continues without auditing and reports the failure. Restart the service after fixing the cause.
+When the service closes, `audit.Close()` waits for an active synchronous `Write`, syncs and closes the file, then releases the process lock. A slow disk can delay individual calls or shutdown. `Close()` returns errors from sync/close; errors from earlier `Write` calls have already been returned to their callers. An incomplete JSONL tail is removed when the log opens. If audit initialization fails, including because another writer holds the lock, the server **currently** continues without auditing and reports the failure. Restart after fixing the cause. The future fail-closed stage will change this behavior.
 
 The audit records exact `terminal_start` arguments and `terminal_write` input. It also records `session_id` for actions on an existing session.
 

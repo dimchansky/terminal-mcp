@@ -1,9 +1,10 @@
 # Logging and audit redesign — target contract
 
-> **Status: accepted target design; NOT implemented.**
-> Stage 0 documents the agreement before implementation. The current behavior is
-> described in [SPEC.md](../SPEC.md) and [README.md](../README.md); neither
-> should be mistaken for the behavior promised here until subsequent stages land.
+> **Status: staged implementation; stage 1 completed in source, stages 2–7 pending.**
+> This document is the agreed **target** contract, not a claim that every
+> requirement below is implemented. [SPEC.md](../SPEC.md) and
+> [README.md](../README.md) describe the current checked-out implementation.
+> A new source commit is not a live-server update.
 >
 > Baseline: `main` at `bee1cfa184437e795c7b8e242a202766d97cb827` (2026-10-26).
 > No production-server restart or update is part of stage 0.
@@ -273,7 +274,7 @@ documentation only as each corresponding implementation becomes true.
 | Stage | Change | Minimum acceptance evidence |
 | --- | --- | --- |
 | **0** | Record target contracts and baseline | Clean initial worktree, documented semantic boundaries, baseline `make check`, docs-only commit |
-| **1** | Replace audit queue/worker with synchronous `Write` | No `ErrQueueFull` or background worker; concurrent calls and failures tested with `-race`; no silent drop |
+| **1 — source complete** | Replace audit queue/worker with synchronous `Write` | No `ErrQueueFull` or background worker; concurrent calls and failures tested with `-race`; no queue drops |
 | **2** | Separate MCP request and independent operation lifecycles | Cancellation, replay, conflict, actual completion, panic, shutdown and update fence tests |
 | **3** | Audit all supplied tool arguments, including rejected calls | Full `file_write`/`file_edit` input and unknown rejected fields retained; no implicit truncation; oversized call denied before effect |
 | **4** | Enforce audit-before-action and predictable degradation | Failed start/appends refuse new effects; preserved actual receipts; no unsafe retry; status/stop still usable |
@@ -285,3 +286,46 @@ For all stages: keep changes minimal and idiomatic Go; prefer existing tested
 components over new libraries when they do not remove real complexity. Do not
 update the installed/live MCP server as a side effect of a test, build, or
 commit.
+
+## 8. Stage 1 implementation and verification (2026-10-26)
+
+**Source implementation complete; not deployed to the running MCP instance.**
+
+- `internal/audit/audit.go`: removed queue, asynchronous worker, in-flight
+  accounting, overflow error, and deferred disk error reporting. `Write` now
+  appends under one mutex and returns any append/rotation error immediately.
+  Concurrent `Write` and `Close` serialize; repeated `Close` reports the
+  same sink-close error, with no double close.
+- Retained the original `fileSink`, JSONL encoding, private permissions,
+  interprocess lock, size rotation, partial-tail repair, and existing event
+  schema. No new dependency was added.
+- MCP call sites now log every `Write` error, without special treatment for
+  the removed `ErrQueueFull`.
+- Replaced obsolete queue tests with backpressure, sink serialization,
+  concurrent `Write`/`Close`, direct error propagation, no-truncation,
+  and on-disk visibility-before-`Close` tests. The existing rotating
+  concurrent stress test now counts every valid JSONL record across all
+  retained files (the test fits within the retention window).
+- Updated [README.md](../README.md), [SPEC.md](../SPEC.md), and
+  [DEVELOPMENT.md](DEVELOPMENT.md) to document **current** behavior.
+
+**Verification, local macOS:**
+
+- `make check`: **PASS**, including full race-enabled tests,
+  `go vet`, module verification, and Go build.
+- `make audit-feedback`: **PASS**, exercising real MCP audit events.
+- `go test -race -shuffle=on -count=6 -timeout=180s ./internal/audit`:
+  **PASS**.
+- `go test -race -count=20 -run '^(TestWriteIsVisibleOnDiskBeforeClose|TestCloseWaitsForInFlightSynchronousWrite|TestConcurrentWritesWaitForSlowSink)$' ./internal/audit`:
+  **PASS**.
+- `make lint`: **PASS**, zero issues.
+- Windows amd64 application cross-compile with `CGO_ENABLED=0`:
+  **PASS** (compilation only, no Windows runtime test).
+- `git diff --check`: **PASS**.
+
+**Intentionally unchanged until later stages:** the old request
+`start`/`finish` semantics, omission of full file-write/edit input and
+schema-rejected arguments, fail-open behavior on audit failure, pre-existing
+audit and diagnostic paths, and three-archive rotation that evicts older
+history. A successful `Write` still is not `fsync` or crash/power-loss
+durability.

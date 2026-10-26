@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 )
 
-// eventSink is owned exclusively by the audit worker. It does not require a
-// mutex and must never be called concurrently with itself.
+// eventSink is used only while Log.mu is held. No additional sink mutex
+// is required, including across append, rotation, and close.
 type eventSink interface {
 	appendLine([]byte) error
 	close() error

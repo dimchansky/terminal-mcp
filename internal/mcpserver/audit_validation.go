@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"errors"
 	"log"
 	"strings"
 
@@ -44,7 +43,7 @@ func auditValidationRejections(recorder *audit.Log, serverID string) mcp.Middlew
 					Reason:    "schema_validation",
 					Error:     "invalid tool arguments",
 				})
-				if writeErr := recorder.Write(event); writeErr != nil && !errors.Is(writeErr, audit.ErrQueueFull) {
+				if writeErr := recorder.Write(event); writeErr != nil {
 					log.Printf("audit validation failure (tool result unchanged): %v", writeErr)
 				}
 				break

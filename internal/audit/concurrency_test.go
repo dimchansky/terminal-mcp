@@ -2,13 +2,15 @@ package audit
 
 import (
 	"errors"
-	"strings"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func TestQueueByteBudgetIncludesInFlightRecord(t *testing.T) {
+// A slow disk must apply backpressure rather than dropping concurrent events.
+func TestConcurrentWritesWaitForSlowSink(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer func() {
@@ -26,39 +28,81 @@ func TestQueueByteBudgetIncludesInFlightRecord(t *testing.T) {
 		}
 		return nil
 	}})
-	e := NewEvent(Event{Tool: "terminal_start", Phase: "start", Args: strings.Repeat("a", 1<<20)})
-	if err := l.Write(e); err != nil {
-		t.Fatal(err)
-	}
+	event := NewEvent(Event{Tool: "terminal_start", Phase: "start"})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- l.Write(event) }()
 	<-entered
-	// Seven 1 MiB records plus the worker's record fit within 8 MiB;
-	// the next attempt must be rejected without waiting for disk I/O.
-	accepted := int64(1)
-	for {
-		err := l.Write(e)
-		if errors.Is(err, ErrQueueFull) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("unexpected write error: %v", err)
-		}
-		accepted++
-		if accepted > 8 {
-			t.Fatalf("byte budget excluded in-flight record; admitted %d MiB records", accepted)
-		}
+
+	const waiters = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, waiters)
+	for range waiters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- l.Write(event)
+		}()
 	}
-	l.mu.Lock()
-	pending := l.pendingBytes
-	l.mu.Unlock()
-	if pending > queueByteLimit {
-		t.Fatalf("queue exceeds byte budget: %d > %d", pending, queueByteLimit)
+	// With the sink blocked, no competing Write may return success (or a
+	// queue-overflow error). All calls must wait their turn at the sink.
+	select {
+	case err := <-errs:
+		t.Fatalf("concurrent Write returned before sink was released: %v", err)
+	case <-time.After(30 * time.Millisecond):
 	}
 	close(release)
-	if err := l.Close(); err == nil || !strings.Contains(err.Error(), "dropped 1") {
-		t.Fatalf("did not count byte-budget rejection: %v", err)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
 	}
-	if got := written.Load(); got != accepted {
-		t.Fatalf("accepted %d events but worker wrote %d", accepted, got)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Write failed: %v", err)
+		}
+	}
+	if got := written.Load(); got != waiters+1 {
+		t.Fatalf("sink handled %d events; want %d", got, waiters+1)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConcurrentWritesSerializeSink(t *testing.T) {
+	var active, overlaps, written atomic.Int64
+	l := newLog(&testSink{write: func([]byte) error {
+		if active.Add(1) != 1 {
+			overlaps.Add(1)
+		}
+		runtime.Gosched()
+		written.Add(1)
+		active.Add(-1)
+		return nil
+	}})
+	const writers, perWriter = 16, 200
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range perWriter {
+				if err := l.Write(NewEvent(Event{Tool: "file_read", Phase: "finish"})); err != nil {
+					t.Errorf("write: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := overlaps.Load(); got != 0 {
+		t.Fatalf("sink called concurrently %d times", got)
+	}
+	if got := written.Load(); got != writers*perWriter {
+		t.Fatalf("sink handled %d, want %d", got, writers*perWriter)
 	}
 }
 
@@ -75,19 +119,19 @@ func TestConcurrentWriteCloseAndRepeatClose(t *testing.T) {
 	var accepted atomic.Int64
 	var writers sync.WaitGroup
 	errorsSeen := make(chan error, producers)
-	for i := 0; i < producers; i++ {
+	for range producers {
 		writers.Add(1)
 		go func() {
 			defer writers.Done()
 			<-start
-			for j := 0; j < writesPerProducer; j++ {
+			for range writesPerProducer {
 				err := l.Write(NewEvent(Event{Tool: "file_search", Phase: "start"}))
 				switch {
 				case err == nil:
 					accepted.Add(1)
 					firstOnce.Do(func() { close(firstAccepted) })
-				case errors.Is(err, ErrQueueFull), errors.Is(err, ErrClosed):
-					// Expected when producers race with a bounded queue and Close.
+				case errors.Is(err, ErrClosed):
+					// Close races with these writes. No queue-overflow error exists.
 				default:
 					errorsSeen <- err
 					return
@@ -96,11 +140,10 @@ func TestConcurrentWriteCloseAndRepeatClose(t *testing.T) {
 		}()
 	}
 	close(start)
-	// Close races with writers after at least one accepted event.
 	<-firstAccepted
 	var wg sync.WaitGroup
 	results := make(chan error, closers)
-	for i := 0; i < closers; i++ {
+	for range closers {
 		wg.Add(1)
 		go func() { defer wg.Done(); results <- l.Close() }()
 	}
@@ -126,39 +169,38 @@ func TestConcurrentWriteCloseAndRepeatClose(t *testing.T) {
 		}
 	}
 	if got := written.Load(); got != accepted.Load() {
-		t.Fatalf("accepted %d events but worker wrote %d", accepted.Load(), got)
+		t.Fatalf("accepted %d events but sink wrote %d", accepted.Load(), got)
 	}
 	if got := closed.Load(); got != 1 {
-		t.Fatalf("worker closed sink %d times, want once", got)
+		t.Fatalf("sink closed %d times, want once", got)
 	}
 	if err := l.Write(NewEvent(Event{Tool: "terminal_list", Phase: "start"})); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Write after Close: %v", err)
 	}
 }
 
-func TestWorkerReportsEveryDiskWriteFailure(t *testing.T) {
+func TestWriteReportsEveryDiskFailureImmediately(t *testing.T) {
 	var calls atomic.Int64
-	s := &testSink{write: func([]byte) error {
+	sentinel := errors.New("injected disk error")
+	l := newLog(&testSink{write: func([]byte) error {
 		if calls.Add(1) <= 2 {
-			return errors.New("injected disk error")
+			return sentinel
 		}
 		return nil
-	}}
-	l := newLog(s)
-	for i := 0; i < 4; i++ {
-		if err := l.Write(NewEvent(Event{Tool: "file_read", Phase: "finish"})); err != nil {
-			t.Fatal(err)
+	}})
+	for i := range 4 {
+		err := l.Write(NewEvent(Event{Tool: "file_read", Phase: "finish"}))
+		if i < 2 && !errors.Is(err, sentinel) {
+			t.Fatalf("Write %d did not report sink error immediately: %v", i, err)
+		}
+		if i >= 2 && err != nil {
+			t.Fatalf("Write %d failed after sink recovered: %v", i, err)
 		}
 	}
-	err := l.Close()
-	if err == nil || !strings.Contains(err.Error(), "injected disk error") ||
-		!strings.Contains(err.Error(), "lost 2 events") {
-		t.Fatalf("disk failure count missing from Close: %v", err)
-	}
 	if got := calls.Load(); got != 4 {
-		t.Fatalf("worker stopped after disk failure: %d of 4", got)
+		t.Fatalf("sink handled %d of 4 events", got)
 	}
-	if again := l.Close(); again == nil || again.Error() != err.Error() {
-		t.Fatalf("repeat Close changed reported losses: %v vs %v", again, err)
+	if err := l.Close(); err != nil {
+		t.Fatalf("close should report only its own failure, got %v", err)
 	}
 }

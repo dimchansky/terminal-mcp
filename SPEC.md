@@ -451,15 +451,15 @@ The audit records file paths, ranges, search terms, versions, edit counts, and c
 
 The audit does not copy stdout or stderr. Tool calls rejected by SDK input validation generate a single `rejected` event with `reason: schema_validation` and no input content. These rejections do not have tool-handler `start`/`finish` events. The audit does not record every rejected HTTP request.
 
-The caller sets the event timestamp before enqueue. Each tool sends a complete event to the auditor. The caller encodes the event and submits it to a bounded, nonblocking queue. One goroutine exclusively owns the file sink, including JSONL appends, repair, rotation, and disk sync. The queue has at most 1,024 waiting events and an 8 MiB byte budget, counting the event currently being written.
+The caller timestamps each event before writing it. `Write` encodes the entire event to JSONL and serializes its disk append and any rotation under one mutex, synchronously with the call. No background worker, queue, or queue-overflow drop policy remains. Concurrent callers wait for the sink. A successful `Write` confirms a complete OS-reported append, not an `fsync` or physical durability. A serialization, size-limit, append, or rotation failure is returned by `Write` immediately. The MCP adapter logs failures directly through its diagnostic logger.
 
-If the queue is full, the auditor drops the incoming event. It records the drop count in diagnostics. Disk-write failures are counted separately, including failed records before writes resume. `Close()` reports both totals and the first disk-write error. Audit errors never prevent tool execution. If audit initialization fails, the server starts without auditing and reports the error. The service must restart after the cause is fixed to enable audit logging again.
+**Current temporary fail-open behavior:** MCP tool execution is unaffected by audit errors. If audit initialization fails, the server starts without auditing and reports the error; restarting after repair is required to enable it. Blocking new actions when the audit fails is a separate planned stage. Audit file rotation still evicts the oldest archive beyond three backups; complete lifetime history is not yet guaranteed.
 
-`Close()` stops new submissions, processes all accepted events, syncs the active file, and closes it. It then releases the exclusive file lock. A persistent disk stall can delay shutdown because `Close()` waits for the worker.
+`Close()` rejects new writes, waits for any currently active write by acquiring the same mutex, then syncs and closes the active file and releases the exclusive lock. It returns close/sync errors (not previously returned `Write` errors), consistently on repeated calls. A persistent disk stall can delay `Write` or `Close`.
 
 The audit keeps one active file and at most three rotated files. Each file has a 4 MiB size limit and private permissions. Before accessing the log, the server acquires a nonblocking advisory lock on the private `<audit path>.lock` file. Concurrent audit writers using this implementation cannot open the same journal. The lock file is intentionally kept across restarts to avoid inode-replacement lock races; it is not part of rotation. A partial write is truncated to the previous complete record when possible. The next startup also removes an incomplete final JSONL line.
 
-The audit is not tamper-proof. A crash can lose queued or recently written events. There is no `fsync` for each event.
+The audit is not tamper-proof. A crash or power loss can lose recently written but unsynced events. There is no `fsync` for each event.
 
 In stdio mode, auditing is off by default. A direct `--audit-file` argument can set a path or disable auditing with `off`.
 
