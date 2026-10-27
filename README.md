@@ -90,7 +90,9 @@ identical file/path but **different `wait_ms`** observes the same transfer;
 no second download is started. Results remain in memory until the server
 instance exits; a new `server_id` cannot retrieve them.
 
-The download streams directly to a private mode-0600 temporary file; it has
+On Unix, the download streams into a private mode-0600 temporary file. On
+Windows, the file inherits the destination directory's ACL; select a directory
+with appropriate permissions for sensitive content. The transfer has
 **no arbitrary total-size or overall transfer-duration limit**. It publishes
 atomically only if the destination does not already exist. The parent directory
 must exist. A successful receipt reports exact byte count and SHA-256.

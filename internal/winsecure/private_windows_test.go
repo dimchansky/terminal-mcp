@@ -53,3 +53,36 @@ func TestWindowsRejectsBroadDACL(t *testing.T) {
 		t.Fatal("world-readable token was accepted")
 	}
 }
+
+// Windows elevated accounts can create private files owned by
+// BUILTIN\Administrators. Neither a broad user group nor an unrelated
+// account can satisfy the owner check.
+func TestTrustedPrivateOwner(t *testing.T) {
+	user, err := currentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	admins, err := windows.StringToSid("S-1-5-32-544")
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := windows.StringToSid("S-1-5-32-545")
+	if err != nil {
+		t.Fatal(err)
+	}
+	everyone, err := windows.StringToSid("S-1-1-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trustedOwner(user, user) {
+		t.Fatal("own user SID rejected")
+	}
+	if !trustedOwner(admins, user) {
+		t.Fatal("Administrators ownership rejected")
+	}
+	for _, sid := range []*windows.SID{nil, users, everyone} {
+		if trustedOwner(sid, user) {
+			t.Fatalf("untrusted owner accepted: %v", sid)
+		}
+	}
+}

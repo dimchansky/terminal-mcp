@@ -34,7 +34,10 @@ The first background start creates a random private bearer token and its
 directory at `%APPDATA%\terminal-mcp\token`. Files are protected with
 Windows access-control lists (ACLs), not POSIX `chmod 0600`. The program
 checks token, audit file and state directory ownership and ACLs and refuses
-unsafe paths. Preserve the token to keep the existing client configuration.
+unsafe paths. On Windows a private file's owner may be the current account or
+the built-in Administrators group (the default owner in some elevated tokens);
+its DACL still permits only the current account, SYSTEM and Administrators.
+Preserve the token to keep the existing client configuration.
 
 The `start` command defaults the `file_root` to the user's home directory.
 To select another existing root:
@@ -44,7 +47,8 @@ To select another existing root:
 ```
 
 Do not point the root at a publicly writable directory or grant the tunnel
-to untrusted users. The file root limits the `file_*` tools, **not** the
+to untrusted users. On Windows, received files inherit the destination
+directory ACL; choose a private destination for sensitive downloads. The file root limits the `file_*` tools, **not** the
 commands launched through terminal tools.
 
 The detached server retains the absolute working directory selected on

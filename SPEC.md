@@ -426,8 +426,10 @@ no fixed overall transfer timeout or hardcoded maximum total size. Network,
 disk and server lifetime limits still apply.
 
 The destination must be a new regular file path inside `file_root` whose
-parent already exists. Downloaded bytes stream into a private mode-0600
-temporary file. After all bytes arrive, the file is synchronized and
+parent already exists. On Unix, downloaded bytes stream into a private
+mode-0600 temporary file. On Windows, temporary and final files inherit the
+destination directory ACL; the caller must choose a suitably restricted
+directory when confidentiality is required. After all bytes arrive, the file is synchronized and
 atomically linked into place, never overwriting existing content. Temporary
 files are removed on handled failure. A successful receipt reports byte count
 and SHA-256. This command does not upload local files to an MCP client.

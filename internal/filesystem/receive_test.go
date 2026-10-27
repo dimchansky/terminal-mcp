@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,8 +93,16 @@ func TestReceiveBinaryAndReplay(t *testing.T) {
 		t.Fatalf("binary contents changed: bytes=%d err=%v", len(got), err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("received file should be private: %v %v", info, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("received file is not regular: %v", info)
+	}
+	// Windows FileMode does not expose the NTFS DACL: a new output file
+	// inherits the destination directory ACL, not Unix 0600 permissions.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+		t.Fatalf("received Unix file should be private: %v", info)
 	}
 
 	for range 3 {

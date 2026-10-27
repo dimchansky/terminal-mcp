@@ -78,6 +78,21 @@ func EnsurePrivateDir(path string) error {
 	return CheckPrivate(path)
 }
 
+// trustedOwner permits the current account and the Administrators group.
+// Elevated Windows tokens commonly use BUILTIN\\Administrators as the default
+// owner even when the caller is the same account; the private DACL still
+// restricts access to this user, SYSTEM and Administrators.
+func trustedOwner(owner, user *windows.SID) bool {
+	if owner == nil || user == nil {
+		return false
+	}
+	if owner.Equals(user) {
+		return true
+	}
+	admins, err := windows.StringToSid("S-1-5-32-544")
+	return err == nil && owner.Equals(admins)
+}
+
 func CheckPrivate(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -113,8 +128,8 @@ func CheckPrivate(path string) error {
 	if err != nil {
 		return err
 	}
-	if owner == nil || !owner.Equals(user) {
-		return fmt.Errorf("private path must be owned by the service user: %s", path)
+	if !trustedOwner(owner, user) {
+		return fmt.Errorf("private path must be owned by the service user or Administrators: %s", path)
 	}
 	acl, _, err := sd.DACL()
 	if err != nil || acl == nil {
@@ -174,8 +189,8 @@ func SingleLinkOwned(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	if owner == nil || !owner.Equals(user) {
-		return errors.New("replacement requires a file owned by the service user")
+	if !trustedOwner(owner, user) {
+		return errors.New("replacement requires a file owned by the service user or Administrators")
 	}
 	return nil
 }
