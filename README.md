@@ -19,7 +19,7 @@ Local Terminal MCP is a Go service. It lets an MCP client start, read, and contr
 - [Logging and audit redesign](docs/LOGGING_AND_AUDIT_DESIGN.md) — Original target contracts and staged implementation record.
 - [Audit/logging release readiness](docs/RELEASE_READINESS.md) — Independent risk review, test matrix, remaining platform gates, and controlled deployment checklist.
 
-The server supports macOS, Linux and Windows. It needs Go 1.25 or later.
+The server supports macOS, Linux and Windows. It needs Go 1.27.3 or later.
 On Windows, use the [native setup guide](docs/WINDOWS.md); the Makefile is
 intended for Unix platforms.
 

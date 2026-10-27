@@ -1,7 +1,7 @@
 # Running Local Terminal MCP on Windows
 
 Windows support is tested on the native `windows-latest` GitHub Actions runner
-with Go 1.25. The application is **not** a Windows Service: run it as the
+with Go 1.27.3. The application is **not** a Windows Service: run it as the
 ordinary account that should own the terminal commands and files. Do not run
 it as `LocalSystem` or elevate it unless you intentionally want the MCP
 client to receive those privileges. Local Terminal MCP executes arbitrary

@@ -1,6 +1,6 @@
 module terminalmcp
 
-go 1.25.0
+go 1.27.3
 
 require (
 	github.com/charmbracelet/x/conpty v0.2.0

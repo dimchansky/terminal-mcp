@@ -29,7 +29,7 @@ make check-core
 
 To check MCP responses against JSONL audit events, run `make audit-feedback`. This isolated Go integration test starts a temporary stdio server and file root. It verifies outcomes, error messages, `server_id`, schema rejections, and log records. It inspects the synchronously appended events and closes the server before its final JSONL check.
 
-These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu with Go 1.25. It also runs linting and a dependency vulnerability scan in a separate Ubuntu quality job with Go 1.27.
+These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu with Go 1.27.3. It also runs linting and a dependency vulnerability scan in a separate Ubuntu quality job with Go 1.27.3.
 
 Run `make lint` for the focused checks in `.golangci.yml` (`errcheck`, `bodyclose`, `govet`, `ineffassign`, `staticcheck`, and `unused`). Install `golangci-lint` v2.15.0 to use this target. Run `make vulncheck` to scan reachable vulnerabilities with a pinned `govulncheck` v1.9.0 via `go run`.
 
