@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -216,19 +217,34 @@ func TestWindowsBackgroundStartStatusStopAndAudit(t *testing.T) {
 	output, err = run("status")
 	installed := filepath.Join(appdata, "terminal-mcp", "standalone", "terminal-mcp.exe")
 	currentHash, hashErr := fileSHA256(installed)
-	if err != nil || hashErr != nil || !strings.Contains(output, `"status":"running"`) ||
-		!strings.Contains(output, currentHash) || !strings.Contains(output, installed) {
-		t.Fatalf("Windows background status does not identify installed executable: %v %v: %s", err, hashErr, output)
+	var running struct {
+		Status     string `json:"status"`
+		Executable string `json:"executable"`
+		Hash       string `json:"executable_sha256"`
+	}
+	decodeErr := json.Unmarshal([]byte(output), &running)
+	installedInfo, installedErr := os.Stat(installed)
+	reportedInfo, reportedErr := os.Stat(running.Executable)
+	if err != nil || hashErr != nil || decodeErr != nil ||
+		installedErr != nil || reportedErr != nil ||
+		running.Status != "running" || running.Hash != currentHash ||
+		!os.SameFile(installedInfo, reportedInfo) {
+		t.Fatalf("Windows background status does not identify installed executable: cli=%v hash=%v decode=%v installed=%v reported=%v: %s",
+			err, hashErr, decodeErr, installedErr, reportedErr, output)
 	}
 	if output, err := run("start"); err == nil || !strings.Contains(output, "server already listening") {
 		t.Fatalf("duplicate Windows start was allowed: %v %s", err, output)
 	}
 	state := filepath.Join(appdata, "terminal-mcp", "standalone")
 	var saved winStandaloneConfig
-	if err := readJSON(filepath.Join(state, "config.json"), &saved); err != nil ||
-		saved.EnvOverrides[explicitEnvKey] != "from-explicit-config" ||
-		saved.WorkingDirectory != stableCWD {
-		t.Fatalf("Windows standalone did not persist explicit cwd/env: %+v %v", saved, err)
+	readErr := readJSON(filepath.Join(state, "config.json"), &saved)
+	savedCWDInfo, savedCWDErr := os.Stat(saved.WorkingDirectory)
+	expectedCWDInfo, expectedCWDErr := os.Stat(stableCWD)
+	if readErr != nil || saved.EnvOverrides[explicitEnvKey] != "from-explicit-config" ||
+		savedCWDErr != nil || expectedCWDErr != nil ||
+		!os.SameFile(savedCWDInfo, expectedCWDInfo) {
+		t.Fatalf("Windows standalone did not persist explicit cwd/env: %+v read=%v cwd=%v expected=%v",
+			saved, readErr, savedCWDErr, expectedCWDErr)
 	}
 	configBytes, err := os.ReadFile(filepath.Join(state, "config.json"))
 	if err != nil || strings.Contains(string(configBytes), `"path":`) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,10 +16,7 @@ import (
 )
 
 func TestFullCommandArgumentExceedsOldMetadataLimit(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	log, err := Open(path)
 	if err != nil {
@@ -38,10 +36,7 @@ func TestFullCommandArgumentExceedsOldMetadataLimit(t *testing.T) {
 }
 
 func TestEventsPrivateAndMetadataOnly(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	log, err := Open(path)
 	if err != nil {
@@ -58,8 +53,11 @@ func TestEventsPrivateAndMetadataOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("unsafe log permissions: %v %v", info, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAuditPrivateFile(path, info); err != nil {
+		t.Fatalf("unsafe log permissions: %v", err)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -84,16 +82,21 @@ func TestEventsPrivateAndMetadataOnly(t *testing.T) {
 }
 
 func TestRefusesPublicDirectoryAndSymlink(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0755); err != nil {
-		t.Fatal(err)
+	dir := privateAuditDir(t)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if writer, err := Open(filepath.Join(dir, "audit.jsonl")); err == nil {
+			_ = writer.Close()
+			t.Fatal("accepted public audit directory")
+		}
+		if err := os.Chmod(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := Open(filepath.Join(dir, "audit.jsonl")); err == nil {
-		t.Fatal("accepted public audit directory")
-	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	// A separate Windows test modifies the actual DACL rather than
+	// treating os.Chmod as a Windows access-control mechanism.
 	secret := filepath.Join(dir, "victim")
 	if err := os.WriteFile(secret, []byte("preserve"), 0600); err != nil {
 		t.Fatal(err)
@@ -111,10 +114,7 @@ func TestRefusesPublicDirectoryAndSymlink(t *testing.T) {
 }
 
 func TestConcurrentCallsRotateWithoutDiscardingEvents(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	log, err := Open(path)
 	if err != nil {
@@ -157,8 +157,11 @@ func TestConcurrentCallsRotateWithoutDiscardingEvents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Size() > maxFileBytes || info.Mode().Perm() != 0600 {
-			t.Fatalf("bad rotation size/permission: %s %+v", file, info)
+		if info.Size() > maxFileBytes {
+			t.Fatalf("bad rotation size: %s %+v", file, info)
+		}
+		if err := checkAuditPrivateFile(file, info); err != nil {
+			t.Fatalf("bad rotation permissions for %s: %v", file, err)
 		}
 		if len(data) > 0 && data[len(data)-1] != '\n' {
 			t.Fatalf("incomplete JSONL tail: %s", file)
@@ -187,10 +190,7 @@ func TestEventKeepsTimeFromCaller(t *testing.T) {
 	if stamp == "" {
 		t.Fatal("constructor omitted time")
 	}
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	log, err := Open(path)
 	if err != nil {
@@ -265,10 +265,7 @@ func TestCloseWaitsForInFlightSynchronousWrite(t *testing.T) {
 }
 
 func TestRecoverIncompleteLineOnOpen(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateAuditDir(t)
 	path := filepath.Join(dir, "audit.jsonl")
 	valid := "{\"time\":\"valid\",\"tool\":\"file_read\"}\n"
 	if err := os.WriteFile(path, []byte(valid+"{\"incomplete\":"), 0600); err != nil {

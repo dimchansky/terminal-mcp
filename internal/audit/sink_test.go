@@ -1,15 +1,16 @@
 package audit
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 )
 
-// privateAuditDir makes test permissions independent of CI runner umask.
+// privateAuditDir provisions the platform's actual privacy contract:
+// 0700 on Unix, an explicit private DACL on Windows.
 func privateAuditDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
+	dir := filepath.Join(t.TempDir(), "audit")
+	if err := PrepareDirectory(dir); err != nil {
 		t.Fatal(err)
 	}
 	return dir

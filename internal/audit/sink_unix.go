@@ -9,6 +9,16 @@ import (
 	"os"
 )
 
+// Unix O_APPEND guarantees each write is appended regardless of file offset.
+func openAuditJournal(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
+}
+
+func appendAuditJournal(f auditFile, line []byte, _ int64) (int, bool, error) {
+	n, err := f.Write(line)
+	return n, true, err
+}
+
 func lockAuditFile(path string) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 	if err != nil {

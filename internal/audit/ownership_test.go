@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -114,11 +115,14 @@ func TestLockFileMustBePrivateAndNotSymlink(t *testing.T) {
 	if err := os.WriteFile(path+".lock", nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path+".lock", 0644); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path+".lock", 0644); err != nil {
+			t.Fatal(err)
+		}
+		if logger, err := Open(path); err == nil {
+			_ = logger.Close()
+			t.Fatal("opened publicly writable/readable lock file")
+		}
 	}
-	if logger, err := Open(path); err == nil {
-		_ = logger.Close()
-		t.Fatal("opened publicly writable/readable lock file")
-	}
+	// Windows has a separate test granting Everyone through the NTFS DACL.
 }

@@ -24,6 +24,7 @@ type eventSink interface {
 // truncation without replacing the whole file sink.
 type auditFile interface {
 	Write([]byte) (int, error)
+	Seek(int64, int) (int64, error)
 	Truncate(int64) error
 	Sync() error
 	Close() error
@@ -88,6 +89,10 @@ func PrepareDirectory(path string) error { return prepareAuditDir(path) }
 // another process is active would allow two processes to lock different inodes.
 var ErrInUse = errors.New("audit log is already in use")
 
+// ErrJournalChanged detects writes to the active journal that bypass its
+// cooperating writer lock. Append is refused rather than altering unknown data.
+var ErrJournalChanged = errors.New("audit journal changed outside the writer")
+
 // scanArchives inventories the existing audit history exactly once per sink.
 // All numbered archives count, including files copied during legacy migration.
 // Archive numbering is append-only; older files are never renamed or removed.
@@ -141,7 +146,7 @@ func (s *fileSink) open() error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	f, err := os.OpenFile(s.path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
+	f, err := openAuditJournal(s.path)
 	if err != nil {
 		return err
 	}
@@ -253,7 +258,12 @@ func (s *fileSink) appendLine(line []byte) error {
 		}
 	}
 	before := s.size
-	n, writeErr := s.f.Write(line)
+	n, started, writeErr := appendAuditJournal(s.f, line, s.size)
+	if !started {
+		// A failed seek or out-of-band size change wrote no bytes of ours.
+		// In particular, do not truncate another writer's data.
+		return writeErr
+	}
 	if writeErr == nil && n == len(line) {
 		s.size += int64(n)
 		s.total += int64(n)

@@ -221,7 +221,7 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 		// may retry the sink, but cannot run until its own start is written.
 		// An explicit history cap cannot change within this process, unlike
 		// a temporary filesystem error. Keep that denial until reconfiguration.
-		first := l.markDegraded(writeErr, errors.Is(err, ErrHistoryLimit))
+		first := l.markDegraded(writeErr, errors.Is(err, ErrHistoryLimit) || errors.Is(err, ErrJournalChanged))
 		l.mu.Unlock()
 		if first {
 			reportDegraded(writeErr) // Slow stderr must not hold Log.mu.

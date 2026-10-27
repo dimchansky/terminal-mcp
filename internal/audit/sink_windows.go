@@ -5,11 +5,32 @@ package audit
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/sys/windows"
 	"terminalmcp/internal/winsecure"
 )
+
+// Windows O_APPEND removes FILE_WRITE_DATA from the descriptor, making
+// Truncate fail with ERROR_ACCESS_DENIED. The exclusive audit-writer lock and
+// Log.mu serialize writes, so a seek to EOF on an O_RDWR handle preserves
+// append semantics without sacrificing partial-record repair.
+func openAuditJournal(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+}
+
+func appendAuditJournal(f auditFile, line []byte, expectedSize int64) (int, bool, error) {
+	end, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, false, fmt.Errorf("seek audit append: %w", err)
+	}
+	if end != expectedSize {
+		return 0, false, fmt.Errorf("%w: expected %d bytes, got %d", ErrJournalChanged, expectedSize, end)
+	}
+	n, err := f.Write(line)
+	return n, true, err
+}
 
 func checkAuditPrivateDir(path string) error { return winsecure.CheckPrivate(path) }
 

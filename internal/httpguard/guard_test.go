@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -109,12 +110,15 @@ func TestTokenValidationAndPermissions(t *testing.T) {
 	if got, err := LoadToken(file); err != nil || got != value {
 		t.Fatalf("token file: %q %v", got, err)
 	}
-	if err := os.Chmod(file, 0644); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(file, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadToken(file); err == nil {
+			t.Fatal("insecure token file accepted")
+		}
 	}
-	if _, err := LoadToken(file); err == nil {
-		t.Fatal("insecure token file accepted")
-	}
+	// A Windows-specific regression modifies the file DACL instead.
 	t.Setenv("TERMINAL_MCP_TOKEN", value)
 	if got, err := LoadToken(""); err != nil || got != value {
 		t.Fatal("environment token failed")
