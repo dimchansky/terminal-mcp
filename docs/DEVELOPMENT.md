@@ -40,7 +40,7 @@ to build or operate the server.
 The standalone updater is built into the Go executable:
 `make update` checks and builds a separate candidate, then queues a detached
 worker. Follow with `make update-status`; a queued update is not a successful
-update. See [README.md](../README.md#update-a-running-standalone-server).
+update. See [README.md](../README.md#stop-and-update).
 Never build directly over the installed running executable: the updater needs
 its unchanged original bytes for reliable rollback.
 
