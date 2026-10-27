@@ -68,15 +68,22 @@ For Windows installation, native ConPTY support, and Windows paths, use the [Win
 
 This is **optional**. You do not need a separate `tunnel-client` program.
 
-1. Open [OpenAI Platform Tunnels](https://platform.openai.com/settings/organization/tunnels). Create a tunnel or select an existing one.
-   For a new tunnel, set **Name** to `Local Terminal MCP` and **Description** to `Run terminal commands, manage processes, and work with files on my computer.`
-   Select your Platform organization and, if listed, the ChatGPT workspace that will use the tunnel.
-   Leave **Restrict client network access** off unless your organization requires it. Save the tunnel and copy the tunnel ID.
-2. Open [OpenAI API keys](https://platform.openai.com/settings/organization/api-keys) and create a secret key (the runtime key).
-   Set **Name** to `Tunnel Client API Key` and **Permissions** to **Restricted**.
-   Under **Tunnels**, select **Read** and **Use** only. Leave all other API permissions at **None**.
-   Set an expiration date. Before it expires, create a replacement key, update the private key file, and restart `terminal-mcp`.
-   Verify the connection before you revoke the old key.
+1. Open [OpenAI Platform Tunnels](https://platform.openai.com/settings/organization/tunnels). Create a tunnel or select an existing one. For a new tunnel, use these settings:
+   - **Name:** `Local Terminal MCP`
+   - **Description:** `Run terminal commands, manage processes, and work with files on my computer.`
+   - **Organizations:** Select your Platform organization.
+   - **ChatGPT workspaces:** Select the workspace that will use the tunnel, if listed.
+   - **Restrict client network access:** Leave off unless your organization requires it.
+
+   Save the tunnel and copy the tunnel ID.
+
+2. Open [OpenAI API keys](https://platform.openai.com/settings/organization/api-keys) and create a secret key (the runtime key):
+   - **Name:** `Tunnel Client API Key`
+   - **Permissions:** Select **Restricted**. Under **Tunnels**, select **Read** and **Use** only. Leave all other API permissions at **None**.
+   - **Expiration:** Set an expiration date.
+
+   Before the key expires, create a replacement key, update the private key file, and restart `terminal-mcp`. Verify the connection before you revoke the old key.
+
 3. Save the runtime key in a private file on the computer that runs `terminal-mcp`. Do not put the key in a command argument or in this README.
 
 For example, on macOS or Linux:
@@ -102,9 +109,17 @@ Stop the existing server, if it is running. If `stop` reports `draining`, let ac
 
 The standalone configuration saves the tunnel ID, enabled setting, and **path** to the key file. It does not save the key value. These settings also survive normal restarts and supported self-updates.
 
-Open [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Add custom MCP server**. Use the same **Name** and **Description** as the tunnel in step 1. Under **Connection**, select **Tunnel** and choose or enter the tunnel ID. Set **Authentication** to **No authentication**. The built-in tunnel client supplies the local HTTP token. Do not enter the runtime API key in ChatGPT. Confirm the risk warning, select **Create as a plugin**, then install the plugin. See the [OpenAI connection guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for the current interface.
+Open [ChatGPT Plugins](https://chatgpt.com/plugins), select **Add custom MCP server**, and fill in:
+- **Name and Description:** Use the same values as your tunnel in step 1.
+- **Connection:** Select **Tunnel** and choose or enter the tunnel ID.
+- **Authentication:** Select **No authentication**. The built-in tunnel client supplies the local HTTP token. Do not enter the runtime API key in ChatGPT.
 
-After installation, open the plugin's **Permissions** settings. These control tool approvals, not the runtime key's **Tunnels Read + Use** permissions. **Always ask** requests approval before tool calls. **Allow all tools** (elevated risk) lets ChatGPT run commands and change files without asking first. Untrusted pages, files, or command output may contain instructions that cause unwanted tool calls. Select **Allow all tools** only if you accept this risk. The default **Allow low-risk tools** may deny some actions.
+Confirm the risk warning, select **Create as a plugin**, then install the plugin. See the [OpenAI connection guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for the current interface.
+
+After installation, open the plugin's **Permissions** settings. These control tool approvals, not the runtime key's **Tunnels Read + Use** permissions:
+- **Always ask:** Requests approval before tool calls.
+- **Allow low-risk tools (Default):** Automatically approves low-risk tools but may deny some actions.
+- **Allow all tools (Elevated risk):** Lets ChatGPT run commands and change files without asking first. Untrusted pages, files, or command output may contain instructions that cause unwanted tool calls. Select this only if you accept the risk.
 
 To test the connection, open a ChatGPT conversation, type `@`, and select **Local Terminal MCP**. Then ask: **"Find out as much as you can about my computer and give me a detailed summary."** ChatGPT will use the available tools to inspect your computer and report what it finds.
 
