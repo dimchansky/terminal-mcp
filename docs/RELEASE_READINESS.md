@@ -1,6 +1,12 @@
-# Release readiness — MCP audit and logging redesign
+# Release readiness — historical stage 7 review
 
-Status: **stage 7 source review and verification complete; no production deployment**. This file records the evidence and explicit remaining gates before any actual installation, update, push, or public release. Completing a local commit does **not** deploy or activate code on the owner's computer.
+> **Historical review (2026-10-26).** This report describes the stage 7
+> source review and its checks at that time, **not** the current release
+> state, the present CI matrix or a deployment procedure. The application
+> was installed and subsequently changed after this review, including the
+> removal of cold audit migration. Use [README.md](../README.md) for setup,
+> [SPEC.md](../SPEC.md) for behavior, and current GitHub Actions for test
+> results. Do not follow the old rollout checklist as instructions.
 
 ## Scope of this review
 
@@ -33,7 +39,7 @@ The stage-7 fixes are deliberately narrow; no protocol schema, historical audit 
 | Fault injection | Incomplete JSONL, archive conflicts, hard storage limit, canceled requests, degraded audit, stalled stderr, panic after mutation, idempotency replay | **PASS**, macOS and Linux suites |
 | Update/rollback | Isolated real-process candidate preflight, activation, migration and rollback; actual installed server not touched | **PASS**, macOS and unprivileged Linux |
 
-## Non-negotiable release and rollout considerations
+## Historical stage 7 release considerations
 
 - **No automatic deployment:** Do not push, publish a release, overwrite the installed binary, or restart the user's running server without explicit authorization. Tests launch only isolated fixture instances; the live `server_id` is intentionally unchanged.
 - **Windows release gate:** Source and tests compile on Windows, but compile-only verification cannot establish ACL correctness, process/terminal semantics, or standalone stop behavior. Run the real Windows test and smoke matrix before claiming a fully validated Windows release.
@@ -42,15 +48,21 @@ The stage-7 fixes are deliberately narrow; no protocol schema, historical audit 
 - **Tamper boundary:** The local OS user and programs running with the same privileges may modify audit files. The journal is not cryptographically tamper-proof or remotely attestable.
 - **Storage exhaustion:** Total audit history is unlimited by default and archives are never automatically deleted. New MCP work fails closed whenever its required record cannot be appended; after transient filesystem exhaustion, the next successful append automatically restores health. An optional explicit `--audit-max-bytes=N` cap requires manual adjustment/restart if exhausted. Preserve historical gaps from failed completion writes; recovery cannot reconstruct them.
 - **Diagnostic file rotation:** There is no lossy copy-truncate or unsafe rename of live stdout/stderr. Stop, confirm the old process and updater are not writing, archive the *closed* files, then restart. Audit archives have no automated pruning.
-- **Rollback:** Preserve the original audit journal, archives, migration manifest and previous executable. An update/rollback must keep the explicitly selected audit path and must not silently create an independent history.
+- **Rollback (at stage 7):** The original rollout required preserving the
+  old audit journal, migration manifest and previous executable. This is
+  historical evidence, not the current update procedure. The current updater
+  pins one audit path for activation and rollback.
 - **No permanent supervisor:** A crashed detached server is not automatically restarted. Availability monitoring is an operational decision separate from the audit design.
 
-## Controlled installation checklist (not executed)
+## Historical decision
 
-1. Review the final diff, tests and this checklist. Confirm there are no active managed sessions or pending mutations on the live instance and that the user has approved changing it.
-2. Save immutable copies of the current executable, legacy audit and numbered archives, new audit family (if already present), and existing stdout/stderr. Do not delete either journal or its lock.
-3. Use the standalone updater's explicit preflight/checks (or its supported manual equivalent), without overriding the audit path or `audit-max-bytes`. Stop the old process cleanly; an already-active writer must prevent a second audit process from starting.
-4. Verify the activated instance with authenticated `status`: new `server_id`, correct binary hash, `audit.state: ok`, correct audit path, `bytes_used` and optional `bytes_limit`, and separate stdout/stderr descriptors. Confirm a harmless `terminal_list` request produces a request-start/request-finish pair.
-5. Verify recovery guidance by observing controlled stop and checked-error reporting. If activation fails, inspect the existing migration marker before rollback so an old binary does not switch back to a different journal. Preserve all historical files.
+At stage 7, the source verification supported a controlled macOS/Linux
+installation after its remaining gates. That decision is a dated record,
+not an instruction to copy legacy journals, inspect migration markers, or
+preserve obsolete binaries.
 
-**Decision:** Local source verification can support a controlled macOS/Linux rollout after all final suites pass and the owner explicitly authorizes deployment. Native Windows verification remains a separate release gate. There is no claim of power-loss durability, tamper-proof logging, or automatic recovery from a crashed detached server.
+For current operation, use the standalone updater described in
+[README.md](../README.md#stop-and-update). The updater pins one explicit audit
+path for activation and rollback. The normal stop and audit rules still apply.
+There is no guarantee of per-event power-loss durability or automatic
+recovery after a detached server crash.

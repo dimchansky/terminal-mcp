@@ -43,7 +43,7 @@ make build
 
 The first `start` installs a private copy of the executable and runs it in the background. Later starts use that installed copy. The server does not start automatically when you log in or restart your computer.
 
-The `file_*` tools use absolute paths inside the configured `file_root`. On a new macOS/Linux installation, the default is the directory where you first run `start`. On Windows, the default is your home directory. Older macOS settings can keep another root. Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`. This limit does **not** apply to terminal commands.
+The `file_*` tools use absolute paths inside the configured `file_root`. On a new macOS/Linux installation, the default is the directory where you first run `start`. On Windows, the default is your home directory. Existing saved standalone settings keep their root. Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`. This limit does **not** apply to terminal commands.
 
 You can also run it in the foreground:
 
@@ -148,7 +148,7 @@ make update
 
 `make update` runs the Go checks, builds a candidate, and starts an independent updater. The command can report `queued` before the update finishes. Check `update-status` for `applied`, `failed`, or `rolled_back`. The updater checks the candidate and attempts rollback if activation fails. It preserves the configured tunnel mode and key-file path. Your MCP connection can disconnect briefly, and the new server gets a new `server_id`.
 
-On Windows, follow the [manual update procedure](docs/WINDOWS.md#updating-windows). For older macOS installations, see the [LaunchAgent migration guide](docs/STANDALONE_MIGRATION.md).
+On Windows, follow the [manual update procedure](docs/WINDOWS.md#updating-windows).
 
 ## Audit and security
 
@@ -175,4 +175,5 @@ For the full audit contract and security limits, see [SPEC.md](SPEC.md) and the 
 - [Behavior specification](SPEC.md) — Tool schemas, identifiers, limits, and recovery rules.
 - [Development guide](docs/DEVELOPMENT.md) — Build, tests, updater, and advanced configuration.
 - [Windows guide](docs/WINDOWS.md) — Native setup, ACLs, ConPTY, and manual updates.
-- [Validation report](TEST_REPORT.md) — Verified behavior and known limits.
+- [Historical validation report (2026-10-24)](TEST_REPORT.md) — Earlier
+  checks and their limits; use current CI for present results.

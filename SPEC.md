@@ -104,7 +104,9 @@ Standalone `start --tunnel` requires a private pre-created runtime key file; its
 
 Tunnel traffic enters the same MCP server, tool middleware, session manager and mandatory pre-effect audit. Local HTTP startup is not gated on a successful external control-plane poll; temporary OpenAI failures do not stop local HTTP. The SDK `Ready` latch only indicates its first successful poll and is not a live connectivity check. An unexpected SDK shutdown request leaves local HTTP available and is surfaced as `shutdown_requested`; a failed local SDK initialization reports `start_failed`. Neither automatically restarts a second runtime, and neither is confused with a temporary control-plane polling outage.
 
-Graceful stop/update preserves remote access to existing-session controls during manager draining, then stops tunnel polling after active MCP/HTTP requests have drained and before closing session manager and audit. SDK stop cleanup may be bounded, but already accepted terminal processes and downloads have no automatic drain timeout. Updater candidate preflight always omits tunnel flags to avoid a duplicate control-plane client. Successful activation only starts the new tunnel after the old process exits; legacy rollback strips unknown tunnel flags, restores local HTTP/audit, and leaves the tunnel disabled.
+Graceful stop/update preserves remote access to existing-session controls during manager draining, then stops tunnel polling after active MCP/HTTP requests have drained and before closing session manager and audit. SDK stop cleanup may be bounded, but already accepted terminal processes and downloads have no automatic drain timeout. Updater candidate preflight always omits tunnel flags to avoid a duplicate control-plane client. Successful activation starts the new tunnel only after the old process exits;
+rollback to a binary without embedded tunnel support removes unsupported
+tunnel flags, restores local HTTP/audit, and leaves the tunnel disabled.
 
 ### Stdio transport
 
@@ -356,11 +358,14 @@ Use `terminal_list` to read the limits of the running instance.
 
 ## 9. File tool contract
 
-The six file tools use Go `os.Root`. All file paths must be absolute and inside the configured `file_root`.
+The seven `file_*` tools use Go `os.Root`. File paths must be absolute and
+inside the configured `file_root`.
 
-The macOS controller sets `file_root` to `/` on a new installation. This allows access to paths allowed by the service user's OS permissions.
-
-If the configuration has no `file_root`, the Go server uses the working directory. `--file-root` overrides the configured root.
+A fresh standalone installation uses the working directory of the first
+`start` as its file root on macOS/Linux. On Windows, it uses the user's home
+directory. Saved settings keep the selected root across restarts and updates.
+A foreground server without `--file-root` uses its working directory.
+An explicit `--file-root` overrides the default.
 
 These restrictions apply only to file tools. They do not restrict arbitrary child commands.
 
@@ -555,7 +560,7 @@ The caller timestamps each event before writing it. `Write` encodes the entire e
 
 During ordinary server shutdown, the mutation ledger rejects new effects and waits for already accepted independent effects **and their audit completion callbacks**, even after a client has canceled the original request. Only then is the audit file closed. This also applies to stdio shutdown. The updater's normal `Freeze` still refuses to stop a server with in-flight mutations. `Close()` rejects new writes, waits for any currently active write by acquiring the same mutex, then syncs and closes the active file and releases the exclusive lock. It returns close/sync errors (not previously returned `Write` errors), consistently on repeated calls. A stuck effect or filesystem can delay shutdown.
 
-The audit keeps one active file and **all** numbered historical archives. Each has a 4 MiB write-size limit and private permissions. Rotation renames only the active file to its next never-before-used numeric suffix; earlier archives are neither overwritten nor removed. On startup, all numeric archives—including those copied from the old audit—are inventoried and their sizes counted. When an explicit nonzero budget is configured, existing history above it refuses startup; a full disk also prevents required writes. An already admitted operation's completion append may fail if the disk or an explicit budget is exhausted, but its actual effect receipt is preserved and the error reported separately. A failed partial write is repaired before the next append where possible, including after transient disk exhaustion. Before accessing the log, the server acquires a nonblocking advisory lock on the private `<audit path>.lock` file. Concurrent audit writers using this implementation cannot open the same journal. The lock file is intentionally kept across restarts to avoid inode-replacement lock races; it is not part of rotation. A partial write is truncated to the previous complete record when possible. The next startup also removes an incomplete final JSONL line.
+The audit keeps one active file and **all** numbered historical archives. Each has a 4 MiB write-size limit and private permissions. Rotation renames only the active file to its next never-before-used numeric suffix; earlier archives are neither overwritten nor removed. On startup, all existing numeric archives are inventoried and their sizes counted. When an explicit nonzero budget is configured, existing history above it refuses startup; a full disk also prevents required writes. An already admitted operation's completion append may fail if the disk or an explicit budget is exhausted, but its actual effect receipt is preserved and the error reported separately. A failed partial write is repaired before the next append where possible, including after transient disk exhaustion. Before accessing the log, the server acquires a nonblocking advisory lock on the private `<audit path>.lock` file. Concurrent audit writers using this implementation cannot open the same journal. The lock file is intentionally kept across restarts to avoid inode-replacement lock races; it is not part of rotation. A partial write is truncated to the previous complete record when possible. The next startup also removes an incomplete final JSONL line.
 
 The audit is not tamper-proof. A crash or power loss can lose recently written but unsynced events. There is no `fsync` for each event.
 
@@ -588,12 +593,14 @@ automatically. Only `start --env KEY=VALUE` values persist in
 `env_overrides`, and these override the environment inherited during later
 starts, updater preflight, candidate activation and rollback. The updater
 pins them in its worker's environment instead of copying them to its
-manifest. `start --clear-env` clears the saved overrides. Legacy `path`
-fields are ignored. The bearer-token environment variable is intentionally
-filtered and cannot be set as an explicit override. The controller avoids
-overwriting a running installed binary and rejects duplicate starts. Existing
-macOS users can import other previous LaunchAgent settings once without
-requiring Python at runtime.
+manifest. `start --clear-env` clears the saved overrides. The bearer-token
+and tunnel runtime-key environment variables are intentionally filtered and
+cannot be set as explicit overrides. The standalone CLI refuses to overwrite
+a running installed binary and rejects duplicate starts. A fresh standalone
+configuration uses the first `start` working directory as its file root on
+macOS/Linux and the user's home directory on Windows. Only the modern saved
+standalone configuration is read on later starts; old controller settings are
+not imported.
 
 ### Independent self-update
 
@@ -667,7 +674,8 @@ GitHub Actions runs `make check` on macOS and Ubuntu, Go tests on
 native Windows, and also runs static analysis and `govulncheck` in an
 Ubuntu quality job. The lint and vulnerability tools are separate from the default `make check` target. `make check` verifies that `go mod tidy` would not change module files.
 
-The [validation report](TEST_REPORT.md) separates executed checks from untested scenarios.
+The [historical validation report (2026-10-24)](TEST_REPORT.md) records
+earlier checks and their limits. Use the current CI run for current results.
 
 References:
 

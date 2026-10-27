@@ -4,8 +4,7 @@ This guide describes file tools, terminal workflows, and standalone management
 on macOS/Linux. See the [Windows guide](WINDOWS.md) for native Windows
 commands, permissions and process-model differences.
 Read [README.md](../README.md) for setup and tunnel connection steps, and
-[SPEC.md](../SPEC.md) for behavior guarantees. Older LaunchAgent users can
-consult the [legacy migration guide](STANDALONE_MIGRATION.md).
+[SPEC.md](../SPEC.md) for behavior guarantees.
 
 Use the names of MCP fields exactly as the tool schemas define them.
 
@@ -29,7 +28,10 @@ make check-core
 
 To check MCP responses against JSONL audit events, run `make audit-feedback`. This isolated Go integration test starts a temporary stdio server and file root. It verifies outcomes, error messages, `server_id`, schema rejections, and log records. It inspects the synchronously appended events and closes the server before its final JSONL check.
 
-These targets do not restart the service. GitHub Actions uses `make check` on macOS and Ubuntu with Go 1.27.3. It also runs linting and a dependency vulnerability scan in a separate Ubuntu quality job with Go 1.27.3.
+These targets do not restart the service. GitHub Actions uses `make check`
+on macOS and Ubuntu, native Go tests and builds on Windows, and linting plus
+a dependency vulnerability scan in a separate Ubuntu quality job. The CI
+jobs use the Go version declared in `go.mod`.
 
 Run `make lint` for the focused checks in `.golangci.yml` (`errcheck`, `bodyclose`, `govet`, `ineffassign`, `staticcheck`, and `unused`). Install `golangci-lint` v2.15.0 to use this target. Run `make vulncheck` to scan reachable vulnerabilities with a pinned `govulncheck` v1.9.0 via `go run`.
 
@@ -149,11 +151,16 @@ A partial input write reports bytes accepted by the operating system. It does no
 
 ## 3. File tools
 
-The six file tools use Go `os.Root`. Each file path must be absolute and inside the configured `file_root`.
+The seven `file_*` tools use Go `os.Root`. Each file path must be absolute and inside the configured `file_root`.
 
-On a new macOS installation, the controller sets `file_root` to `/`. The tools can access paths allowed by the service user's OS permissions.
+On a new macOS/Linux standalone installation, `file_root` defaults to the
+working directory of the first `start`. On Windows, it defaults to the user's
+home directory. Saved standalone settings keep their existing root across
+restarts and updates.
 
-If `file_root` is absent, the Go server uses its working directory. A direct `--file-root` argument takes priority.
+A foreground server with no `--file-root` uses its current working directory.
+An explicit `--file-root` argument takes priority. File tools can access only
+paths within that root that the OS user is permitted to access.
 
 **The file root is not a shell sandbox.** Commands started through `terminal_start` use the service user's OS permissions.
 
@@ -295,8 +302,9 @@ A new installation stores its configuration in
 `~/.config/terminal-mcp/standalone/config.json`. The settings include:
 `listen` (loopback address), `token_file` (private bearer token),
 `file_root` (root for file tools), stable `working_directory`,
-optional explicit `env_overrides`, `audit_file`, and optional `tunnel`, `tunnel_id`, `tunnel_key_file` values. The runtime key file must be private; only its path is saved. The old `path` field
-is accepted but **ignored**; inherited `PATH` is never automatically saved.
+optional explicit `env_overrides`, `audit_file`, and optional `tunnel`,
+`tunnel_id`, `tunnel_key_file` values. The runtime key file must be private;
+only its path is saved. Inherited `PATH` is never automatically saved.
 If no token exists, a random private token is created at
 `~/.config/terminal-mcp/token`.
 
@@ -398,7 +406,7 @@ The detached server's stdout and stderr use independent
 successful updater activation and rollback. Job-specific `worker.log` and
 `preflight.log` remain in the private update directory.
 
-The active audit file is at most 4 MiB, and the server now retains **every** numbered archive instead of evicting older files. Suffixes advance monotonically (including past legacy migration suffixes). There is **no default total audit budget**; `--audit-max-bytes=N` optionally adds a hard cap for positive N. An explicit `--audit-max-bytes=0` on `start` removes a previously saved cap; omission retains the saved setting. Reaching an explicit hard limit fails closed with `audit_history_limit` without deleting history; change the saved cap by stopping and restarting. Temporary disk-full and rotation failures retry on subsequent pre-effect appends and recover automatically once a complete write succeeds. Each `audit.Write` serializes a complete JSONL record and appends it under one mutex; there is no worker or queue. Concurrent calls wait for the same sink instead of dropping events under load. A private `<audit path>.lock` file enforces one cooperating writer process. Do not unlink the lock file: advisory locks refer to an inode, and removing it while in use could allow two processes to acquire different locks.
+The active audit file is at most 4 MiB, and the server now retains **every** numbered archive instead of evicting older files. Suffixes advance monotonically, even if existing archive numbers have gaps. There is **no default total audit budget**; `--audit-max-bytes=N` optionally adds a hard cap for positive N. An explicit `--audit-max-bytes=0` on `start` removes a previously saved cap; omission retains the saved setting. Reaching an explicit hard limit fails closed with `audit_history_limit` without deleting history; change the saved cap by stopping and restarting. Temporary disk-full and rotation failures retry on subsequent pre-effect appends and recover automatically once a complete write succeeds. Each `audit.Write` serializes a complete JSONL record and appends it under one mutex; there is no worker or queue. Concurrent calls wait for the same sink instead of dropping events under load. A private `<audit path>.lock` file enforces one cooperating writer process. Do not unlink the lock file: advisory locks refer to an inode, and removing it while in use could allow two processes to acquire different locks.
 
 Event timestamps are set before the synchronous write. New events use schema version 2 and carry a `server_id`. The receiving middleware now logs **raw JSON tool arguments before SDK schema validation**; SDK argument rejections have a request pair with complete invalid inputs, including unknown fields, and no operation pair. Every normally representable MCP tool call has one `request_start`/`request_finish` pair, with a unique `request_id`. An independently accepted mutating `operation_id` has exactly one `operation_start`/`operation_finish` pair, even after the original request is canceled or retried. The SDK's supported `_meta`, `inputResponses`, and `requestState` fields are captured too. An input that cannot fit in the 4 MiB JSONL record or cannot be serialized is rejected before the tool runs: the audit contains one small `request_rejected` event with no arguments, and the client receives a clear error. Every successful dispatch now requires a successfully appended `request_start`. Newly admitted mutations also require `operation_start`; failure releases the unused retry key without executing the effect. If a sink write fails, the affected request is refused and audit health becomes `degraded`. Every later request tries its own pre-effect append: a complete successful write restores health and admits that request; an unsuccessful one still cannot run. Permanent audit invariant failures require intervention/restart; previous missing completion records are not reconstructed. Already accepted effects retain their actual receipts.
 
@@ -425,23 +433,19 @@ the candidate's probe calls do not pollute the real audit journal.
 | `~/.config/terminal-mcp/logs/server.stdout.log` | Persistent detached HTTP server stdout. |
 | `~/.config/terminal-mcp/logs/server.stderr.log` | Persistent detached HTTP server stderr (including operational errors). |
 | `~/.config/terminal-mcp/logs/audit.jsonl` | Current MCP audit and numbered archives, with a separate writer lock. |
-| `~/.config/terminal-mcp/standalone/server.log` | Legacy diagnostic history, left untouched. |
 | `~/.config/terminal-mcp/updates/<job-id>/` | Independent update worker, manifest, backups, status and logs. |
 
-Legacy macOS (`~/Library/Application Support/LocalTerminalMCP/audit.jsonl`)
-and Linux (`$XDG_STATE_HOME/terminal-mcp/audit.jsonl`, or
-`~/.local/state/terminal-mcp/audit.jsonl`) journals are **copied cold**
-along with their numbered archives after a competing old writer has stopped.
-The originals are never deleted. The migration marker records source hashes
-and enables safe resume. The new server retains the legacy writer lock for
-its lifetime so an older process cannot independently append to the old
-default. If history diverges or copying fails, enabled auditing prevents
-server startup. The updater uses an explicitly chosen audit path during
-activation and rollback; it does not rely on an older binary's defaults.
+The server opens only its selected audit journal and numbered archives; it
+does not read, copy, merge or lock a retired controller's journal. No migration
+marker is created. An invalid audit location, unsafe permissions or an
+unavailable writer lock prevents startup. The updater uses the **same
+explicit audit path** for candidate
+activation and rollback. It refuses an update before shutdown if the current
+audit path cannot be established or the auditor is degraded.
 
-Completed update records and releases are retained; there is currently
-no automatic pruning. The legacy macOS controller is no longer part of the
-source tree and no longer required to run the server.
+Update-job metadata and logs remain available after completion. Successful
+jobs discard only their temporary executables; failed or ambiguous jobs keep
+their recovery evidence. There is no automatic deletion of audit history.
 
 ## 7. Validation
 
@@ -450,4 +454,6 @@ candidate, and `make update-status` plus `make status` to confirm the
 result. After changing tool schemas or descriptions, refresh ChatGPT's MCP
 tools when `refresh_tools_required` is true.
 
-Use [TEST_REPORT.md](../TEST_REPORT.md) for verified checks and their limits.
+Run `make check` and consult the current GitHub Actions results for source
+verification. [TEST_REPORT.md](../TEST_REPORT.md) and
+[RELEASE_READINESS.md](RELEASE_READINESS.md) record earlier validation only.

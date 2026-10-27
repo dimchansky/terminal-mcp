@@ -1,13 +1,16 @@
-# Logging and audit redesign — target contract
+# Logging and audit redesign — historical design record
 
-> **Status: stages 0–7 implemented and validated in source; Windows native runtime checks remain a release gate.**
-> This document is the agreed **target** contract, not a claim that every
-> requirement below is implemented. [SPEC.md](../SPEC.md) and
-> [README.md](../README.md) describe the current checked-out implementation.
-> A new source commit is not a live-server update.
+> **Historical document (2026-10-26).** This file records design decisions,
+> experiments and implementation stages from the audit/logging redesign.
+> References below to old controllers, cold migration, dual journal locks,
+> three-archive retention, and earlier rollout gates describe past work.
+> **They are not current setup, update or rollback instructions.**
+> For the active behavior and guarantees, use [SPEC.md](../SPEC.md),
+> [README.md](../README.md), and [docs/DEVELOPMENT.md](DEVELOPMENT.md).
+> Check the current GitHub Actions run for current source-test results.
 >
-> Baseline: `main` at `bee1cfa184437e795c7b8e242a202766d97cb827` (2026-10-26).
-> No production-server restart or update is part of stage 0.
+> Original baseline: `main` at `bee1cfa184437e795c7b8e242a202766d97cb827`
+> (2026-10-26). A source commit alone never installs a running server.
 
 ## 1. Purpose, scope, and trust boundary
 
@@ -207,7 +210,12 @@ lock, partial-write recovery, and an explicitly tested rotation mechanism.
   or inaccessible filesystem, a stderr write can fail too. The system must
   not promise an infallible secondary output channel.
 
-## 5. Safe update and migration requirements
+## 5. Historical update and migration requirements (retired)
+
+The following requirements applied during the 2026-10-26 migration. The
+current server does not run a cold-migration routine or retain a legacy
+journal lock. Updater activation and rollback use one explicit audit path;
+see [SPEC.md](../SPEC.md#12-standalone-background-operation-and-self-update).
 
 - The legacy live service keeps running until a tested release is explicitly
   applied. Intermediate stage commits do **not** trigger self-update.
@@ -673,7 +681,7 @@ Stage 7 is reserved for final cross-platform integration/release checks.
 
 ## 14. Stage 7 independent review and final integration checks (2026-10-26)
 
-**Stages 0–7 completed and committed in source, subject to the platform release gates described below. This is not an installed-server update or a published release.** The final risk assessment, exact test matrix, and controlled rollout checklist are in [RELEASE_READINESS.md](RELEASE_READINESS.md).
+**Stages 0–7 completed and committed in source, subject to the platform release gates described below. This is not an installed-server update or a published release.** The final risk assessment, test matrix, and historical stage 7 review are in [RELEASE_READINESS.md](RELEASE_READINESS.md).
 
 An independent end-to-end review exposed and corrected three important failure modes:
 

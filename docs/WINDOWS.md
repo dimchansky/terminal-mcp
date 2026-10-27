@@ -104,11 +104,9 @@ The default Windows log paths are:
 | Child command stdout/stderr | Bounded in-memory session journal; **not** persisted to disk |
 | Standalone configuration | `%APPDATA%\terminal-mcp\standalone\config.json` |
 
-The audit rotates its active journal at 4 MiB and retains **all** numbered archives. The total audit history is unlimited by default; an optional positive `--audit-max-bytes=N` cap can be configured on `start` or `serve`, and `start --audit-max-bytes=0` clears it. New actions fail closed on any audit append failure, but transient disk errors automatically recover on the next successful pre-effect append without restart. It records tool calls and arguments, not subprocess stdout/stderr. Server stderr diagnostics use standard-library `log/slog`, with separate private stdout and stderr files. Those diagnostics are not automatically rotated: stop the server and confirm all writer handles have closed before archiving/renaming the files and restarting. Old `standalone/server.log` remains as
-historical evidence. On the first new default start, the old
-`%APPDATA%\terminal-mcp\audit.jsonl` and all numbered archives are
-copied cold after the former writer releases its lock; originals remain.
-The legacy writer lock is retained until the new server shuts down.
+The audit rotates its active journal at 4 MiB and retains **all** numbered archives. The total audit history is unlimited by default; an optional positive `--audit-max-bytes=N` cap can be configured on `start` or `serve`, and `start --audit-max-bytes=0` clears it. New actions fail closed on any audit append failure, but transient disk errors automatically recover on the next successful pre-effect append without restart. It records tool calls and arguments, not subprocess stdout/stderr. Server stderr diagnostics use standard-library `log/slog`, with separate private stdout and stderr files. Those diagnostics are not automatically rotated: stop the server and confirm all writer handles have closed before archiving/renaming the files and restarting. The server opens only the selected audit journal and its numbered archives.
+It does not migrate, reopen or lock journals from older layouts. The updater
+on Windows remains manual as described below.
 
 ## Updating Windows
 

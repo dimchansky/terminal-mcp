@@ -1,13 +1,20 @@
 # Validation Report
 
-> **Historical report (2026-10-24).** The results below describe the earlier implementation, not the completed October 26 audit/logging redesign. In particular, references to an audit queue/worker, bounded three-archive retention, omitted file content in the audit, and earlier CI runs are not claims about the current source. See the [stage 7 release-readiness and cross-platform validation report](docs/RELEASE_READINESS.md) and [current specification](SPEC.md). A local source test is not a deployed-server test.
+> **Historical report (2026-10-24).** The results below describe the earlier
+> implementation, not the current audit/logger or installation. References
+> to an audit queue, three-archive retention, omitted file content and
+> earlier CI runs do not describe the current source. The
+> [stage 7 release-readiness report](docs/RELEASE_READINESS.md) is also
+> historical. Use the [current specification](SPEC.md), `make check`, and
+> GitHub Actions for current behavior and source verification. A local source
+> test is not a deployed-server test.
 
 | Item | Value |
 | --- | --- |
 | Date | 2026-10-24 |
 | Project | Local Terminal MCP |
 | Platforms | macOS and Linux |
-| Status | Historical checks passed on their stated dates; consult the stage 7 report for current results. |
+| Status | Historical checks passed on their stated dates; use current tests and CI for current results. |
 
 This report describes checks that were executed. It separates verified behavior from behavior that has not received a full test.
 
@@ -184,7 +191,12 @@ The initial report is available in the repository's Git history. It is historica
 
 The source, tests, and CI setup changed after that delivery. Use the current Makefile and CI runs to check the present implementation.
 
-## 6. Before a new release
+## 6. Historical release checklist (2026-10-24)
+
+These were the release checks at the time of this report. This is not the
+current release process. Follow [README.md](README.md#stop-and-update) and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#4-standalone-startup-and-update)
+for current operations.
 
 1. Run `make check`.
 2. Confirm that the Git worktree contains only the intended changes.
