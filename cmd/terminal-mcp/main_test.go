@@ -323,28 +323,40 @@ func TestServeHTTPPropagatesListenerError(t *testing.T) {
 	}
 }
 
-func TestRunWithContextMacOSConfiguredRoot(t *testing.T) {
+func TestRunWithContextMacOSIgnoresRetiredConfig(t *testing.T) {
 	if runtime.GOOS != "darwin" {
-		t.Skip("managed config file path is macOS-specific")
+		t.Skip("the retired controller path is macOS-specific")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("TERMINAL_MCP_TOKEN", testToken)
-	dir := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	legacyDir := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP")
+	if err := os.MkdirAll(legacyDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"file_root":"relative-path"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
+	legacyConfig := filepath.Join(legacyDir, "config.json")
 	args := []string{"--transport=http", "--listen=127.0.0.1:0", "--audit-file=off"}
-	if err := runWithContext(context.Background(), args, nil); err == nil || !strings.Contains(err.Error(), "absolute") {
-		t.Fatalf("relative root in macOS config was accepted: %v", err)
+	for _, old := range []string{
+		`{"file_root":"relative-path"}`,
+		`{broken-json`,
+	} {
+		if err := os.WriteFile(legacyConfig, []byte(old), 0600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := runWithContext(ctx, args, nil); err != nil {
+			t.Fatalf("retired config %q affected default HTTP startup: %v", old, err)
+		}
+		override := append(append([]string(nil), args...), "--file-root="+t.TempDir())
+		if err := runWithContext(ctx, override, nil); err != nil {
+			t.Fatalf("retired config %q affected explicit file root: %v", old, err)
+		}
 	}
+	invalid := append(append([]string(nil), args...), "--file-root="+filepath.Join(home, "missing"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	override := append(append([]string(nil), args...), "--file-root="+t.TempDir())
-	if err := runWithContext(ctx, override, nil); err != nil {
-		t.Fatalf("explicit file root did not override managed config: %v", err)
+	if err := runWithContext(ctx, invalid, nil); err == nil {
+		t.Fatal("an invalid explicitly configured file root was accepted")
 	}
 }

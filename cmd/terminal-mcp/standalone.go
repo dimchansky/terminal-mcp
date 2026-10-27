@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -61,8 +60,8 @@ func savedStandaloneConfig(path string) (standaloneConfig, error) {
 	return c, err
 }
 
-// A saved standalone configuration wins. On the first macOS migration, reuse
-// the launchd controller's settings; do not silently change file_root from /.
+// A saved standalone configuration wins. A first start uses the current
+// working directory; old controller files are not consulted.
 func initialStandaloneConfig(stateDir string) (standaloneConfig, error) {
 	c, err := savedStandaloneConfig(filepath.Join(stateDir, "config.json"))
 	if err != nil {
@@ -85,34 +84,6 @@ func initialStandaloneConfig(stateDir string) (standaloneConfig, error) {
 	c = standaloneConfig{
 		Listen: "127.0.0.1:8090", TokenFile: token, FileRoot: cwd,
 		WorkingDirectory: cwd,
-	}
-	if runtime.GOOS == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return c, err
-		}
-		legacy := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "config.json")
-		var source struct {
-			Project   string `json:"project"`
-			Listen    string `json:"listen"`
-			TokenFile string `json:"token_file"`
-			FileRoot  string `json:"file_root"`
-		}
-		if err := readJSON(legacy, &source); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return c, err
-		}
-		if source.Project != "" {
-			c.WorkingDirectory = source.Project
-		}
-		if source.Listen != "" {
-			c.Listen = source.Listen
-		}
-		if source.TokenFile != "" {
-			c.TokenFile = source.TokenFile
-		}
-		if source.FileRoot != "" {
-			c.FileRoot = source.FileRoot
-		}
 	}
 	return c, nil
 }
@@ -228,8 +199,8 @@ func startStandalone(args []string) error {
 	}
 	// A previously started standalone instance must not have its installed
 	// executable overwritten, even when the caller requests a different port.
-	// The old launchd port is deliberately not checked here: a new standalone
-	// instance can first be tested beside it on a separate port.
+	// A different listener can run on another port. Do not overwrite the
+	// binary of an already running standalone instance.
 	previous, err := savedStandaloneConfig(filepath.Join(stateDir, "config.json"))
 	if err != nil {
 		return err

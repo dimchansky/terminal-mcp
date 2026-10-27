@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -129,19 +128,13 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	manager := session.New(terminal.Start)
 	defer manager.Close()
 
-	configPath := ""
-	if runtime.GOOS == "darwin" && opts.transport == "http" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		configPath = filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "config.json")
+	// Foreground file access is rooted at the current directory unless
+	// explicitly configured. Standalone start supplies its saved --file-root.
+	fileRoot := opts.fileRoot
+	if fileRoot == "" {
+		fileRoot = "."
 	}
-	configuredRoot, err := fileRootFromConfig(opts.fileRoot, configPath)
-	if err != nil {
-		return err
-	}
-	files, err := filesystem.New(manager, configuredRoot)
+	files, err := filesystem.New(manager, fileRoot)
 	if err != nil {
 		return err
 	}

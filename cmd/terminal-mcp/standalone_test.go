@@ -167,49 +167,78 @@ func TestStandaloneStartRefusesOccupiedPort(t *testing.T) {
 	}
 }
 
-func TestStandaloneMigratesLegacyConfig(t *testing.T) {
+func TestStandaloneIgnoresRetiredControllerConfigAndPreservesSavedConfig(t *testing.T) {
 	if runtime.GOOS != "darwin" {
-		t.Skip("legacy launchd controller is macOS-only")
+		t.Skip("the retired controller path is macOS-specific")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	legacy := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP")
-	if err := os.MkdirAll(legacy, 0700); err != nil {
+	t.Chdir(home)
+	retired := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP")
+	if err := os.MkdirAll(retired, 0700); err != nil {
 		t.Fatal(err)
 	}
+	// Even invalid retired JSON must not affect new or saved standalone settings.
+	if err := os.WriteFile(filepath.Join(retired, "config.json"), []byte("invalid-legacy-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(home, ".config", "terminal-mcp", "standalone")
+	fresh, err := initialStandaloneConfig(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := defaultTokenFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Listen != "127.0.0.1:8090" || fresh.FileRoot != cwd ||
+		fresh.WorkingDirectory != cwd || fresh.TokenFile != token {
+		t.Fatalf("fresh standalone imported retired settings: %+v", fresh)
+	}
+
 	root := filepath.Join(home, "files")
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	original := standaloneConfig{
+	modern := standaloneConfig{
 		Listen: "127.0.0.1:8912", FileRoot: root,
-		WorkingDirectory: home, TokenFile: filepath.Join(home, "existing-token"),
-	}
-	// The saved launchd format uses "project" rather than "working_directory".
-	if err := writeJSON(filepath.Join(legacy, "config.json"), map[string]string{
-		"listen": original.Listen, "token_file": original.TokenFile,
-		"file_root": original.FileRoot, "project": original.WorkingDirectory,
-		"path": "/opt/test/bin:/usr/bin",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	state := filepath.Join(home, ".config", "terminal-mcp", "standalone")
-	c, err := initialStandaloneConfig(state)
-	if err != nil || !reflect.DeepEqual(c, original) {
-		t.Fatalf("legacy migration lost configuration: %+v %v", c, err)
+		WorkingDirectory: cwd, TokenFile: filepath.Join(home, "current-token"),
 	}
 	if err := os.MkdirAll(state, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(filepath.Join(state, "config.json"), c); err != nil {
+	path := filepath.Join(state, "config.json")
+	if err := writeJSON(path, modern); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(legacy, "config.json")); err != nil {
+	saved, err := initialStandaloneConfig(state)
+	if err != nil || !reflect.DeepEqual(saved, modern) {
+		t.Fatalf("saved standalone configuration was not preserved: %+v %v", saved, err)
+	}
+	if err := os.Remove(filepath.Join(retired, "config.json")); err != nil {
 		t.Fatal(err)
 	}
-	after, err := initialStandaloneConfig(state)
-	if err != nil || !reflect.DeepEqual(after, original) {
-		t.Fatalf("standalone configuration depends on removed legacy files: %+v %v", after, err)
+	saved, err = initialStandaloneConfig(state)
+	if err != nil || !reflect.DeepEqual(saved, modern) {
+		t.Fatalf("modern configuration depends on retired files: %+v %v", saved, err)
+	}
+	incomplete := modern
+	incomplete.FileRoot = ""
+	if err := writeJSON(path, incomplete); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initialStandaloneConfig(state); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("incomplete saved configuration was accepted: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("invalid-modern-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initialStandaloneConfig(state); err == nil {
+		t.Fatal("invalid modern standalone configuration was ignored")
 	}
 }
 
@@ -378,22 +407,22 @@ func TestStandaloneForceStopTerminatesManagedProcess(t *testing.T) {
 	}
 }
 
-func TestStandaloneCanaryDoesNotDisruptLegacyListener(t *testing.T) {
+func TestStandaloneIndependentListenerIgnoresRetiredController(t *testing.T) {
 	if runtime.GOOS != "darwin" {
-		t.Skip("the old launchd configuration is specific to macOS")
+		t.Skip("the retired controller config is specific to macOS")
 	}
 	home, binary := standaloneTestBinary(t)
-	legacyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	unrelatedListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = legacyListener.Close() }()
+	defer func() { _ = unrelatedListener.Close() }()
 	canary, err := reserveProbePort()
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP")
-	if err := os.MkdirAll(legacy, 0700); err != nil {
+	retired := filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP")
+	if err := os.MkdirAll(retired, 0700); err != nil {
 		t.Fatal(err)
 	}
 	token := filepath.Join(home, ".config", "terminal-mcp", "token")
@@ -403,15 +432,15 @@ func TestStandaloneCanaryDoesNotDisruptLegacyListener(t *testing.T) {
 	if err := os.WriteFile(token, []byte(testToken), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(filepath.Join(legacy, "config.json"), map[string]string{
-		"project": home, "listen": legacyListener.Addr().String(),
-		"token_file": token, "file_root": "/", "path": "/usr/bin:/bin",
+	if err := writeJSON(filepath.Join(retired, "config.json"), map[string]string{
+		"project": home, "listen": unrelatedListener.Addr().String(),
+		"token_file": token, "file_root": "/", "path": "/retired-only-marker:/usr/bin:/bin",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	out, err := standaloneTestCommand(binary, home, "start", "--listen="+canary, "--audit-file=off")
 	if err != nil {
-		t.Fatalf("canary could not start alongside legacy listener: %v %s", err, out)
+		t.Fatalf("standalone could not start beside unrelated listener: %v %s", err, out)
 	}
 	t.Cleanup(func() {
 		_, _ = standaloneTestCommand(binary, home, "stop")
@@ -424,41 +453,30 @@ func TestStandaloneCanaryDoesNotDisruptLegacyListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.FileRoot != "/" || info.WorkingDirectory == "" || info.Listen != canary {
-		t.Fatalf("canary lost legacy settings: %+v", info)
+	physicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var env struct {
-		Receipt struct {
-			Status string `json:"status"`
-		} `json:"receipt"`
-		Observation struct {
-			Events []struct {
-				Text *string `json:"text"`
-			} `json:"events"`
-		} `json:"observation"`
+	if info.FileRoot != physicalHome || info.WorkingDirectory != physicalHome || info.Listen != canary {
+		t.Fatalf("standalone imported retired controller settings: %+v", info)
 	}
-	err = client.tool("terminal_start", map[string]any{
-		"server_id": info.ServerID, "operation_id": "verify-inherited-path",
-		"argv": []string{"/usr/bin/printenv", "PATH"}, "close_on_exit": true,
-		"wait_for": "completion", "wait_ms": 3000,
-	}, &env)
-	if err != nil || env.Receipt.Status != "applied" || len(env.Observation.Events) == 0 ||
-		env.Observation.Events[0].Text == nil || strings.TrimSpace(*env.Observation.Events[0].Text) != os.Getenv("PATH") {
-		t.Fatalf("canary lost legacy PATH: %+v %v", env, err)
+	gotPATH := remotePrintenv(t, client, info.ServerID, "verify-inherited-path", "PATH")
+	if gotPATH != os.Getenv("PATH") || strings.Contains(gotPATH, "/retired-only-marker") {
+		t.Fatalf("standalone child inherited retired PATH: %q", gotPATH)
 	}
-	if !listenerInUse(legacyListener.Addr().String()) {
-		t.Fatal("canary installation stopped the legacy listener")
+	if !listenerInUse(unrelatedListener.Addr().String()) {
+		t.Fatal("standalone stopped another independent listener")
 	}
 	saved, err := savedStandaloneConfig(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
-	if err != nil || saved.FileRoot != "/" || len(saved.EnvOverrides) != 0 {
-		t.Fatalf("standalone config should keep root but discard legacy PATH: %+v %v", saved, err)
+	if err != nil || saved.FileRoot != physicalHome || len(saved.EnvOverrides) != 0 {
+		t.Fatalf("standalone config should use its own root and not import retired PATH: %+v %v", saved, err)
 	}
 	savedJSON, err := os.ReadFile(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
 	if err != nil || strings.Contains(string(savedJSON), `"path":`) {
-		t.Fatalf("legacy PATH snapshot was persisted again: %q %v", savedJSON, err)
+		t.Fatalf("retired PATH was persisted again: %q %v", savedJSON, err)
 	}
-	// After the canary stops and the legacy service is removed, the operator
-	// can restore production auditing without retaining the canary's "off".
+	// After the isolated server stops, its audit-disable flag can be reset
+	// to the normal default without affecting a different listener.
 	out, err = standaloneTestCommand(binary, home, "stop")
 	if err != nil {
 		t.Fatalf("stop canary: %v %s", err, out)
@@ -474,7 +492,7 @@ func TestStandaloneCanaryDoesNotDisruptLegacyListener(t *testing.T) {
 	if err != nil || saved.AuditFile != wantDefault {
 		t.Fatalf("canary audit disable was not cleared: %+v want=%q %v", saved, wantDefault, err)
 	}
-	if !listenerInUse(legacyListener.Addr().String()) {
-		t.Fatal("legacy listener was affected by canary restart")
+	if !listenerInUse(unrelatedListener.Addr().String()) {
+		t.Fatal("independent listener was affected by restart")
 	}
 }
