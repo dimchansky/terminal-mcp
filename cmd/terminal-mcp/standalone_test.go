@@ -60,7 +60,7 @@ func TestStandaloneBackgroundStartStop(t *testing.T) {
 		}
 	})
 	result, err := standaloneTestCommand(binary, home, "start", "--listen="+addr,
-		"--file-root="+home, "--audit-file=off")
+		"--file-root="+home, "--audit-file=off", "--audit-max-bytes=1048576")
 	if err != nil {
 		t.Fatalf("standalone start: %v\n%s", err, result)
 	}
@@ -89,7 +89,8 @@ func TestStandaloneBackgroundStartStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.ServerID != started.ServerID || info.PID != started.PID || info.FileRoot != physicalHome {
+	if info.ServerID != started.ServerID || info.PID != started.PID || info.FileRoot != physicalHome ||
+		info.Audit.BytesLimit != 0 { // Audit explicitly disabled for this fixture.
 		t.Fatalf("unexpected runtime after standalone start: %+v", info)
 	}
 	saved, err := savedStandaloneConfig(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
@@ -133,6 +134,20 @@ func TestStandaloneBackgroundStartStop(t *testing.T) {
 	status, err = standaloneTestCommand(binary, home, "status")
 	if err != nil || !strings.Contains(string(status), `"status":"stopped"`) {
 		t.Fatalf("status after stop: %v %s", err, status)
+	}
+
+	// A zero flag explicitly clears a persisted budget; omission retains it.
+	restarted, err := standaloneTestCommand(binary, home, "start", "--audit-max-bytes=0")
+	if err != nil {
+		t.Fatalf("restart with unlimited audit budget: %v %s", err, restarted)
+	}
+	saved, err = savedStandaloneConfig(filepath.Join(home, ".config", "terminal-mcp", "standalone", "config.json"))
+	if err != nil || saved.AuditMaxBytes != 0 {
+		t.Fatalf("explicit unlimited budget was not persisted: %+v %v", saved, err)
+	}
+	if output, err := standaloneTestCommand(binary, home, "stop"); err != nil ||
+		!strings.Contains(string(output), `"status":"stopped"`) {
+		t.Fatalf("stop after unlimited restart: %v %s", err, output)
 	}
 }
 

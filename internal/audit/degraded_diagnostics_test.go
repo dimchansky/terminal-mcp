@@ -52,8 +52,8 @@ func TestStalledDiagnosticOutputCannotBlockAuditAdmissionOrClose(t *testing.T) {
 	}()
 	select {
 	case err := <-checkDone:
-		if !errors.Is(err, ErrDegraded) {
-			t.Fatalf("second request admitted while diagnostic stalled: %v", err)
+		if !errors.Is(err, fault) {
+			t.Fatalf("retry bypassed broken sink while diagnostics stalled: %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("pending stderr write held journal mutex or health admission")

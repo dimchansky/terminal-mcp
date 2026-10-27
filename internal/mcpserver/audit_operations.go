@@ -27,7 +27,6 @@ func (a *operationAudit) Started(operationID string) error {
 		OperationID: operationID, Phase: "operation_start",
 	})
 	if err := a.recorder.Start(event); err != nil {
-		a.recorder.Degrade(err)
 		return err // Ledger must not reserve the retry key or invoke the effect.
 	}
 	return nil
@@ -57,9 +56,7 @@ func (a *operationAudit) Finished(receipt mutation.Receipt) {
 			event.SessionID = context.SessionID
 		}
 	}
-	if err := a.recorder.Write(audit.NewEvent(event)); err != nil {
-		// This mutation already ran. Keep its actual receipt unchanged;
-		// degrade the auditor to refuse *future* admissions.
-		a.recorder.Degrade(err)
-	}
+	// This mutation already ran; the logger records and reports failures
+	// without modifying the real receipt.
+	_ = a.recorder.Write(audit.NewEvent(event))
 }

@@ -66,6 +66,32 @@ func TestAuditArchivesAreNeverEvicted(t *testing.T) {
 	}
 }
 
+func TestDefaultHistoryIsUnlimitedAndReportsActualUsage(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	original := []byte("{\"historical\":true}\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenWithLimit(path, int64(len(original))-1); !errors.Is(err, ErrHistoryLimit) {
+		t.Fatalf("explicit budget unexpectedly ignored: %v", err)
+	}
+	recorder, err := Open(path)
+	if err != nil {
+		t.Fatalf("default audit should accept existing history without total cap: %v", err)
+	}
+	event := NewEvent(Event{Tool: "terminal_list", Phase: "request_start"})
+	if err := recorder.Start(event); err != nil {
+		t.Fatal(err)
+	}
+	status := recorder.Status()
+	if status.State != "ok" || status.BytesLimit != 0 || status.BytesUsed <= int64(len(original)) {
+		t.Fatalf("unlimited audit status: %+v", status)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAuditHistoryBudgetRefusesNewEffectsAndRetainsOldBytes(t *testing.T) {
 	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	event := NewEvent(Event{Tool: "file_write", Phase: "request_start", Args: map[string]any{
@@ -114,6 +140,30 @@ func TestAuditHistoryBudgetRefusesNewEffectsAndRetainsOldBytes(t *testing.T) {
 		t.Fatalf("restart bypassed historical budget: %v", err)
 	}
 	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExplicitBudgetExhaustionCannotRecoverViaSmallerRequest(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	recorder, err := OpenWithLimit(path, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A large post-effect completion cannot fit, even though a small
+	// request_start would fit. Missing evidence must not be ignored.
+	largeFinish := NewEvent(Event{Tool: "file_write", Phase: "operation_finish",
+		Args: strings.Repeat("x", 2048)})
+	if err := recorder.Write(largeFinish); !errors.Is(err, ErrHistoryLimit) {
+		t.Fatalf("expected history cap: %v", err)
+	}
+	if err := recorder.Start(NewEvent(Event{Tool: "terminal_list", Phase: "request_start"})); !errors.Is(err, ErrDegraded) {
+		t.Fatalf("new effect admitted despite exhausted explicit cap: %v", err)
+	}
+	if got := recorder.Status(); got.State != "degraded" {
+		t.Fatalf("budget denial silently cleared: %+v", got)
+	}
+	if err := recorder.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

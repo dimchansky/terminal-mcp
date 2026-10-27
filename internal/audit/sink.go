@@ -52,8 +52,8 @@ func openFileSinkWithLimit(path string, limit int64) (*fileSink, error) {
 	if path == "" {
 		return nil, errors.New("audit path is empty")
 	}
-	if limit <= 0 {
-		return nil, errors.New("audit history limit must be positive")
+	if limit < 0 {
+		return nil, errors.New("audit history limit must be non-negative")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -164,7 +164,7 @@ func (s *fileSink) open() error {
 			return errors.Join(errors.New("audit history size overflows int64"), f.Close())
 		}
 		s.total += size
-		if s.total > s.limit {
+		if s.limit > 0 && s.total > s.limit {
 			return errors.Join(fmt.Errorf("%w: existing history %d bytes exceeds limit %d", ErrHistoryLimit, s.total, s.limit), f.Close())
 		}
 	}
@@ -243,7 +243,7 @@ func (s *fileSink) appendLine(line []byte) error {
 	}
 	// The limit is checked *before* rotation and append. In particular,
 	// exhausting history capacity never triggers deletion of an archive.
-	if int64(len(line)) > s.limit || s.total > s.limit-int64(len(line)) {
+	if s.limit > 0 && (int64(len(line)) > s.limit || s.total > s.limit-int64(len(line))) {
 		return fmt.Errorf("%w: %d bytes used, %d bytes requested, %d bytes allowed",
 			ErrHistoryLimit, s.total, len(line), s.limit)
 	}

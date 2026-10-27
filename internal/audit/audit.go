@@ -16,9 +16,8 @@ import (
 
 const (
 	maxFileBytes int64 = 4 << 20
-	// DefaultMaxHistoryBytes bounds the entire audit family. No automatic
-	// retention pruning is performed; reaching the limit denies new work.
-	DefaultMaxHistoryBytes int64 = 1 << 30 // 1 GiB
+	// Zero disables the optional total history budget. Archives are never pruned.
+	DefaultMaxHistoryBytes int64 = 0
 )
 
 var (
@@ -81,7 +80,10 @@ type Log struct {
 	bytesLimit int64
 }
 
-type auditFailure struct{ err error }
+type auditFailure struct {
+	err       error
+	permanent bool // Invariant failures require an operator restart.
+}
 
 // Status is a read-only snapshot of the audit health. It never waits on file
 // I/O and can be served by authenticated administration during a disk stall.
@@ -106,8 +108,8 @@ func (l *Log) Status() Status {
 	return s
 }
 
-// Ready is a nonblocking admission check. Only the first failure matters;
-// writing a later finish event never silently re-enables the server.
+// Ready reports current health without waiting on the sink. A failed append
+// remains visible until a later successful write proves recovery.
 func (l *Log) Ready() error {
 	if failed := l.failure.Load(); failed != nil {
 		return errors.Join(ErrDegraded, failed.err)
@@ -115,23 +117,35 @@ func (l *Log) Ready() error {
 	return nil
 }
 
-// Degrade latches the first audit failure and emits one immediate diagnostic
-// outside the audit sink. The service requires a controlled restart to recover.
+// Degrade is reserved for non-recoverable audit invariants (for example an
+// observer panic). Ordinary sink write failures are recorded by write and are
+// retried automatically on subsequent requests.
 func (l *Log) Degrade(err error) {
-	if l != nil && l.markDegraded(err) {
+	if l != nil && l.markDegraded(err, true) {
 		reportDegraded(err)
 	}
 }
 
-// markDegraded is deliberately nonblocking: the first error is visible to
-// Ready and Status immediately, even if stderr subsequently stalls. Callers
-// can mark the failure while holding Log.mu, but must report it after unlock.
-func (l *Log) markDegraded(err error) bool {
-	return err != nil && l.failure.CompareAndSwap(nil, &auditFailure{err: err})
+// markDegraded is nonblocking so status never waits on disk or stderr.
+// Keep the first transient error, but permit a permanent failure to supersede
+// it. Callers must report a transition only after releasing Log.mu.
+func (l *Log) markDegraded(err error, permanent bool) bool {
+	if err == nil {
+		return false
+	}
+	for {
+		previous := l.failure.Load()
+		if previous != nil && (previous.permanent || !permanent) {
+			return false
+		}
+		if l.failure.CompareAndSwap(previous, &auditFailure{err: err, permanent: permanent}) {
+			return true
+		}
+	}
 }
 
 func reportDegraded(err error) {
-	slog.Error("audit degraded; refusing new MCP work until restart", "error", err)
+	slog.Error("audit degraded; refusing unaudited MCP work", "error", err)
 }
 
 // newLog allows deterministic sink failure and concurrency tests.
@@ -141,8 +155,8 @@ func newLog(sink eventSink) *Log {
 
 func Open(path string) (*Log, error) { return OpenWithLimit(path, DefaultMaxHistoryBytes) }
 
-// OpenWithLimit counts the active file and all numbered archives against a
-// configurable hard budget. It never deletes historical audit records.
+// OpenWithLimit counts the active file and all numbered archives against an
+// optional hard budget; zero means unlimited. It never deletes history.
 func OpenWithLimit(path string, maxHistoryBytes int64) (*Log, error) {
 	sink, err := openFileSinkWithLimit(path, maxHistoryBytes)
 	if err != nil {
@@ -168,15 +182,27 @@ func (l *Log) Start(e Event) error { return l.write(e, true) }
 
 func (l *Log) write(e Event, requireHealthy bool) error {
 	if e.Time == "" {
-		return errors.New("audit event has no time; use NewEvent")
+		err := errors.New("audit event has no time; use NewEvent")
+		if !requireHealthy {
+			l.Degrade(err) // Missing completion metadata is an invariant failure.
+		}
+		return err
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
+		writeErr := fmt.Errorf("%w: %w", ErrInvalidEvent, err)
+		if !requireHealthy {
+			l.Degrade(writeErr) // An accepted action's completion cannot be represented.
+		}
+		return writeErr
 	}
 	line = append(line, '\n')
 	if int64(len(line)) > maxFileBytes {
-		return fmt.Errorf("%w: %d bytes, limit %d", ErrEventTooLarge, len(line), maxFileBytes)
+		writeErr := fmt.Errorf("%w: %d bytes, limit %d", ErrEventTooLarge, len(line), maxFileBytes)
+		if !requireHealthy {
+			l.Degrade(writeErr)
+		}
+		return writeErr
 	}
 	l.mu.Lock()
 	if l.closed {
@@ -184,17 +210,18 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 		return ErrClosed
 	}
 	if requireHealthy {
-		if err := l.Ready(); err != nil {
+		if failed := l.failure.Load(); failed != nil && failed.permanent {
 			l.mu.Unlock()
-			return err
+			return errors.Join(ErrDegraded, failed.err)
 		}
 	}
 	if err := l.sink.appendLine(line); err != nil {
 		writeErr := fmt.Errorf("audit write: %w", err)
-		// Record the first failure before releasing the sink mutex:
-		// another request cannot slip through admission while degraded
-		// state is still unregistered.
-		first := l.markDegraded(writeErr)
+		// A failed pre-effect append never permits dispatch. A later request
+		// may retry the sink, but cannot run until its own start is written.
+		// An explicit history cap cannot change within this process, unlike
+		// a temporary filesystem error. Keep that denial until reconfiguration.
+		first := l.markDegraded(writeErr, errors.Is(err, ErrHistoryLimit))
 		l.mu.Unlock()
 		if first {
 			reportDegraded(writeErr) // Slow stderr must not hold Log.mu.
@@ -204,7 +231,15 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 	if sink, ok := l.sink.(*fileSink); ok {
 		l.bytesUsed.Store(sink.total)
 	}
+	var recovered error
+	if failed := l.failure.Load(); failed != nil && !failed.permanent &&
+		l.failure.CompareAndSwap(failed, nil) {
+		recovered = failed.err
+	}
 	l.mu.Unlock()
+	if recovered != nil {
+		slog.Info("audit writes recovered; MCP work may resume", "previous_error", recovered)
+	}
 	return nil
 }
 
@@ -224,7 +259,7 @@ func (l *Log) Close() error {
 		l.closeErr = errors.Join(l.closeErr, l.legacyLock.Close())
 		l.legacyLock = nil
 	}
-	first := l.markDegraded(l.closeErr)
+	first := l.markDegraded(l.closeErr, true)
 	result := l.closeErr
 	l.mu.Unlock()
 	if first {

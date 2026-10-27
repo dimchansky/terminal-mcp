@@ -600,23 +600,31 @@ or tamper-proof history.
   suffixes continue beyond the highest existing one.
 - Inventories and sums all numbered archives and the active journal on
   opening, validating regular-file and private permissions. The total
-  history has a **1 GiB default hard budget**. `audit.OpenWithLimit` and
-  `audit.OpenWithMigrationLimit` accept an explicit positive budget.
+  history is **unlimited by default**. `audit.OpenWithLimit` and
+  `audit.OpenWithMigrationLimit` accept an optional positive budget, or zero
+  for unlimited history.
   `--audit-max-bytes=N` is available for `serve`, `start`, and Windows
   `start`; standalone saves the configured value and passes it to the
   server process, including subsequent updates/rollbacks via its recorded
-  arguments. Existing history exceeding the budget refuses startup.
+  arguments. `start --audit-max-bytes=0` explicitly clears any stored cap;
+  omission retains it. Existing history exceeding an explicit cap refuses startup.
 - When an append would exceed the budget, it fails with the distinct
-  `audit_history_limit` error **before** rotation or writing, latches
-  audit degradation, and prevents future new MCP calls. It never removes
+  `audit_history_limit` error **before** rotation or writing, degrades
+  audit health, and refuses new MCP work until the budget is raised. It never removes
   history to make room. The real outcome of already accepted mutations
   remains intact if their finish record can no longer fit. The budget
   covers the *new* audit family; retained duplicate old copies are not
   included. Increasing `--audit-max-bytes` after ensuring sufficient
   space and restarting provides controlled recovery without deletion.
+  Transient sink write errors (such as ENOSPC) recover without restart:
+  every new request retries its pre-effect append and can run only after
+  successful recording. An unsuccessful request is always denied and a
+  partially written JSONL record is repaired before a later append. Permanent
+  audit invariants stay fail-closed, and missing historical completion
+  records are never invented.
 - Live authenticated `/admin/runtime` and CLI `status` include the
-  nonblocking `audit.bytes_used`/`audit.bytes_limit` alongside
-  `ok/degraded/disabled` and the first error. Status also reports
+  nonblocking `audit.bytes_used` and optional `audit.bytes_limit` alongside
+  `ok/degraded/disabled` and the current error when degraded. Status also reports
   `stdout_log`/`stderr_log` only when the current process's descriptors
   actually refer to the stable diagnostic files; foreground processes
   without that redirection do not advertise misleading paths.

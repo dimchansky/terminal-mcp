@@ -1,7 +1,9 @@
 package audit
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -176,6 +178,52 @@ func TestConcurrentWriteCloseAndRepeatClose(t *testing.T) {
 	}
 	if err := l.Write(NewEvent(Event{Tool: "terminal_list", Phase: "start"})); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Write after Close: %v", err)
+	}
+}
+
+func TestConcurrentRecoveryNeverAdmitsAnUnloggedRequest(t *testing.T) {
+	const attempts, failures = 24, 5
+	var sinkCalls atomic.Int32
+	var successIDs sync.Map
+	recorder := newLog(&testSink{write: func(line []byte) error {
+		if sinkCalls.Add(1) <= failures {
+			return errors.New("temporary disk full")
+		}
+		// After recovery every successful start must be represented by an
+		// actual appended record, even with competing concurrent calls.
+		var event Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			return err
+		}
+		successIDs.Store(event.RequestID, true)
+		return nil
+	}})
+	var succeeded, denied atomic.Int32
+	var wg sync.WaitGroup
+	for i := range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := recorder.Start(NewEvent(Event{Tool: "file_write", RequestID: fmt.Sprint(i), Phase: "request_start"}))
+			if err != nil {
+				denied.Add(1)
+				return
+			}
+			succeeded.Add(1)
+		}()
+	}
+	wg.Wait()
+	if denied.Load() != failures || succeeded.Load() != attempts-failures {
+		t.Fatalf("admission counts denied=%d succeeded=%d", denied.Load(), succeeded.Load())
+	}
+	var count int
+	successIDs.Range(func(_, _ any) bool { count++; return true })
+	if count != int(succeeded.Load()) || recorder.Status().State != "ok" {
+		t.Fatalf("successful starts were not all audited: written=%d admitted=%d health=%+v",
+			count, succeeded.Load(), recorder.Status())
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

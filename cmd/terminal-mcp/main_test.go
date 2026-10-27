@@ -34,8 +34,8 @@ func TestParseOptions(t *testing.T) {
 		{name: "defaults"},
 		{name: "serve alias", args: []string{"serve", "--transport=stdio"}},
 		{name: "all flags", args: []string{"--transport=stdio", "--file-root=/tmp", "--audit-file=off", "--audit-max-bytes=131072", "--listen=127.0.0.1:8123", "--token-file=/tmp/token"}},
-		{name: "zero history budget", args: []string{"--audit-max-bytes=0"}, wantErr: "audit-max-bytes must be positive"},
-		{name: "negative history budget", args: []string{"--audit-max-bytes=-1"}, wantErr: "audit-max-bytes must be positive"},
+		{name: "explicit unlimited history", args: []string{"--audit-max-bytes=0"}},
+		{name: "negative history budget", args: []string{"--audit-max-bytes=-1"}, wantErr: "audit-max-bytes must be non-negative"},
 		{name: "invalid transport", args: []string{"--transport=other"}, wantErr: "transport must be http or stdio"},
 		{name: "unknown flag", args: []string{"--unknown"}, wantErr: "flag provided but not defined"},
 		{name: "positional argument", args: []string{"unexpected"}, wantErr: "unexpected positional arguments"},
@@ -60,6 +60,10 @@ func TestParseOptions(t *testing.T) {
 			case "serve alias":
 				if got.transport != "stdio" {
 					t.Fatalf("serve subcommand was not parsed: %+v", got)
+				}
+			case "explicit unlimited history":
+				if got.auditMaxBytes != 0 {
+					t.Fatalf("explicit unlimited limit changed: %+v", got)
 				}
 			case "all flags":
 				if got.transport != "stdio" || got.listen != "127.0.0.1:8123" ||

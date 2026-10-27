@@ -157,11 +157,8 @@ func addWithMeta[I, O any](s *mcp.Server, recorder *audit.Log, serverID, name, d
 				}
 			}
 		}
-		if writeErr := recorder.Write(audit.NewEvent(finish)); writeErr != nil {
-			// The tool may already have changed state; preserve its real
-			// receipt, but block every subsequent new MCP request.
-			recorder.Degrade(writeErr)
-		}
+		// An append failure must not falsify the tool's actual result.
+		_ = recorder.Write(audit.NewEvent(finish))
 		return nil, out, err
 	})
 }

@@ -31,6 +31,11 @@ The owner must be able to inspect exactly what the model asked the server to do.
 - Keep distinct `request_*` and `operation_*` lifecycle events and protect
   completed mutation receipts. Never cause a model action to run without the
   required pre-effect audit.
+- Temporary sink failures (for example ENOSPC) must not permanently disable
+  the server: retry the next required pre-effect write and admit work only
+  after that complete write succeeds. Repair an incomplete JSONL tail before
+  any subsequent append. Invariant failures remain fail-closed; recovery must
+  not invent missing completion events or erase historical audit records.
 - The audit files are private from *other operating-system users* via
   permissions/ACLs. This is not an excuse to hide entries from their owner.
   The audit is not tamper-proof against local code with the owner's privileges.

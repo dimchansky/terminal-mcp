@@ -105,7 +105,7 @@ func windowsStart(args []string) error {
 	flags.StringVar(&root, "file-root", "", "root for file tools")
 	flags.StringVar(&token, "token-file", "", "private HTTP bearer token file")
 	flags.StringVar(&auditFile, "audit-file", "", "audit log path; off disables; default restores platform default")
-	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "hard audit history limit in bytes; 0 keeps saved/default limit")
+	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "optional audit history limit in bytes (0 = unlimited; omitted = retain saved setting)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -145,11 +145,13 @@ func windowsStart(args []string) error {
 		cfg.AuditFile = auditFile
 	}
 	if auditMaxBytes < 0 {
-		return errors.New("audit-max-bytes must be positive")
+		return errors.New("audit-max-bytes must be non-negative")
 	}
-	if auditMaxBytes != 0 {
-		cfg.AuditMaxBytes = auditMaxBytes
-	}
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "audit-max-bytes" {
+			cfg.AuditMaxBytes = auditMaxBytes
+		}
+	})
 	if cfg.AuditFile == "" {
 		cfg.AuditFile, err = defaultAuditPath()
 		if err != nil {

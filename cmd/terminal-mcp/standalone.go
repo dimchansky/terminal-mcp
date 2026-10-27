@@ -163,7 +163,7 @@ func resolveStandaloneConfig(c standaloneConfig) (standaloneConfig, error) {
 		}
 	}
 	if c.AuditMaxBytes < 0 {
-		return c, errors.New("audit-max-bytes must be positive")
+		return c, errors.New("audit-max-bytes must be non-negative")
 	}
 	return c, nil
 }
@@ -203,7 +203,7 @@ func startStandalone(args []string) error {
 	flags.StringVar(&workingDirectory, "working-directory", "", "absolute server working directory; default retains configured initial cwd")
 	flags.Var(&envFlags, "env", "explicit, persistent KEY=VALUE environment override (repeatable)")
 	flags.BoolVar(&clearEnv, "clear-env", false, "discard previously saved environment overrides")
-	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "hard audit history limit in bytes; 0 keeps saved/default limit")
+	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "optional audit history limit in bytes (0 = unlimited; omitted = retain saved setting)")
 	flags.StringVar(&listen, "listen", "", "standalone loopback listening address")
 	flags.StringVar(&tokenFile, "token-file", "", "existing bearer token file")
 	flags.StringVar(&fileRoot, "file-root", "", "root directory for MCP file tools")
@@ -255,11 +255,13 @@ func startStandalone(args []string) error {
 		config.AuditFile = auditFile
 	}
 	if auditMaxBytes < 0 {
-		return errors.New("audit-max-bytes must be positive")
+		return errors.New("audit-max-bytes must be non-negative")
 	}
-	if auditMaxBytes != 0 {
-		config.AuditMaxBytes = auditMaxBytes
-	}
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "audit-max-bytes" {
+			config.AuditMaxBytes = auditMaxBytes
+		}
+	})
 	config, err = resolveStandaloneConfig(config)
 	if err != nil {
 		return err

@@ -49,7 +49,7 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&opts.tokenFile, "token-file", "", "HTTP bearer token file (0600); defaults to TERMINAL_MCP_TOKEN or a generated user token")
 	flags.StringVar(&opts.fileRoot, "file-root", "", "Root directory for file tools (overrides configured file_root)")
 	flags.StringVar(&opts.auditFile, "audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
-	flags.Int64Var(&opts.auditMaxBytes, "audit-max-bytes", audit.DefaultMaxHistoryBytes, "hard limit for active audit plus all numbered archives (default 1 GiB)")
+	flags.Int64Var(&opts.auditMaxBytes, "audit-max-bytes", audit.DefaultMaxHistoryBytes, "optional hard limit for all audit history in bytes (0 = unlimited, the default)")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
@@ -59,8 +59,8 @@ func parseOptions(args []string) (options, error) {
 	if opts.transport != "http" && opts.transport != "stdio" {
 		return opts, fmt.Errorf("transport must be http or stdio")
 	}
-	if opts.auditMaxBytes <= 0 {
-		return opts, fmt.Errorf("audit-max-bytes must be positive")
+	if opts.auditMaxBytes < 0 {
+		return opts, fmt.Errorf("audit-max-bytes must be non-negative")
 	}
 	return opts, nil
 }

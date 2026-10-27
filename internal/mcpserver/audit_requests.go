@@ -82,12 +82,9 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 						Phase:       "request_rejected", Status: "rejected", Reason: reason,
 						Error: err.Error(),
 					})
-					if logErr := recorder.Write(rejection); logErr != nil {
-						recorder.Degrade(logErr)
-					}
+					_ = recorder.Write(rejection) // The log records and diagnoses its own failures.
 					return auditToolError("audit input cannot be fully recorded: " + err.Error() + "; tool not executed"), nil
 				default:
-					recorder.Degrade(err)
 					return auditToolError("audit_unavailable: " + err.Error() + "; tool not executed"), nil
 				}
 			}
@@ -113,9 +110,7 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 				if len(finish.Error) > 2048 {
 					finish.Error = strings.ToValidUTF8(finish.Error[:2048], "�") + "..."
 				}
-				if writeErr := recorder.Write(audit.NewEvent(finish)); writeErr != nil {
-					recorder.Degrade(writeErr)
-				}
+				_ = recorder.Write(audit.NewEvent(finish))
 			}
 			return result, err
 		}
