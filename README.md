@@ -102,9 +102,11 @@ Stop the existing server, if it is running. If `stop` reports `draining`, let ac
 
 The standalone configuration saves the tunnel ID, enabled setting, and **path** to the key file. It does not save the key value. These settings also survive normal restarts and supported self-updates.
 
-In ChatGPT, open **Plugins → Add custom MCP server**. Select **Tunnel** and choose the same tunnel ID. For the custom MCP server, choose **No authentication**: the built-in client already supplies the local HTTP token. Do not enter the runtime API key in ChatGPT. Follow the [OpenAI connection guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for the current interface.
+Open [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Add custom MCP server**. Use the same **Name** and **Description** as the tunnel in step 1. Under **Connection**, select **Tunnel** and choose or enter the tunnel ID. Set **Authentication** to **No authentication**. The built-in tunnel client supplies the local HTTP token. Do not enter the runtime API key in ChatGPT. Confirm the risk warning, select **Create as a plugin**, then install the plugin. See the [OpenAI connection guide](https://developers.openai.com/api/docs/guides/custom-mcp-server) for the current interface.
 
-To test the connection, ask ChatGPT to call `terminal_list`. It should return the current `server_id`. Then try a simple command, such as listing the working directory.
+After installation, open the plugin's **Permissions** settings. These control tool approvals, not the runtime key's **Tunnels Read + Use** permissions. **Always ask** requests approval before tool calls. **Allow all tools** (elevated risk) lets ChatGPT run commands and change files without asking first. Untrusted pages, files, or command output may contain instructions that cause unwanted tool calls. Select **Allow all tools** only if you accept this risk. The default **Allow low-risk tools** may deny some actions.
+
+To test the connection, open a ChatGPT conversation, type `@`, and select **Local Terminal MCP**. Then ask: **"Find out as much as you can about my computer and give me a detailed summary."** ChatGPT will use the available tools to inspect your computer and report what it finds.
 
 The `status` command shows `tunnel.state`. The value `first_poll_succeeded` means that at least one poll to OpenAI succeeded. It does **not** prove that the connection is still live. Use a real MCP tool call to check the full connection. A temporary OpenAI outage does not stop the local server.
 
