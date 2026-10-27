@@ -210,6 +210,12 @@ func (s *fileSink) rotate() error {
 	if s.next == math.MaxUint64 {
 		return errors.New("audit archive sequence exhausted")
 	}
+	// Before closing and archiving, verify that the active journal still
+	// contains precisely our accounted bytes. In particular, a foreign
+	// append must not enter the archives as if we had written it.
+	if err := checkAuditJournalSize(s.f, s.size); err != nil {
+		return err
+	}
 	archive := fmt.Sprintf("%s.%d", s.path, s.next)
 	if _, err := os.Lstat(archive); err == nil {
 		return fmt.Errorf("audit archive already exists; refusing overwrite: %s", archive)

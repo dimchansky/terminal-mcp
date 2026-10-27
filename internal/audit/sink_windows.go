@@ -20,13 +20,20 @@ func openAuditJournal(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 }
 
-func appendAuditJournal(f auditFile, line []byte, expectedSize int64) (int, bool, error) {
+func checkAuditJournalSize(f auditFile, expectedSize int64) error {
 	end, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
-		return 0, false, fmt.Errorf("seek audit append: %w", err)
+		return fmt.Errorf("seek audit journal: %w", err)
 	}
 	if end != expectedSize {
-		return 0, false, fmt.Errorf("%w: expected %d bytes, got %d", ErrJournalChanged, expectedSize, end)
+		return fmt.Errorf("%w: expected %d bytes, got %d", ErrJournalChanged, expectedSize, end)
+	}
+	return nil
+}
+
+func appendAuditJournal(f auditFile, line []byte, expectedSize int64) (int, bool, error) {
+	if err := checkAuditJournalSize(f, expectedSize); err != nil {
+		return 0, false, err
 	}
 	n, err := f.Write(line)
 	return n, true, err

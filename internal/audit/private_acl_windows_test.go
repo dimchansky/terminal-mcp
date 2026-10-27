@@ -109,3 +109,46 @@ func TestWindowsRefusesOutOfBandAuditAppend(t *testing.T) {
 		t.Fatalf("external append overwritten: %q", result)
 	}
 }
+
+// Rotation must refuse external journal bytes before archiving, preserving
+// evidence and leaving the active journal under its existing writer lock.
+func TestWindowsRejectsOutOfBandJournalChangeBeforeRotation(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	sink, err := openFileSink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := sink.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := sink.appendLine(almostFullLogLine()); err != nil {
+		t.Fatal(err)
+	}
+	rogue, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := []byte("external\n")
+	if _, err := rogue.Write(external); err != nil {
+		_ = rogue.Close()
+		t.Fatal(err)
+	}
+	if err := rogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.appendLine([]byte("our larger line to force an archive rotation\n")); !errors.Is(err, ErrJournalChanged) {
+		t.Fatalf("rotation failed to reject journal change: %v", err)
+	}
+	if _, err := os.Stat(path + ".1"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("archive unexpectedly created from unaccounted bytes: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != sink.size+int64(len(external)) {
+		t.Fatalf("unexpectedly altered journal length: on disk %d tracked %d", info.Size(), sink.size)
+	}
+}

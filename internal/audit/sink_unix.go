@@ -9,6 +9,9 @@ import (
 	"os"
 )
 
+// Unix writes use O_APPEND; the journal lock protects cooperating writers.
+func checkAuditJournalSize(auditFile, int64) error { return nil }
+
 // Unix O_APPEND guarantees each write is appended regardless of file offset.
 func openAuditJournal(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
