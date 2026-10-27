@@ -14,8 +14,7 @@ You can use it as a **local MCP server** or connect it to **ChatGPT** through a 
 | Local server + ChatGPT tunnel | You want ChatGPT to use your local tools. | The same process, with the official OpenAI Tunnel SDK inside it. |
 
 ```mermaid
-flowchart LR
-    Local["Local MCP client"] -- "Bearer token" --> HTTP
+flowchart TB
     ChatGPT["ChatGPT"] <--> OpenAI["OpenAI Secure MCP Tunnel"]
 
     subgraph Computer["Your computer: one terminal-mcp process"]
@@ -24,7 +23,8 @@ flowchart LR
         Audit --> Tools["Terminal and file tools"]
     end
 
-    BuiltIn -- "Outbound HTTPS" --> OpenAI
+    OpenAI <-->|"Outbound HTTPS"| BuiltIn
+    Local["Local MCP client"] -- "Bearer token" --> HTTP
 ```
 
 The HTTP endpoint listens on `127.0.0.1:8090/mcp` by default. It does not accept public network connections. When you enable the tunnel, the built-in client asks OpenAI for requests over **outbound HTTPS**. You do not need a public IP address or an open inbound port.
