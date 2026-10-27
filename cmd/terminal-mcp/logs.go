@@ -54,30 +54,6 @@ func defaultAuditPath() (string, error) {
 	return filepath.Join(dir, "audit.jsonl"), nil
 }
 
-// legacyAuditPath returns only the old platform default. Explicit custom
-// audit paths are never automatically migrated.
-func legacyAuditPath() (string, error) {
-	if runtime.GOOS == "windows" {
-		appdata, err := os.UserConfigDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(appdata, "terminal-mcp", "audit.jsonl"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl"), nil
-	}
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "terminal-mcp", "audit.jsonl"), nil
-}
-
 type serverLogs struct {
 	stdout *os.File
 	stderr *os.File

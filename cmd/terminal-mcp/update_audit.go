@@ -3,91 +3,95 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"terminalmcp/internal/mcpserver"
 )
 
-// updateAuditPaths pins the audit journal for both activation and rollback.
-// Older installed binaries lack RuntimeInfo.Audit, so we also interpret their
-// original serve arguments. Always add the resulting --audit-file explicitly;
-// otherwise a rollback to older code silently reverts to its old default.
-func updateAuditPaths(old mcpserver.RuntimeInfo) (oldPath, target string, migrating bool, err error) {
-	legacy, err := legacyAuditPath()
-	if err != nil {
-		return "", "", false, err
-	}
-	unified, err := defaultAuditPath()
-	if err != nil {
-		return "", "", false, err
-	}
-	if old.Audit.State == "disabled" {
-		return "off", "off", false, nil
-	}
-	oldPath = old.Audit.Path
-	if oldPath == "" {
-		// Last flag wins, matching Go's flag parser. Older versions did not
-		// expose an audit path in authenticated runtime metadata.
-		for _, arg := range old.Arguments {
-			if val, ok := strings.CutPrefix(arg, "--audit-file="); ok {
-				oldPath = val
+// updateAuditPath selects one journal for both activation and rollback.
+// The running server's authenticated audit status is authoritative. Older
+// versions without audit status must publish an explicit --audit-file flag;
+// never guess a default path or migrate an old journal during an update.
+func updateAuditPath(info mcpserver.RuntimeInfo) (string, error) {
+	switch info.Audit.State {
+	case "ok":
+		if info.Audit.Path == "" || !filepath.IsAbs(info.Audit.Path) {
+			return "", errors.New("running server does not report an absolute audit path")
+		}
+		return filepath.Clean(info.Audit.Path), nil
+	case "disabled":
+		if info.Audit.Path != "" {
+			return "", errors.New("disabled audit unexpectedly reports a journal path")
+		}
+		return "off", nil
+	case "":
+		// Former versions have no audit health metadata. A last explicit
+		// audit flag is the only safe source of the actual journal location.
+		value, found, err := lastAuditFileArgument(info.Arguments)
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", errors.New("cannot determine running server audit path: no audit status or explicit --audit-file")
+		}
+		if value == "" || value == "default" {
+			return "", fmt.Errorf("cannot determine running server audit path from %q", value)
+		}
+		if value == "off" {
+			return "off", nil
+		}
+		if !filepath.IsAbs(value) {
+			if !filepath.IsAbs(info.WorkingDirectory) {
+				return "", errors.New("cannot resolve relative audit path without an absolute working directory")
 			}
+			value = filepath.Join(info.WorkingDirectory, value)
 		}
-		if oldPath == "" || oldPath == "default" {
-			oldPath = legacy
-		}
+		return filepath.Clean(value), nil
+	case "degraded":
+		return "", fmt.Errorf("running audit is degraded; repair it before updating")
+	default:
+		return "", fmt.Errorf("running audit has unknown state %q", info.Audit.State)
 	}
-	if oldPath == "off" {
-		return "off", "off", false, nil
-	}
-	if !filepath.IsAbs(oldPath) {
-		oldPath = filepath.Join(old.WorkingDirectory, oldPath)
-	}
-	if sameAuditPath(oldPath, legacy) {
-		return oldPath, unified, true, nil
-	}
-	if oldPath == "" {
-		return "", "", false, fmt.Errorf("cannot determine running server's audit path")
-	}
-	return oldPath, oldPath, false, nil
 }
 
-// rollbackAuditPath keeps the previous journal if migration failed before its
-// completion marker. If migration succeeded, both the updated server and the
-// old binary must explicitly use the unified path.
-func verifyRestartAudit(info mcpserver.RuntimeInfo, expected string) error {
-	// A former binary may not expose Audit.State, but it still reports the
-	// exact serve arguments it used. Inspect the last explicit audit flag.
-	actual := info.Audit.Path
-	if info.Audit.State == "disabled" {
-		actual = "off"
-	}
-	if info.Audit.State == "" {
-		for _, arg := range info.Arguments {
-			if value, ok := strings.CutPrefix(arg, "--audit-file="); ok {
-				actual = value
+// lastAuditFileArgument matches Go's flag parser: a later explicit flag wins.
+// Other arguments may be from a version with different flags, so we must not
+// parse or validate the complete historical argument list.
+func lastAuditFileArgument(args []string) (value string, found bool, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--audit-file" || arg == "-audit-file":
+			if i+1 >= len(args) {
+				return "", false, errors.New("missing value for --audit-file")
 			}
+			i++
+			value, found = args[i], true
+		case strings.HasPrefix(arg, "--audit-file="):
+			value, found = strings.TrimPrefix(arg, "--audit-file="), true
+		case strings.HasPrefix(arg, "-audit-file="):
+			value, found = strings.TrimPrefix(arg, "-audit-file="), true
 		}
 	}
-	if actual == "" || (actual != "off" && !sameAuditPath(actual, expected)) ||
-		(actual == "off" && expected != "off") {
+	return value, found, nil
+}
+
+// verifyRestartAudit confirms that activation or rollback uses the selected
+// journal. Modern servers must also report a healthy writer; older servers
+// without audit status expose only their explicitly supplied serve arguments.
+func verifyRestartAudit(info mcpserver.RuntimeInfo, expected string) error {
+	actual, err := updateAuditPath(info)
+	if err != nil {
+		return fmt.Errorf("restarted server audit check: %w", err)
+	}
+	if actual == "off" && expected == "off" {
+		return nil
+	}
+	if actual == "off" || expected == "off" || !sameAuditPath(actual, expected) {
 		return fmt.Errorf("restarted server audit path %q differs from requested %q", actual, expected)
 	}
-	if info.Audit.State != "" && expected != "off" && info.Audit.State != "ok" {
-		return fmt.Errorf("restarted server audit state is %q", info.Audit.State)
-	}
 	return nil
-}
-
-func rollbackAuditPath(oldPath, target string, migrating bool) string {
-	if !migrating {
-		return target
-	}
-	if _, err := os.Lstat(target + ".migrated.json"); err == nil {
-		return target
-	}
-	return oldPath
 }

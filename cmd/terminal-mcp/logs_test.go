@@ -7,11 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"terminalmcp/internal/audit"
-	"terminalmcp/internal/mcpserver"
 )
 
 func isolatedLogHome(t *testing.T) string {
@@ -19,6 +19,19 @@ func isolatedLogHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	return home
+}
+
+// Test-only historical fixture. Production code must never resolve this path.
+func retiredAuditPathForTest(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "LocalTerminalMCP", "audit.jsonl")
+	}
+	return filepath.Join(home, ".local", "state", "terminal-mcp", "audit.jsonl")
 }
 
 func TestStableLogPathsAndDistinctStdoutStderr(t *testing.T) {
@@ -79,10 +92,7 @@ func TestStableLogPathsAndDistinctStdoutStderr(t *testing.T) {
 // audit location, even if historical data and a broken migration marker exist.
 func TestDirectHTTPDefaultIgnoresOldAuditHistory(t *testing.T) {
 	_ = isolatedLogHome(t)
-	source, err := legacyAuditPath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := retiredAuditPathForTest(t)
 	target, err := defaultAuditPath()
 	if err != nil {
 		t.Fatal(err)
@@ -159,10 +169,7 @@ func TestDirectHTTPDefaultNeverCreatesMigrationMarker(t *testing.T) {
 
 func TestCustomAuditDoesNotTouchOldDefault(t *testing.T) {
 	home := isolatedLogHome(t)
-	source, err := legacyAuditPath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := retiredAuditPathForTest(t)
 	if err := audit.PrepareDirectory(filepath.Dir(source)); err != nil {
 		t.Fatal(err)
 	}
@@ -184,73 +191,6 @@ func TestCustomAuditDoesNotTouchOldDefault(t *testing.T) {
 	got, err := os.ReadFile(source)
 	if err != nil || !bytes.Equal(got, original) {
 		t.Fatalf("custom audit changed old controller history: %q %v", got, err)
-	}
-}
-
-func TestUpdateAuditPathPolicyAndRollback(t *testing.T) {
-	_ = isolatedLogHome(t)
-	legacy, err := legacyAuditPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	unified, err := defaultAuditPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	workDir := filepath.Dir(unified)
-	for _, tc := range []struct {
-		name                string
-		info                mcpserver.RuntimeInfo
-		wantOld, wantTarget string
-		migration           bool
-	}{
-		{"legacy published audit", mcpserver.RuntimeInfo{Audit: audit.Status{State: "ok", Path: legacy}},
-			legacy, unified, true},
-		{"older server no audit metadata", mcpserver.RuntimeInfo{Arguments: []string{"serve"}},
-			legacy, unified, true},
-		{"older explicit disabled", mcpserver.RuntimeInfo{Arguments: []string{"serve", "--audit-file=off"}},
-			"off", "off", false},
-		{"new default", mcpserver.RuntimeInfo{Audit: audit.Status{State: "ok", Path: unified}},
-			unified, unified, false},
-		{"custom", mcpserver.RuntimeInfo{Audit: audit.Status{State: "ok", Path: filepath.Join(workDir, "custom.jsonl")}},
-			filepath.Join(workDir, "custom.jsonl"), filepath.Join(workDir, "custom.jsonl"), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			old, target, migrating, err := updateAuditPaths(tc.info)
-			if err != nil || old != tc.wantOld || target != tc.wantTarget || migrating != tc.migration {
-				t.Fatalf("got %q %q %t %v; want %q %q %t",
-					old, target, migrating, err, tc.wantOld, tc.wantTarget, tc.migration)
-			}
-		})
-	}
-	if got := rollbackAuditPath(legacy, unified, true); got != legacy {
-		t.Fatalf("rollback before migration used %q, want old path", got)
-	}
-	if err := audit.PrepareDirectory(filepath.Dir(unified)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(unified+".migrated.json", []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got := rollbackAuditPath(legacy, unified, true); got != unified {
-		t.Fatalf("rollback after migration used %q instead of unified path", got)
-	}
-	for _, tc := range []struct {
-		info      mcpserver.RuntimeInfo
-		expected  string
-		wantError bool
-	}{
-		{mcpserver.RuntimeInfo{Audit: audit.Status{State: "ok", Path: unified}}, unified, false},
-		{mcpserver.RuntimeInfo{Audit: audit.Status{State: "disabled"}}, "off", false},
-		{mcpserver.RuntimeInfo{Audit: audit.Status{State: "ok", Path: legacy}}, unified, true},
-		{mcpserver.RuntimeInfo{Audit: audit.Status{State: "degraded", Path: unified}}, unified, true},
-		{mcpserver.RuntimeInfo{Arguments: []string{"serve", "--audit-file=" + unified}}, unified, false},
-		{mcpserver.RuntimeInfo{Arguments: []string{"serve", "--audit-file=off"}}, unified, true},
-	} {
-		err := verifyRestartAudit(tc.info, tc.expected)
-		if (err != nil) != tc.wantError {
-			t.Fatalf("verification (%+v -> %q) error %v; wantError=%t", tc.info, tc.expected, err, tc.wantError)
-		}
 	}
 }
 

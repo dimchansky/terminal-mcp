@@ -59,7 +59,7 @@ func runUpdateWorker(manifest string) error {
 func performUpdate(job updateJob, phase func(string) error) (updateStatus, error) {
 	old := job.Runtime
 	failure := updateStatus{Status: "failed"}
-	oldAudit, targetAudit, migrating, err := updateAuditPaths(old)
+	auditPath, err := updateAuditPath(old)
 	if err != nil {
 		return failure, fmt.Errorf("resolve update audit path: %w", err)
 	}
@@ -164,7 +164,7 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 		}
 	}
 	if err == nil {
-		newProcess, err = launchStandalone(job, old.Executable, targetAudit)
+		newProcess, err = launchStandalone(job, old.Executable, auditPath)
 	}
 	if err == nil {
 		var current mcpserver.RuntimeInfo
@@ -176,7 +176,7 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 				err = errors.New("running MCP metadata differs from preflight candidate")
 			}
 			if err == nil {
-				err = verifyRestartAudit(current, targetAudit)
+				err = verifyRestartAudit(current, auditPath)
 			}
 			if err == nil {
 				_ = newProcess.Process.Release()
@@ -199,11 +199,10 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 			return failure, errors.Join(err, fmt.Errorf("rollback replacement failed: %w", restoreErr))
 		}
 	}
-	rollbackAudit := rollbackAuditPath(oldAudit, targetAudit, migrating)
 	// Old releases without a tunnel status cannot accept new tunnel flags.
 	// A previous tunnel-aware binary may resume its own configured mode.
 	legacyRollback := old.Tunnel.State == ""
-	restored, restartErr := launchStandalone(job, old.Executable, rollbackAudit, legacyRollback)
+	restored, restartErr := launchStandalone(job, old.Executable, auditPath, legacyRollback)
 	if restartErr != nil {
 		return failure, errors.Join(err, fmt.Errorf("rollback launch failed: %w", restartErr))
 	}
@@ -212,7 +211,7 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 		stopStartedProcess(restored)
 		return failure, errors.Join(err, fmt.Errorf("rollback readiness failed: %w", readyErr))
 	}
-	if auditErr := verifyRestartAudit(recovered, rollbackAudit); auditErr != nil {
+	if auditErr := verifyRestartAudit(recovered, auditPath); auditErr != nil {
 		stopStartedProcess(restored)
 		return failure, errors.Join(err, fmt.Errorf("rollback audit path check failed: %w", auditErr))
 	}
