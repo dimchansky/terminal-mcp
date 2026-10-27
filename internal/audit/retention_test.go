@@ -168,7 +168,7 @@ func TestExplicitBudgetExhaustionCannotRecoverViaSmallerRequest(t *testing.T) {
 	}
 }
 
-func TestHistoryBudgetCountsExistingLegacyArchives(t *testing.T) {
+func TestHistoryBudgetCountsExistingArchives(t *testing.T) {
 	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
 	oldFiles := map[string][]byte{
 		"":   []byte("{\"active\":true}\n"),
@@ -194,7 +194,7 @@ func TestHistoryBudgetCountsExistingLegacyArchives(t *testing.T) {
 	if got := recorder.Status().BytesUsed; got != size {
 		t.Fatalf("existing archives not accounted: used %d want %d", got, size)
 	}
-	// An intentionally migrated non-consecutive archive prevents the newly
+	// A non-consecutive pre-existing archive prevents the newly
 	// rotated log from reusing the old .1-.5 names.
 	if err := recorder.Write(NewEvent(Event{Tool: "file_read", Phase: "request_finish", Args: strings.Repeat("k", int(maxFileBytes)-1024)})); err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestHistoryBudgetCountsExistingLegacyArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".6"); err != nil {
-		t.Fatalf("next archive did not advance beyond legacy maximum: %v", err)
+		t.Fatalf("next archive did not advance beyond existing maximum: %v", err)
 	}
 	for suffix, data := range oldFiles {
 		if suffix == "" {
@@ -245,30 +245,37 @@ func TestLimitDenialBeforeRotationLeavesDescriptorAndArchivesUntouched(t *testin
 	}
 }
 
-func TestMigratedArchivesCountAgainstHistoryBudget(t *testing.T) {
-	source, target := migrationTestPaths(t)
-	files := writeAuditMigrationFixture(t, source)
+func TestExistingArchivesRemainAfterBudgetRejection(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	files := map[string][]byte{
+		"":   []byte("{\"active\":true}\n"),
+		".1": []byte("{\"archived\":1}\n"),
+		".4": []byte("{\"archived\":4}\n"),
+	}
 	var used int64
-	for _, data := range files {
+	for suffix, data := range files {
+		if err := os.WriteFile(path+suffix, data, 0600); err != nil {
+			t.Fatal(err)
+		}
 		used += int64(len(data))
 	}
-	if _, err := OpenWithMigrationLimit(target, source, used-1); !errors.Is(err, ErrHistoryLimit) {
-		t.Fatalf("migration bypassed total history budget: %v", err)
+	if _, err := OpenWithLimit(path, used-1); !errors.Is(err, ErrHistoryLimit) {
+		t.Fatalf("existing history bypassed the budget: %v", err)
 	}
-	for suffix, want := range files {
-		got, err := os.ReadFile(source + suffix)
-		if err != nil || !bytes.Equal(got, want) {
-			t.Fatalf("failed bounded migration altered legacy history: %q %v", got, err)
+	for suffix, expected := range files {
+		data, err := os.ReadFile(path + suffix)
+		if err != nil || !bytes.Equal(data, expected) {
+			t.Fatalf("budget rejection changed existing history %q: %v", suffix, err)
 		}
 	}
-	log, err := OpenWithMigrationLimit(target, source, used+1024)
+	recorder, err := OpenWithLimit(path, used+1024)
 	if err != nil {
-		t.Fatalf("could not resume migration with adequate budget: %v", err)
+		t.Fatalf("could not reopen unchanged archives with a valid budget: %v", err)
 	}
-	if got := log.Status().BytesUsed; got != used {
-		t.Fatalf("migrated history size = %d want %d", got, used)
+	if got := recorder.Status().BytesUsed; got != used {
+		t.Fatalf("existing history = %d bytes, want %d", got, used)
 	}
-	if err := log.Close(); err != nil {
+	if err := recorder.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,7 +73,6 @@ type Log struct {
 	closed     bool
 	closeErr   error
 	path       string
-	legacyLock *os.File                     // Kept until Close to fence out the old server.
 	failure    atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
 	bytesUsed  atomic.Int64
 	bytesLimit int64
@@ -255,10 +253,6 @@ func (l *Log) Close() error {
 	}
 	l.closed = true
 	l.closeErr = l.sink.close()
-	if l.legacyLock != nil {
-		l.closeErr = errors.Join(l.closeErr, l.legacyLock.Close())
-		l.legacyLock = nil
-	}
 	first := l.markDegraded(l.closeErr, true)
 	result := l.closeErr
 	l.mu.Unlock()

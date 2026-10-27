@@ -15,18 +15,17 @@ import (
 	"terminalmcp/internal/audit"
 )
 
-// Candidate performs the real audit migration and writes server_start, but
-// then deliberately fails before serving its production address. Rollback
-// must use the newly migrated path even with the original binary restored.
-func TestUpdaterRollbackAfterSuccessfulAuditMigration(t *testing.T) {
-	var legacy string
+// Candidate records server_start in the same audit but fails before it can
+// serve the production address. Rollback must retain the same audited history.
+func TestUpdaterRollbackAfterCandidateAuditStart(t *testing.T) {
+	var journal string
 	f := newUpdateFixtureWithAudit(t, false, func(home string) string {
-		legacy = legacyAuditInTestHome(home)
-		return legacy
+		journal = currentAuditInTestHome(home)
+		return journal
 	})
-	oldRecord, err := os.ReadFile(legacy)
+	oldRecord, err := os.ReadFile(journal)
 	if err != nil || !bytes.Contains(oldRecord, []byte("server_start")) {
-		t.Fatalf("missing original audit: %q %v", oldRecord, err)
+		t.Fatalf("missing initial audit: %q %v", oldRecord, err)
 	}
 
 	source, err := os.ReadFile("main.go")
@@ -38,8 +37,8 @@ func TestUpdaterRollbackAfterSuccessfulAuditMigration(t *testing.T) {
 		t.Fatal("unable to instrument live-port failure after audit startup")
 	}
 	// The candidate passes preflight on its ephemeral port. Only the live
-	// address fails, after migration and the candidate's server_start event.
-	injected := fmt.Sprintf("if opts.listen == %q { return errors.New(\"injected after-migration launch failure\") }\n\t", f.address)
+	// address fails after the candidate's server_start event.
+	injected := fmt.Sprintf("if opts.listen == %q { return errors.New(\"injected after-audit launch failure\") }\n\t", f.address)
 	modified := strings.Replace(string(source), marker, injected+marker, 1)
 	overlaySource := filepath.Join(f.home, "candidate-main.go")
 	if err := os.WriteFile(overlaySource, []byte(modified), 0600); err != nil {
@@ -49,7 +48,7 @@ func TestUpdaterRollbackAfterSuccessfulAuditMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	overlay := filepath.Join(f.home, "overlay-migration.json")
+	overlay := filepath.Join(f.home, "overlay-audit.json")
 	if err := writeJSON(overlay, map[string]any{"Replace": map[string]string{absolute: overlaySource}}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,37 +59,33 @@ func TestUpdaterRollbackAfterSuccessfulAuditMigration(t *testing.T) {
 	f.update(f.candidate)
 	result := f.waitResult()
 	if result.Status != "rolled_back" || !strings.Contains(result.Error, "readiness") {
-		t.Fatalf("expected rollback after migrated candidate failure: %+v", result)
+		t.Fatalf("expected rollback after candidate startup failure: %+v", result)
 	}
 	recovered, err := f.client.runtime()
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(f.home, ".config", "terminal-mcp", "logs", "audit.jsonl")
+	target := journal
 	if recovered.ServerID == f.oldID || recovered.Audit.State != "ok" ||
 		!sameAuditPath(recovered.Audit.Path, target) {
-		t.Fatalf("rollback reverted to old audit location or did not restart: %+v", recovered)
+		t.Fatalf("rollback changed the selected audit path or did not restart: %+v", recovered)
 	}
 	if current, err := fileSHA256(f.target); err != nil || current != recovered.ExecutableSHA256 {
 		t.Fatalf("rollback did not restore running binary: %s %v", current, err)
 	}
-	markerPath := target + ".migrated.json"
-	if _, err := os.Stat(markerPath); err != nil {
-		t.Fatalf("migration marker missing after rollback: %v", err)
+	if _, err := os.Stat(target + ".migrated.json"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback created a migration marker: %v", err)
 	}
 	logged, err := os.ReadFile(target)
 	if err != nil || !bytes.HasPrefix(logged, oldRecord) ||
 		bytes.Count(logged, []byte("\"phase\":\"server_start\"")) < 3 {
 		t.Fatalf("rollback did not keep old/candidate/restarted server history: %s %v", logged, err)
 	}
-	if oldCopy, err := os.ReadFile(legacy); err != nil || !bytes.HasPrefix(oldCopy, oldRecord) {
-		t.Fatalf("rollback destroyed legacy audit copy: %s %v", oldCopy, err)
-	}
-	if other, err := audit.Open(legacy); err == nil {
-		_ = other.Close()
-		t.Fatal("rollback did not fence old journal while using migrated one")
-	} else if !errors.Is(err, audit.ErrInUse) {
-		t.Fatalf("unexpected legacy lock state after rollback: %v", err)
+	if writer, err := audit.Open(journal); !errors.Is(err, audit.ErrInUse) {
+		if err == nil {
+			_ = writer.Close()
+		}
+		t.Fatalf("rollback did not retain the active journal lock: %v", err)
 	}
 	var latest struct {
 		ID string `json:"id"`

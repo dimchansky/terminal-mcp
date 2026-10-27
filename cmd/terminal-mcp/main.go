@@ -253,22 +253,9 @@ func openAuditWithLimit(requestedPath, transport string, maxBytes int64) (*audit
 	if err := audit.PrepareDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("prepare audit directory %q: %w", filepath.Dir(path), err)
 	}
-	// Explicit custom paths remain untouched. Only the platform default is
-	// cold-migrated, with both old/new locks held until the server stops.
-	defaultPath, err := defaultAuditPath()
-	if err != nil {
-		return nil, err
-	}
-	var recorder *audit.Log
-	if sameAuditPath(path, defaultPath) {
-		legacy, legacyErr := legacyAuditPath()
-		if legacyErr != nil {
-			return nil, legacyErr
-		}
-		recorder, err = audit.OpenWithMigrationLimit(path, legacy, maxBytes)
-	} else {
-		recorder, err = audit.OpenWithLimit(path, maxBytes)
-	}
+	// Open only the selected audit path. Default and custom journals use the
+	// same independent writer lock; no old controller path is accessed.
+	recorder, err := audit.OpenWithLimit(path, maxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("open required audit file %q: %w", path, err)
 	}

@@ -75,7 +75,9 @@ func TestStableLogPathsAndDistinctStdoutStderr(t *testing.T) {
 	}
 }
 
-func TestDirectHTTPDefaultMigratesColdLegacyAudit(t *testing.T) {
+// The modern audit journal must never examine or pin the old controller's
+// audit location, even if historical data and a broken migration marker exist.
+func TestDirectHTTPDefaultIgnoresOldAuditHistory(t *testing.T) {
 	_ = isolatedLogHome(t)
 	source, err := legacyAuditPath()
 	if err != nil {
@@ -85,18 +87,22 @@ func TestDirectHTTPDefaultMigratesColdLegacyAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source == target {
-		t.Fatal("old and new paths are identical")
-	}
 	if err := audit.PrepareDirectory(filepath.Dir(source)); err != nil {
 		t.Fatal(err)
 	}
-	oldRecord := []byte("{\"historical\":true}\n")
+	oldRecord := []byte("{\"old_controller\":true}\n")
 	if err := os.WriteFile(source, oldRecord, 0600); err != nil {
 		t.Fatal(err)
 	}
-	archive := []byte("{\"older\":true}\n")
-	if err := os.WriteFile(source+".1", archive, 0600); err != nil {
+	if err := os.WriteFile(source+".1", []byte("{\"old_archive\":true}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.PrepareDirectory(filepath.Dir(target)); err != nil {
+		t.Fatal(err)
+	}
+	marker := target + ".migrated.json"
+	brokenMarker := []byte("not a valid migration marker")
+	if err := os.WriteFile(marker, brokenMarker, 0600); err != nil {
 		t.Fatal(err)
 	}
 	recorder, err := openAudit("", "http")
@@ -106,37 +112,52 @@ func TestDirectHTTPDefaultMigratesColdLegacyAudit(t *testing.T) {
 	if got := recorder.Status().Path; !sameAuditPath(got, target) {
 		t.Fatalf("default uses wrong audit location: %q", got)
 	}
-	if _, err := audit.Open(source); !errors.Is(err, audit.ErrInUse) {
-		t.Fatalf("old server could write during new server migration: %v", err)
+	// The old controller is not part of the new writer's lock domain.
+	oldWriter, err := audit.Open(source)
+	if err != nil {
+		_ = recorder.Close()
+		t.Fatalf("new default audit still locks old controller path: %v", err)
 	}
-	if err := recordServerStart(recorder, "test-instance"); err != nil {
+	if err := oldWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordServerStart(recorder, "modern-instance"); err != nil {
 		t.Fatal(err)
 	}
 	if err := recorder.Close(); err != nil {
 		t.Fatal(err)
 	}
-	original, err := os.ReadFile(source)
-	if err != nil || !bytes.Equal(original, oldRecord) {
-		t.Fatalf("cold migration destroyed source history: %q %v", original, err)
+	current, err := os.ReadFile(target)
+	if err != nil || !bytes.Contains(current, []byte("modern-instance")) || bytes.Contains(current, oldRecord) {
+		t.Fatalf("modern audit was merged with old history: %q %v", current, err)
 	}
-	copied, err := os.ReadFile(target)
-	if err != nil || !bytes.HasPrefix(copied, oldRecord) || !bytes.Contains(copied, []byte("server_start")) {
-		t.Fatalf("cold migration lost active history: %q %v", copied, err)
+	if got, err := os.ReadFile(source); err != nil || !bytes.Equal(got, oldRecord) {
+		t.Fatalf("old controller audit was modified: %q %v", got, err)
 	}
-	oldArchive, err := os.ReadFile(source + ".1")
-	if err != nil || !bytes.Equal(oldArchive, archive) {
-		t.Fatalf("cold migration modified source archive: %q %v", oldArchive, err)
+	if got, err := os.ReadFile(marker); err != nil || !bytes.Equal(got, brokenMarker) {
+		t.Fatalf("obsolete marker was read or changed: %q %v", got, err)
 	}
-	newArchive, err := os.ReadFile(target + ".1")
-	if err != nil || !bytes.Equal(newArchive, archive) {
-		t.Fatalf("cold migration did not preserve numbered archive: %q %v", newArchive, err)
-	}
-	if _, err := os.Stat(target + ".migrated.json"); err != nil {
-		t.Fatalf("migration manifest missing: %v", err)
+	if _, err := os.Stat(target + ".1"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected archive copied from old controller: %v", err)
 	}
 }
 
-func TestExplicitCustomAuditDoesNotMigrateLegacyDefault(t *testing.T) {
+func TestDirectHTTPDefaultNeverCreatesMigrationMarker(t *testing.T) {
+	_ = isolatedLogHome(t)
+	recorder, err := openAudit("", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := recorder.Status().Path
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target + ".migrated.json"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new default created a migration marker: %v", err)
+	}
+}
+
+func TestCustomAuditDoesNotTouchOldDefault(t *testing.T) {
 	home := isolatedLogHome(t)
 	source, err := legacyAuditPath()
 	if err != nil {
@@ -145,7 +166,8 @@ func TestExplicitCustomAuditDoesNotMigrateLegacyDefault(t *testing.T) {
 	if err := audit.PrepareDirectory(filepath.Dir(source)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(source, []byte("{\"old\":true}\n"), 0600); err != nil {
+	original := []byte("{\"old\":true}\n")
+	if err := os.WriteFile(source, original, 0600); err != nil {
 		t.Fatal(err)
 	}
 	custom := filepath.Join(home, "custom", "audit.jsonl")
@@ -157,10 +179,11 @@ func TestExplicitCustomAuditDoesNotMigrateLegacyDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(custom + ".migrated.json"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("explicit custom path was accidentally migrated: %v", err)
+		t.Fatalf("custom audit created a migration marker: %v", err)
 	}
-	if _, err := os.Stat(source); err != nil {
-		t.Fatalf("source history was lost: %v", err)
+	got, err := os.ReadFile(source)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("custom audit changed old controller history: %q %v", got, err)
 	}
 }
 

@@ -37,7 +37,7 @@ type fileSink struct {
 	size     int64
 	repair   bool
 	repairTo int64
-	total    int64  // Active file plus all numbered archives, including legacy.
+	total    int64  // Active file plus all existing numbered archives.
 	limit    int64  // Hard cap; never evict old audit records.
 	next     uint64 // Next strictly increasing archive suffix.
 
@@ -94,7 +94,7 @@ var ErrInUse = errors.New("audit log is already in use")
 var ErrJournalChanged = errors.New("audit journal changed outside the writer")
 
 // scanArchives inventories the existing audit history exactly once per sink.
-// All numbered archives count, including files copied during legacy migration.
+// All existing numbered archives count against the optional history budget.
 // Archive numbering is append-only; older files are never renamed or removed.
 func (s *fileSink) scanArchives() error {
 	entries, err := os.ReadDir(filepath.Dir(s.path))
