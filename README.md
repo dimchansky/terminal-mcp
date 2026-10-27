@@ -68,8 +68,15 @@ For Windows installation, native ConPTY support, and Windows paths, use the [Win
 
 This is **optional**. You do not need a separate `tunnel-client` program.
 
-1. In [OpenAI Platform Tunnels](https://platform.openai.com/settings/organization/tunnels), create or select a tunnel. Make sure it is available to your ChatGPT workspace.
-2. Create a restricted runtime API key with **Tunnels Read + Use** permission.
+1. Open [OpenAI Platform Tunnels](https://platform.openai.com/settings/organization/tunnels). Create a tunnel or select an existing one.
+   For a new tunnel, set **Name** to `Local Terminal MCP` and **Description** to `Run terminal commands, manage processes, and work with files on my computer.`
+   Select your Platform organization and, if listed, the ChatGPT workspace that will use the tunnel.
+   Leave **Restrict client network access** off unless your organization requires it. Save the tunnel and copy the tunnel ID.
+2. Open [OpenAI API keys](https://platform.openai.com/settings/organization/api-keys) and create a secret key (the runtime key).
+   Set **Name** to `Tunnel Client API Key` and **Permissions** to **Restricted**.
+   Under **Tunnels**, select **Read** and **Use** only. Leave all other API permissions at **None**.
+   Set an expiration date. Before it expires, create a replacement key, update the private key file, and restart `terminal-mcp`.
+   Verify the connection before you revoke the old key.
 3. Save the runtime key in a private file on the computer that runs `terminal-mcp`. Do not put the key in a command argument or in this README.
 
 For example, on macOS or Linux:
