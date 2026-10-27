@@ -145,7 +145,7 @@ func childEnv(overrides map[string]string, pty bool) []string {
 	env := make(map[string]string)
 	for _, item := range os.Environ() {
 		k, v, ok := strings.Cut(item, "=")
-		if ok && k != "TERMINAL_MCP_TOKEN" {
+		if ok && !strings.EqualFold(k, "TERMINAL_MCP_TOKEN") && !strings.EqualFold(k, "CONTROL_PLANE_API_KEY") {
 			env[k] = v
 		}
 	}

@@ -96,6 +96,16 @@ The HTTP transport is stateless at the protocol level. The process manager keeps
 
 A tunnel can reconnect while the Go server continues to run. A server restart removes its session state.
 
+### Optional embedded OpenAI Secure MCP Tunnel
+
+HTTP serve/start supports `--tunnel` (default false), `--tunnel-id` (or `CONTROL_PLANE_TUNNEL_ID`) and `--tunnel-key-file`. The official pinned Go SDK polls the OpenAI control plane in the same process; it uses the existing authenticated 127.0.0.1 HTTP `/mcp` endpoint with a loopback-only, pinned RoundTripper that replaces forwarded Authorization with the local bearer and strips Origin/forwarded routing headers. The /admin routes cannot be used through the tunnel. Stdio mode rejects `--tunnel`. One embedded client provides the main MCP channel only, with no generic routing of additional MCP servers.
+
+Standalone `start --tunnel` requires a private pre-created runtime key file; its configuration persists only the enable flag, tunnel ID and file path. The key is never inserted into argv or saved config. Existing standalone config readers ignore the new optional fields. Direct foreground `serve --tunnel` also accepts the runtime key via `CONTROL_PLANE_API_KEY` when no file is given. The key is filtered from automatically inherited managed-process environments; explicitly supplied and fully audited tool overrides remain supported. No isolation from local commands running with the same user's privileges is claimed.
+
+Tunnel traffic enters the same MCP server, tool middleware, session manager and mandatory pre-effect audit. Local HTTP startup is not gated on a successful external control-plane poll; temporary OpenAI failures do not stop local HTTP. The SDK `Ready` latch only indicates its first successful poll and is not a live connectivity check. An unexpected SDK shutdown request leaves local HTTP available and is surfaced as `shutdown_requested`; a failed local SDK initialization reports `start_failed`. Neither automatically restarts a second runtime, and neither is confused with a temporary control-plane polling outage.
+
+Graceful stop/update preserves remote access to existing-session controls during manager draining, then stops tunnel polling after active MCP/HTTP requests have drained and before closing session manager and audit. SDK stop cleanup may be bounded, but already accepted terminal processes and downloads have no automatic drain timeout. Updater candidate preflight always omits tunnel flags to avoid a duplicate control-plane client. Successful activation only starts the new tunnel after the old process exits; legacy rollback strips unknown tunnel flags, restores local HTTP/audit, and leaves the tunnel disabled.
+
 ### Stdio transport
 
 Use `--transport=stdio` when an MCP host starts the server directly. Stdio provides the same 14 tools.

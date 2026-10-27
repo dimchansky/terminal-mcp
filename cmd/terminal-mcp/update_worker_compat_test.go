@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,5 +53,21 @@ func TestWaitForIdleFenceUpgradesOlderServer(t *testing.T) {
 	}
 	if began.Load() != 1 || checked.Load() != 1 {
 		t.Fatalf("legacy maintenance calls: begin=%d ready=%d", began.Load(), checked.Load())
+	}
+}
+
+func TestRemoveTunnelFlagsForPreflightAndLegacyRollback(t *testing.T) {
+	original := []string{"serve", "--listen=127.0.0.1:8090", "--tunnel=true",
+		"--tunnel-id=tunnel_sdktestaaaaaaaaaaaaaaaaaaaaaaaaa", "--tunnel-key-file=/private/key",
+		"--audit-file=/private/audit.jsonl"}
+	got := withoutTunnelFlags(original)
+	want := []string{"serve", "--listen=127.0.0.1:8090", "--audit-file=/private/audit.jsonl"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unrecognized arguments passed to old binary: %q", got)
+	}
+	separate := []string{"serve", "--tunnel", "--tunnel-id", "tunnel_sdktestaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"--tunnel-key-file", "/private/key", "--listen=127.0.0.1:8090"}
+	if got := withoutTunnelFlags(separate); !slices.Equal(got, []string{"serve", "--listen=127.0.0.1:8090"}) {
+		t.Fatalf("split tunnel flags leaked into preflight or rollback: %q", got)
 	}
 }

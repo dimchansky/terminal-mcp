@@ -295,7 +295,7 @@ A new installation stores its configuration in
 `~/.config/terminal-mcp/standalone/config.json`. The settings include:
 `listen` (loopback address), `token_file` (private bearer token),
 `file_root` (root for file tools), stable `working_directory`,
-optional explicit `env_overrides` and `audit_file`. The old `path` field
+optional explicit `env_overrides`, `audit_file`, and optional `tunnel`, `tunnel_id`, `tunnel_key_file` values. The runtime key file must be private; only its path is saved. The old `path` field
 is accepted but **ignored**; inherited `PATH` is never automatically saved.
 If no token exists, a random private token is created at
 `~/.config/terminal-mcp/token`.
@@ -332,9 +332,15 @@ standalone config; it takes precedence over inherited values even during
 update and rollback. The updater applies it once to its independent worker,
 rather than duplicating secrets in the on-disk job manifest. Use
 `start --clear-env` to discard all saved overrides, possibly together with
-new `--env` flags. `TERMINAL_MCP_TOKEN` cannot be explicitly overridden,
+new `--env` flags. `TERMINAL_MCP_TOKEN` and `CONTROL_PLANE_API_KEY` cannot be explicitly overridden,
 and secrets should not be passed on the command line where process listings
 or shell history might expose them.
+
+### Embedded tunnel lifecycle
+
+The optional official OpenAI tunnel SDK shares the authenticated local /mcp endpoint. A foreground `serve --tunnel` may read environment credentials; the detached `start --tunnel` deliberately requires a user-provisioned private key file (0600 on Unix or a private Windows ACL) and persists only tunnel ID, enable flag and key-file path. A user must stop their external client using the same ID before cutover.
+
+Tunnel connectivity is not a precondition for local server startup or updater readiness. A successful first control-plane poll is not a continuing online probe. Local SDK startup errors are distinguishable from transient control-plane outages: updater readiness checks the local SDK lifecycle but does not wait for a successful OpenAI poll. Normal shutdown leaves the tunnel available during unbounded drain, then stops the SDK before audit close. Candidate preflight and rollback never start a second tunnel poller under the same ID, and rollback to a pre-tunnel binary retains existing local HTTP and audit functionality.
 
 ### Update from the repository or the MCP connection
 

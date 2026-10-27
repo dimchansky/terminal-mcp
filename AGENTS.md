@@ -79,6 +79,13 @@ only in the current server's memory; do not persist them across restarts.
 Never invent total size or percentage when Content-Length is unknown.
 Do not impose an arbitrary overall download timeout or hard-coded size cap.
 
+When an optional embedded Secure MCP Tunnel is enabled, every remote tool
+call must traverse the *same* owner-visible pre-effect audit, shared session
+manager and admission gate as local HTTP. Never let updater preflight start
+another tunnel client with a production tunnel ID. Treat credentials as
+privileged user data, but do not misrepresent same-user shell access as a
+sandbox. The local HTTP MCP must work when the remote tunnel is offline.
+
 Normal `stop`, `update`, SIGINT and SIGTERM must first atomically close
 admission for new work, then wait for already accepted mutations, downloads,
 managed processes and audit completion. Maintain status/controls for existing

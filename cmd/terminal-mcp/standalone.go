@@ -28,6 +28,9 @@ type standaloneConfig struct {
 	AuditMaxBytes    int64             `json:"audit_max_bytes,omitempty"`
 	WorkingDirectory string            `json:"working_directory"`
 	EnvOverrides     map[string]string `json:"env_overrides,omitempty"`
+	Tunnel           bool              `json:"tunnel,omitempty"`
+	TunnelID         string            `json:"tunnel_id,omitempty"`
+	TunnelKeyFile    string            `json:"tunnel_key_file,omitempty"`
 }
 
 func standaloneCommand(args []string) error {
@@ -198,6 +201,8 @@ func startStandalone(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
 	var listen, tokenFile, fileRoot, auditFile, workingDirectory string
 	var auditMaxBytes int64
+	var tunnel bool
+	var tunnelID, tunnelKeyFile string
 	var envFlags environmentFlags
 	var clearEnv bool
 	flags.StringVar(&workingDirectory, "working-directory", "", "absolute server working directory; default retains configured initial cwd")
@@ -208,6 +213,9 @@ func startStandalone(args []string) error {
 	flags.StringVar(&tokenFile, "token-file", "", "existing bearer token file")
 	flags.StringVar(&fileRoot, "file-root", "", "root directory for MCP file tools")
 	flags.StringVar(&auditFile, "audit-file", "", "JSONL audit file; off disables it; default restores the platform default")
+	flags.BoolVar(&tunnel, "tunnel", false, "enable or disable embedded Secure MCP Tunnel")
+	flags.StringVar(&tunnelID, "tunnel-id", "", "existing OpenAI tunnel ID (otherwise CONTROL_PLANE_TUNNEL_ID)")
+	flags.StringVar(&tunnelKeyFile, "tunnel-key-file", "", "private file containing restricted tunnel runtime API key")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -258,10 +266,21 @@ func startStandalone(args []string) error {
 		return errors.New("audit-max-bytes must be non-negative")
 	}
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "audit-max-bytes" {
+		switch f.Name {
+		case "audit-max-bytes":
 			config.AuditMaxBytes = auditMaxBytes
+		case "tunnel":
+			config.Tunnel = tunnel
+		case "tunnel-id":
+			config.TunnelID = tunnelID
+		case "tunnel-key-file":
+			config.TunnelKeyFile = tunnelKeyFile
 		}
 	})
+	config.TunnelID, config.TunnelKeyFile, err = resolveStandaloneTunnelConfig(config.Tunnel, config.TunnelID, config.TunnelKeyFile)
+	if err != nil {
+		return err
+	}
 	config, err = resolveStandaloneConfig(config)
 	if err != nil {
 		return err
@@ -329,6 +348,10 @@ func startStandalone(args []string) error {
 	if config.AuditMaxBytes != 0 {
 		serverArgs = append(serverArgs, fmt.Sprintf("--audit-max-bytes=%d", config.AuditMaxBytes))
 	}
+	if config.Tunnel {
+		serverArgs = append(serverArgs, "--tunnel=true", "--tunnel-id="+config.TunnelID,
+			"--tunnel-key-file="+config.TunnelKeyFile)
+	}
 	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = config.WorkingDirectory
 	cmd.Env = childEnvironment(cmd.Environ(), config.EnvOverrides)
@@ -376,6 +399,7 @@ func startStandalone(args []string) error {
 	started = true
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "started", "pid": info.PID, "server_id": info.ServerID,
+		"tunnel":     info.Tunnel,
 		"executable": info.Executable, "revision": info.Revision,
 		"installed_new": firstInstall,
 		"stdout_log":    logs.stdout.Name(), "stderr_log": logs.stderr.Name(),
@@ -441,6 +465,7 @@ func controlStandalone(action string, args []string) error {
 			"draining": info.Draining, "drain_mode": info.DrainMode,
 			"active_operations": info.ActiveOperations, "active_sessions": info.ActiveSessions,
 			"listen": info.Listen, "file_root": info.FileRoot, "audit": info.Audit,
+			"tunnel":            info.Tunnel,
 			"executable":        info.Executable,
 			"revision":          verifiedRunningRevision(info.Executable, info.ExecutableSHA256, info.Revision),
 			"executable_sha256": info.ExecutableSHA256,

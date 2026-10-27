@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -199,7 +200,10 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 		}
 	}
 	rollbackAudit := rollbackAuditPath(oldAudit, targetAudit, migrating)
-	restored, restartErr := launchStandalone(job, old.Executable, rollbackAudit)
+	// Old releases without a tunnel status cannot accept new tunnel flags.
+	// A previous tunnel-aware binary may resume its own configured mode.
+	legacyRollback := old.Tunnel.State == ""
+	restored, restartErr := launchStandalone(job, old.Executable, rollbackAudit, legacyRollback)
 	if restartErr != nil {
 		return failure, errors.Join(err, fmt.Errorf("rollback launch failed: %w", restartErr))
 	}
@@ -213,7 +217,8 @@ func performUpdate(job updateJob, phase func(string) error) (updateStatus, error
 		return failure, errors.Join(err, fmt.Errorf("rollback audit path check failed: %w", auditErr))
 	}
 	_ = restored.Process.Release()
-	return updateStatus{Status: "rolled_back", Error: err.Error(), ServerID: recovered.ServerID}, nil
+	return updateStatus{Status: "rolled_back", Error: err.Error(), ServerID: recovered.ServerID,
+		TunnelDisabled: old.Tunnel.State != "disabled" && recovered.Tunnel.State == "disabled"}, nil
 }
 
 func verifyRunningInstance(client *updateClient, want mcpserver.RuntimeInfo) error {
@@ -284,9 +289,20 @@ func waitForStandalone(client *updateClient, previousID, expectedHash string, ti
 		}
 		info, err := client.runtime()
 		if err == nil && info.ServerID != previousID && info.ExecutableSHA256 == expectedHash {
-			id, toolErr := client.serverID()
-			if toolErr == nil && id == info.ServerID {
-				return info, nil
+			switch info.Tunnel.State {
+			case "start_failed", "shutdown_requested", "stopping", "stopped":
+				// These are local SDK lifecycle errors, not temporary
+				// control-plane connectivity failures. Do not install a
+				// candidate that cannot keep its local tunnel runtime alive.
+				return mcpserver.RuntimeInfo{}, fmt.Errorf("embedded tunnel lifecycle failed: %s", info.Tunnel.State)
+			case "initializing":
+				// The local HTTP server is already serving, but SDK.Start
+				// has not completed. A first OpenAI poll is NOT required.
+			default:
+				id, toolErr := client.serverID()
+				if toolErr == nil && id == info.ServerID {
+					return info, nil
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -295,11 +311,32 @@ func waitForStandalone(client *updateClient, previousID, expectedHash string, ti
 }
 
 func preflightCandidate(job updateJob, candidate, expectedHash string) (string, error) {
+	// A candidate must validate the selected tunnel's local configuration
+	// without registering a competing control-plane poller. The regular
+	// preflight below still runs with the tunnel disabled.
+	if job.Runtime.Tunnel.State != "" && job.Runtime.Tunnel.State != "disabled" {
+		opts, err := parseOptions(job.Runtime.Arguments)
+		if err != nil {
+			return "", fmt.Errorf("read current tunnel flags: %w", err)
+		}
+		if !opts.tunnel || opts.tunnelKeyFile == "" {
+			return "", errors.New("embedded tunnel update requires a persistent private key file")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		check := exec.CommandContext(ctx, candidate, "_tunnel-check",
+			"--tunnel-id="+opts.tunnelID, "--tunnel-key-file="+opts.tunnelKeyFile)
+		check.Dir = job.Runtime.WorkingDirectory
+		check.Env = withoutEnvToken(check.Environ())
+		if err := check.Run(); err != nil {
+			return "", fmt.Errorf("candidate tunnel configuration preflight: %w", err)
+		}
+	}
 	address, err := reserveProbePort()
 	if err != nil {
 		return "", err
 	}
-	args := append([]string(nil), job.Runtime.Arguments...)
+	args := withoutTunnelFlags(job.Runtime.Arguments)
 	args = append(args, "--listen="+address, "--file-root="+job.Runtime.FileRoot,
 		"--token-file="+job.TokenFile, "--audit-file=off")
 	logFile, err := os.OpenFile(filepath.Join(job.Directory, "preflight.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
@@ -383,8 +420,35 @@ func preflightCandidate(job updateJob, candidate, expectedHash string) (string, 
 	return fingerprint, nil
 }
 
-func launchStandalone(job updateJob, executable, auditPath string) (*exec.Cmd, error) {
+// withoutTunnelFlags ensures preflight and legacy rollback never register a
+// second instance of the same tunnel or pass unsupported flags to old code.
+func withoutTunnelFlags(original []string) []string {
+	out := make([]string, 0, len(original))
+	for i := 0; i < len(original); i++ {
+		arg := original[i]
+		switch {
+		case arg == "--tunnel", strings.HasPrefix(arg, "--tunnel="),
+			strings.HasPrefix(arg, "--tunnel-id="), strings.HasPrefix(arg, "--tunnel-key-file="):
+			continue
+		case arg == "--tunnel-id", arg == "--tunnel-key-file":
+			// The flag parser also accepts: --tunnel-id VALUE.
+			// Remove both the name and the value for old binaries.
+			if i+1 < len(original) {
+				i++
+			}
+			continue
+		default:
+			out = append(out, arg)
+		}
+	}
+	return out
+}
+
+func launchStandalone(job updateJob, executable, auditPath string, disableTunnel ...bool) (*exec.Cmd, error) {
 	args := append([]string(nil), job.Runtime.Arguments...)
+	if len(disableTunnel) != 0 && disableTunnel[0] {
+		args = withoutTunnelFlags(args)
+	}
 	args = append(args, "--listen="+job.Runtime.Listen, "--file-root="+job.Runtime.FileRoot,
 		"--token-file="+job.TokenFile, "--audit-file="+auditPath)
 	cmd := exec.Command(executable, args...)

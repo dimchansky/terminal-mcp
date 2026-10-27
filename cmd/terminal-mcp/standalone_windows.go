@@ -28,6 +28,9 @@ type winStandaloneConfig struct {
 	AuditMaxBytes    int64             `json:"audit_max_bytes,omitempty"`
 	WorkingDirectory string            `json:"working_directory"`
 	EnvOverrides     map[string]string `json:"env_overrides,omitempty"`
+	Tunnel           bool              `json:"tunnel,omitempty"`
+	TunnelID         string            `json:"tunnel_id,omitempty"`
+	TunnelKeyFile    string            `json:"tunnel_key_file,omitempty"`
 }
 
 func windowsStateDir() (string, error) {
@@ -96,6 +99,8 @@ func windowsStart(args []string) error {
 	flags := flag.NewFlagSet("terminal-mcp start", flag.ContinueOnError)
 	var listen, root, token, auditFile, workingDirectory string
 	var auditMaxBytes int64
+	var tunnel bool
+	var tunnelID, tunnelKeyFile string
 	var envFlags environmentFlags
 	var clearEnv bool
 	flags.StringVar(&workingDirectory, "working-directory", "", "server working directory; default retains configured initial cwd")
@@ -106,6 +111,9 @@ func windowsStart(args []string) error {
 	flags.StringVar(&token, "token-file", "", "private HTTP bearer token file")
 	flags.StringVar(&auditFile, "audit-file", "", "audit log path; off disables; default restores platform default")
 	flags.Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "optional audit history limit in bytes (0 = unlimited; omitted = retain saved setting)")
+	flags.BoolVar(&tunnel, "tunnel", false, "enable or disable embedded Secure MCP Tunnel")
+	flags.StringVar(&tunnelID, "tunnel-id", "", "existing OpenAI tunnel ID (otherwise CONTROL_PLANE_TUNNEL_ID)")
+	flags.StringVar(&tunnelKeyFile, "tunnel-key-file", "", "private file containing restricted tunnel runtime API key")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -148,10 +156,21 @@ func windowsStart(args []string) error {
 		return errors.New("audit-max-bytes must be non-negative")
 	}
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "audit-max-bytes" {
+		switch f.Name {
+		case "audit-max-bytes":
 			cfg.AuditMaxBytes = auditMaxBytes
+		case "tunnel":
+			cfg.Tunnel = tunnel
+		case "tunnel-id":
+			cfg.TunnelID = tunnelID
+		case "tunnel-key-file":
+			cfg.TunnelKeyFile = tunnelKeyFile
 		}
 	})
+	cfg.TunnelID, cfg.TunnelKeyFile, err = resolveStandaloneTunnelConfig(cfg.Tunnel, cfg.TunnelID, cfg.TunnelKeyFile)
+	if err != nil {
+		return err
+	}
 	if cfg.AuditFile == "" {
 		cfg.AuditFile, err = defaultAuditPath()
 		if err != nil {
@@ -228,6 +247,10 @@ func windowsStart(args []string) error {
 	if cfg.AuditMaxBytes != 0 {
 		serverArgs = append(serverArgs, fmt.Sprintf("--audit-max-bytes=%d", cfg.AuditMaxBytes))
 	}
+	if cfg.Tunnel {
+		serverArgs = append(serverArgs, "--tunnel=true", "--tunnel-id="+cfg.TunnelID,
+			"--tunnel-key-file="+cfg.TunnelKeyFile)
+	}
 	cmd := exec.Command(installed, serverArgs...)
 	cmd.Dir = cfg.WorkingDirectory
 	cmd.Env = childEnvironment(cmd.Environ(), cfg.EnvOverrides)
@@ -272,6 +295,7 @@ func windowsStart(args []string) error {
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "started", "server_id": ready.ServerID, "pid": ready.PID,
+		"tunnel":     ready.Tunnel,
 		"executable": ready.Executable, "revision": ready.Revision,
 		"installed_new": firstInstall,
 	})
@@ -321,6 +345,7 @@ func windowsControl(action string, args []string) error {
 			"draining": info.Draining, "drain_mode": info.DrainMode,
 			"active_operations": info.ActiveOperations, "active_sessions": info.ActiveSessions,
 			"file_root": info.FileRoot, "listen": info.Listen, "audit": info.Audit,
+			"tunnel":            info.Tunnel,
 			"executable":        info.Executable,
 			"revision":          verifiedRunningRevision(info.Executable, info.ExecutableSHA256, info.Revision),
 			"executable_sha256": info.ExecutableSHA256,

@@ -435,7 +435,7 @@ For direct launches, `--file-root` sets the file-tool root. The `--audit-file` o
 
 ## Connect through Secure MCP Tunnel
 
-The local server does not need a public IP address or an open router port. The separate `tunnel-client` establishes an outbound connection to OpenAI.
+The local server does not need a public IP address or an open router port. It can use an embedded official OpenAI tunnel SDK (recommended), or connect through the separate `tunnel-client` (alternative).
 
 ```text
 ChatGPT
@@ -448,6 +448,41 @@ http://127.0.0.1:8090/mcp
    |
 terminal-mcp (your computer)
 ```
+
+### Embedded tunnel (one process, optional)
+
+The recommended optional mode uses the official [OpenAI tunnel-client Go SDK](https://github.com/openai/tunnel-client) **inside** terminal-mcp. No separate tunnel-client binary or process is required. The HTTP MCP endpoint, bearer authentication, owner-visible audit, session controls, and standalone updater remain available.
+
+Create a tunnel ID and a **Tunnels Read + Use** restricted runtime API key in [OpenAI Platform Tunnels](https://platform.openai.com/settings/organization/tunnels). Keep the runtime key in a private file, *not* in shell arguments or the repository:
+
+```sh
+mkdir -p "$HOME/.config/terminal-mcp/tunnel"
+chmod 700 "$HOME/.config/terminal-mcp/tunnel"
+umask 077
+${EDITOR:-vi} "$HOME/.config/terminal-mcp/tunnel/runtime-key"
+chmod 600 "$HOME/.config/terminal-mcp/tunnel/runtime-key"
+```
+
+After stopping the existing terminal-mcp server (if one is running), use:
+
+```sh
+terminal-mcp start --tunnel \
+  --tunnel-id='YOUR_COMPLETE_TUNNEL_ID' \
+  --tunnel-key-file="$HOME/.config/terminal-mcp/tunnel/runtime-key"
+terminal-mcp status
+```
+
+The enabled setting, tunnel ID, and **file path** persist across standalone restarts and self-updates; the raw API key is not saved to standalone JSON, command arguments, or normal application logs. To disable the integration, stop the server normally and use `terminal-mcp start --tunnel=false`. For direct foreground use, `serve --tunnel` also accepts `CONTROL_PLANE_TUNNEL_ID` and `CONTROL_PLANE_API_KEY` from the environment, but background `start --tunnel` requires a key file.
+
+**Cutover:** Do not run the standalone tunnel-client and the embedded SDK with the **same tunnel ID** at the same time. Enabled terminal-mcp instances on the same OS user account also acquire an exclusive per-tunnel OS lock to reject duplicate embedded clients; separate external tunnel-client processes do not share this lock. Stop your existing external client before enabling this mode. Independent external clients for other tunnel IDs remain unaffected.
+
+The `status` field `tunnel.state=first_poll_succeeded` means one OpenAI poll has succeeded **at least once**, not that the network is connected continuously. A temporary OpenAI outage does not stop local HTTP. If the embedded SDK requests an unexpected shutdown, `tunnel.state=shutdown_requested`; restart the application to start a fresh SDK runtime. A local initialization error is reported as `start_failed`. The SDK intentionally does not expose its separate `/readyz` or `/ui` in embedded mode.
+
+**Security:** Any ChatGPT account or connector with access to this tunnel has terminal-mcp's full local user privileges, not a sandbox. In particular, a process running under that account could read the private runtime-key file despite 0600/ACL protections. Use a dedicated least-privileged tunnel runtime key. The local HTTP bearer is never forwarded to OpenAI; the SDK authenticates locally through a fixed loopback-only client with a separately obtained local token. The complete raw MCP tool inputs, including secrets explicitly provided by models, remain in the owner's audit.
+
+### External tunnel-client (alternative)
+
+The following standalone-client procedure remains supported for installations that prefer independent processes.
 
 ### 1. Install the tunnel client
 

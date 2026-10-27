@@ -101,7 +101,7 @@ func withoutEnvToken(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, item := range env {
 		name, _, ok := strings.Cut(item, "=")
-		if !ok || !strings.EqualFold(name, "TERMINAL_MCP_TOKEN") {
+		if !ok || !(strings.EqualFold(name, "TERMINAL_MCP_TOKEN") || strings.EqualFold(name, "CONTROL_PLANE_API_KEY")) {
 			out = append(out, item)
 		}
 	}

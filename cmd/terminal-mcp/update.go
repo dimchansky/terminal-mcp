@@ -31,6 +31,7 @@ type updateStatus struct {
 	Error                string `json:"error,omitempty"`
 	ServerID             string `json:"server_id,omitempty"`
 	RefreshToolsRequired bool   `json:"refresh_tools_required,omitempty"`
+	TunnelDisabled       bool   `json:"tunnel_disabled,omitempty"`
 }
 
 func updateCommand(args []string) error {
@@ -98,6 +99,9 @@ func queueUpdate(args []string) error {
 	}
 	if info.EnvToken {
 		return errors.New("self-update requires a token file; restart the server without TERMINAL_MCP_TOKEN")
+	}
+	if info.TunnelKeyFromEnv {
+		return errors.New("self-update requires a tunnel runtime key file; restart with --tunnel-key-file")
 	}
 	serverID, err := client.serverID()
 	if err != nil {

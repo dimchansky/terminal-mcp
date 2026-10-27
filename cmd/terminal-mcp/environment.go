@@ -31,7 +31,7 @@ func (f *environmentFlags) Set(s string) error {
 }
 
 func validateEnvKey(key string) error {
-	if key == "" || strings.EqualFold(key, "TERMINAL_MCP_TOKEN") {
+	if key == "" || strings.EqualFold(key, "TERMINAL_MCP_TOKEN") || strings.EqualFold(key, "CONTROL_PLANE_API_KEY") {
 		return fmt.Errorf("invalid or reserved environment variable name %q", key)
 	}
 	for i, c := range key {

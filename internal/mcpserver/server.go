@@ -168,6 +168,10 @@ func HTTP(s *mcp.Server) http.Handler {
 }
 
 // RuntimeInfo describes only standalone HTTP processes eligible for self-update.
+type TunnelStatus struct {
+	State string `json:"state"`
+}
+
 type RuntimeInfo struct {
 	ServerID         string       `json:"server_id"`
 	Executable       string       `json:"executable"`
@@ -176,12 +180,14 @@ type RuntimeInfo struct {
 	WorkingDirectory string       `json:"working_directory"`
 	FileRoot         string       `json:"file_root"`
 	Audit            audit.Status `json:"audit"`
+	Tunnel           TunnelStatus `json:"tunnel"`
 	StdoutLog        string       `json:"stdout_log,omitempty"`
 	StderrLog        string       `json:"stderr_log,omitempty"`
 	Listen           string       `json:"listen"`
 	Arguments        []string     `json:"arguments"`
 	PID              int          `json:"pid"`
 	EnvToken         bool         `json:"env_token"`
+	TunnelKeyFromEnv bool         `json:"tunnel_key_from_env,omitempty"`
 	Draining         bool         `json:"draining"`
 	DrainMode        string       `json:"drain_mode,omitempty"`
 	ActiveOperations int          `json:"active_operations"`

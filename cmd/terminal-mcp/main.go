@@ -36,6 +36,9 @@ type options struct {
 	fileRoot      string
 	auditFile     string
 	auditMaxBytes int64
+	tunnel        bool
+	tunnelID      string
+	tunnelKeyFile string
 }
 
 func parseOptions(args []string) (options, error) {
@@ -50,6 +53,9 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&opts.fileRoot, "file-root", "", "Root directory for file tools (overrides configured file_root)")
 	flags.StringVar(&opts.auditFile, "audit-file", "", "JSONL audit log path; default user state in HTTP mode; off disables logging")
 	flags.Int64Var(&opts.auditMaxBytes, "audit-max-bytes", audit.DefaultMaxHistoryBytes, "optional hard limit for all audit history in bytes (0 = unlimited, the default)")
+	flags.BoolVar(&opts.tunnel, "tunnel", false, "enable embedded OpenAI Secure MCP Tunnel (HTTP mode only)")
+	flags.StringVar(&opts.tunnelID, "tunnel-id", "", "existing OpenAI tunnel ID; default CONTROL_PLANE_TUNNEL_ID")
+	flags.StringVar(&opts.tunnelKeyFile, "tunnel-key-file", "", "private file containing the restricted tunnel runtime API key")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
@@ -62,6 +68,9 @@ func parseOptions(args []string) (options, error) {
 	if opts.auditMaxBytes < 0 {
 		return opts, fmt.Errorf("audit-max-bytes must be non-negative")
 	}
+	if opts.transport == "stdio" && opts.tunnel {
+		return opts, errors.New("embedded tunnel is supported only with HTTP transport")
+	}
 	return opts, nil
 }
 
@@ -71,6 +80,12 @@ func main() {
 		case "start", "status", "stop":
 			if err := standaloneCommand(os.Args[1:]); err != nil {
 				slog.Error("terminal-mcp standalone command failed", "error", err)
+				os.Exit(1)
+			}
+			return
+		case "_tunnel-check":
+			if err := validateTunnelCandidate(os.Args[2:]); err != nil {
+				slog.Error("tunnel candidate validation failed", "error", err)
 				os.Exit(1)
 			}
 			return
@@ -99,6 +114,17 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	opts, err := parseOptions(args)
 	if err != nil {
 		return err
+	}
+	tunnelCfg, err := loadTunnelConfig(opts)
+	if err != nil {
+		return err
+	}
+	if opts.tunnel {
+		unlock, err := lockTunnelID(tunnelCfg.id)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	manager := session.New(terminal.Start)
 	defer manager.Close()
@@ -164,8 +190,16 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 		_ = listener.Close()
 		return fmt.Errorf("required audit startup event failed: %w", err)
 	}
+	var tunnel *tunnelRuntime
+	if opts.tunnel {
+		tunnel, err = newTunnelRuntime(tunnelCfg, listener.Addr().String(), token)
+		if err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("embedded tunnel setup: %w", err)
+		}
+	}
 	if len(args) == 0 || args[0] != "serve" {
-		return serveHTTP(ctx, manager, server, listener, token)
+		return serveHTTPWithTunnel(ctx, manager, server, listener, token, tunnel)
 	}
 	// Only explicitly launched standalone servers can shut themselves down
 	// for an update. Existing launchd-managed instances remain unchanged.
@@ -175,10 +209,11 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 		_ = listener.Close()
 		return err
 	}
+	info.TunnelKeyFromEnv = opts.tunnel && opts.tunnelKeyFile == ""
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	return serveHTTP(serveCtx, manager, server, listener, token, &updateServer{
-		info: info, recorder: recorder, shutdown: cancel,
+	return serveHTTPWithTunnel(serveCtx, manager, server, listener, token, tunnel, &updateServer{
+		info: info, recorder: recorder, tunnel: tunnel, shutdown: cancel,
 		force: func() {
 			files.AbortTransfers()
 			manager.AbortManagedSessions()
@@ -243,6 +278,7 @@ func openAuditWithLimit(requestedPath, transport string, maxBytes int64) (*audit
 type updateServer struct {
 	info     mcpserver.RuntimeInfo
 	recorder *audit.Log
+	tunnel   *tunnelRuntime
 	shutdown context.CancelFunc
 	force    func()
 }
@@ -296,6 +332,7 @@ func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token st
 			// even while the disk is failing or a tool write is blocked.
 			info := state.info
 			info.Audit = state.recorder.Status()
+			info.Tunnel = state.tunnel.status()
 			info.DrainMode = manager.DrainMode()
 			info.Draining = info.DrainMode != ""
 			state, _ := manager.List(r.Context(), session.ListArgs{})
@@ -321,8 +358,24 @@ func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server
 // positive timeout exercises forced HTTP drain for failure-path tests; a zero
 // timeout follows the normal unbounded graceful shutdown contract.
 func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, standalone ...*updateServer) error {
+	return serveHTTPWithOptions(ctx, manager, server, listener, token, timeout, nil, standalone...)
+}
+
+func serveHTTPWithTunnel(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, tunnel *tunnelRuntime, standalone ...*updateServer) error {
+	return serveHTTPWithOptions(ctx, manager, server, listener, token, 0, tunnel, standalone...)
+}
+
+func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, tunnel *tunnelRuntime, standalone ...*updateServer) error {
 	defer func() { _ = listener.Close() }()
 	defer manager.Close()
+	if tunnel != nil {
+		// On shutdown stop the SDK before destroying shared session/audit state.
+		defer func() {
+			if err := tunnel.stop(); err != nil {
+				slog.Error("embedded MCP tunnel shutdown failed", "error", err)
+			}
+		}()
+	}
 	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token, standalone...)
 	if err != nil {
 		return err
@@ -342,6 +395,9 @@ func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server 
 	slog.Info("listening at http://" + listener.Addr().String() + "/mcp (full local user privileges)")
 	done := make(chan error, 1)
 	go func() { done <- httpServer.Serve(listener) }()
+	if tunnel != nil {
+		tunnel.start() // External reachability must not gate local HTTP startup.
+	}
 	select {
 	case serveErr := <-done:
 		if errors.Is(serveErr, http.ErrServerClosed) {
