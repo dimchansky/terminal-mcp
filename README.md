@@ -43,7 +43,14 @@ make build
 
 The first `start` installs a private copy of the executable and runs it in the background. Later starts use that installed copy. The server does not start automatically when you log in or restart your computer.
 
-The `file_*` tools use absolute paths inside the configured `file_root`. On a new macOS/Linux installation, the default is the directory where you first run `start`. On Windows, the default is your home directory. Existing saved standalone settings keep their root. Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`. This limit does **not** apply to terminal commands.
+The `file_*` tools use absolute paths inside the configured `file_root`:
+- **New macOS/Linux installation:** The directory where you first run `start`.
+- **New Windows installation:** Your home directory.
+- **Existing standalone settings:** Keep the saved root.
+
+Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`.
+
+**This limit does not apply to terminal commands.**
 
 You can also run it in the foreground:
 
