@@ -132,13 +132,13 @@ func TestEmbeddedTunnelUsesActualMCPAuditAndHTTP(t *testing.T) {
 	runtime, err := newTunnelRuntime(tunnelConfig{
 		id: tunnelID, apiKey: fakeKey, controlPlaneBaseURL: controlPlane.BaseURL().String(),
 		pollTimeout: 10 * time.Millisecond, logWriter: io.Discard,
-	}, listener.Addr().String(), testToken)
+	}, listener.Addr().String(), tunnelTestToken)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, testToken, runtime) }()
+	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, tunnelTestToken, runtime) }()
 	defer func() {
 		cancel()
 		select {
@@ -155,8 +155,8 @@ func TestEmbeddedTunnelUsesActualMCPAuditAndHTTP(t *testing.T) {
 	if err := controlPlane.WaitForPollFailures(timeoutCtx, 1); err != nil {
 		t.Fatalf("embedded SDK failed to poll an unavailable control plane: %v", err)
 	}
-	preRecoveryClient := connectHTTP(t, timeoutCtx, listener.Addr().String())
-	if state := mcpList(t, timeoutCtx, preRecoveryClient); state.ServerID != managerID {
+	preRecoveryClient := tunnelConnectHTTP(t, timeoutCtx, listener.Addr().String())
+	if state := tunnelList(t, timeoutCtx, preRecoveryClient); state.ServerID != managerID {
 		t.Fatalf("local MCP not serving before first successful poll: %+v", state)
 	}
 	if status := runtime.status().State; status != "starting" {
@@ -218,8 +218,8 @@ func TestEmbeddedTunnelUsesActualMCPAuditAndHTTP(t *testing.T) {
 	}
 	localCtx, localCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer localCancel()
-	localClient := connectHTTP(t, localCtx, listener.Addr().String())
-	if result := mcpList(t, localCtx, localClient); result.ServerID != managerID {
+	localClient := tunnelConnectHTTP(t, localCtx, listener.Addr().String())
+	if result := tunnelList(t, localCtx, localClient); result.ServerID != managerID {
 		t.Fatalf("local MCP unavailable during control-plane outage: %+v", result)
 	}
 	controlPlane.SetPollStatus(0)
@@ -277,13 +277,13 @@ func TestEmbeddedTunnelShutdownDeliversAcceptedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := newTunnelRuntime(tunnelConfig{id: tid, apiKey: apikey, controlPlaneBaseURL: cp.BaseURL().String(), pollTimeout: 10 * time.Millisecond, logWriter: io.Discard}, listener.Addr().String(), testToken)
+	rt, err := newTunnelRuntime(tunnelConfig{id: tid, apiKey: apikey, controlPlaneBaseURL: cp.BaseURL().String(), pollTimeout: 10 * time.Millisecond, logWriter: io.Discard}, listener.Addr().String(), tunnelTestToken)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, testToken, rt) }()
+	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, tunnelTestToken, rt) }()
 	completed := false
 	defer func() {
 		cancel()
@@ -333,4 +333,50 @@ func closeTestRelease(ch chan struct{}) {
 	default:
 		close(ch)
 	}
+}
+
+// These helpers deliberately live in this platform-neutral test file. The
+// ordinary HTTP lifecycle helpers in main_test.go are Unix-only.
+const tunnelTestToken = "0123456789abcdef0123456789abcdef"
+
+type tunnelAuthenticatedTransport struct{ token string }
+
+func (tunnelAuth tunnelAuthenticatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.Header = req.Header.Clone()
+	cloned.Header.Set("Authorization", "Bearer "+tunnelAuth.token)
+	return http.DefaultTransport.RoundTrip(cloned)
+}
+
+func tunnelConnectHTTP(t *testing.T, ctx context.Context, address string) *mcp.ClientSession {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "embedded-tunnel-test", Version: "1"}, nil)
+	conn, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             "http://" + address + "/mcp",
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+		HTTPClient:           &http.Client{Timeout: 4 * time.Second, Transport: tunnelAuthenticatedTransport{token: tunnelTestToken}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+func tunnelList(t *testing.T, ctx context.Context, client *mcp.ClientSession) session.ListResult {
+	t.Helper()
+	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "terminal_list", Arguments: struct{}{}})
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("terminal_list: result=%+v err=%v", result, err)
+	}
+	data, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out session.ListResult
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

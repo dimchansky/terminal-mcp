@@ -34,13 +34,20 @@ jobs:
       - name: Verify, test and build Windows
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           go mod verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go mod tidy -diff
-          go test -race -count=1 -timeout=180s ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -race -count=1 -timeout=600s ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go build -trimpath -o terminal-mcp.exe ./cmd/terminal-mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:GOARCH = 'arm64'
           go build -trimpath -o terminal-mcp-arm64.exe ./cmd/terminal-mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   quality:
     name: Lint and vulnerability scan
