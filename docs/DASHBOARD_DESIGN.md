@@ -74,26 +74,49 @@ The four normalized identity field names above are fixed; the remaining contract
 
 **UX tradeoffs accepted:** one port, one process and a simple CLI-assisted login outweigh automatic new-tab sign-in and surviving service updates without login. Exact TTLs, endpoint paths and session-store implementation belong to #6; they must realize the safety and continuity policy above.
 
-## 5. Minimal desktop UX sketch
+## 5. Desktop UX: conversation history with live updates
 
-Fictional data; icons stand for optional locally derived deterministic identicons. Never send an actual chat ID to an external image service.
+**Primary view:** the page is a **history browser for observed MCP actions**, continuously extended by live events — **not** a live-only ticker. Opening the page immediately loads a bounded recent historical snapshot, shows the conversation/source lanes found within that coverage, and selects a recent identifiable lane (or Unattributed if none exists). Selecting another lane shows its own recorded timeline: *what the client requested, when, what outcome was observed and how long the relevant lifecycle phases took*. Older retained history is available on demand. Full AI chat messages and client windows are not visible to this server.
+
+Low-fidelity sketch (all data fictional; ▣/▧ represent optional deterministic identicons, not verified identity):
 
 ```text
-LOCAL ACTIVITY                                   ● Live | Audit writes healthy
+LOCAL MCP ACTIVITY     ● Connected · Audit writes healthy   [ ] Auto-switch chats
 
-Observed sources                Activity / chosen source           Details
-▣ Claimed OpenAI · 7fa2…         10:32 terminal_start · submitted   argv / cwd
-  alias: Build work             10:32 terminal_read  · observed    full supplied input
-▧ Claimed OpenAI · 41c9…         10:33 file_edit      · applied     requested changes
-  last observed: 10:33         10:34 file_receive   · no finish  outcome not yet recorded
-◇ Unattributed · client claimed  10:35 replay         · no effect  original request
+Observed sources                 Build work · Claimed OpenAI 7fa2…       Details
+▣ Build work     last 11:17      Wed 28 Oct · historical activity       Full original input
+  Claimed OpenAI · 7fa2…         11:17 file_edit · applied              paths/edits
+▧ Deploy        ● 3 new         request 43ms · effect 24ms             receipt
+  Claimed OpenAI · 41c9…        11:15 terminal_start · launched        argv/cwd
+◇ Unattributed  ● 1 new         request 38ms · launch 15ms             not process runtime
+  Claimed client: unknown       11:04 terminal_read · observed
+                                request 2.0s (includes waiting)
+                                10:59 file_receive · outcome unknown
 
-[Earlier history]   [Filter tool/status]   [Pause]   [Reconnect]
+[Discover older conversations]   [Earlier in this conversation]   [Jump to latest · 2]
+Coverage: scanned back to 27 Oct; earlier retained history may exist
 ```
 
-A deterministic icon can help locate a conversation at a glance, but a collision-safe short text ID/optional alias must remain. Client-claimed labels are explicitly marked as such; abbreviated command/file summaries visibly indicate truncation. The audit journal **does not** store live download progress (an eventual `operation_finish` receipt is different), so no real-time progress is claimed here. Repeated `terminal_read` / `file_receive_result` polls collapse into one readable action without hiding raw events in detail. Show distinct states: live, reconnecting, coverage gap, audit disabled, draining/stopping, unauthenticated/expired, origin outside the loaded window. Completion of an MCP request, completion of its mutation and later observed child exit are never presented as the same event.
+**History navigation and discovery:**
 
-**MVP:** recognizable sources, accurate recent request/effect activity, live changes, bounded replay, full raw input detail on demand, safe local authentication. **Defer:** chat transcripts/names/models, complete subprocess output, implicit file diffs, broad full-text search/analytics, remote dashboard, visual theming and mobile-specific polish.
+- Two distinct actions: **Discover older conversations** extends the **global scan coverage** backward, so previously unseen source lanes can appear; **Earlier in this conversation** fetches older matching actions for the selected exact `(identitySource, conversationId)` hint. The Unattributed view is a filter, **not** a fictional conversation. A single **bounded backward scan** primitive (owned by #7; based on #4's safe reader) can serve global discovery, filtered source history and origin lookup with different predicates. It returns scan coverage and a continuation even if a page contains **zero matching actions**. Do not require a new database/index or scan all unbounded archives at once.
+- Display the **scanned** time/record range and the known retained-history boundary; never claim all conversations are discovered while earlier records remain unscanned. Missing/changed archive or invalid cursor gives an explicit gap/resync. A stable client-claimed hint may group requests across server restarts but does not prove distinct chat identities. Source aliases, short labels and identicons aid recognition without replacing full original identity fields in the API.
+- Within a lane, show **correlated actions** with expandable request/effect lifecycle events and complete recorded input on deliberate authenticated detail request. The list follows **journal append order**; timestamps are shown in browser-local time (UTC available on inspection). A tool call made in lane B that inspects a managed process started in A remains an action **in B**, with a link to A's original process/effect; replay in B must not duplicate A's effect. An old finish with no loaded origin remains `origin_not_loaded` in a visible global pending-origin indicator until resolved, not misclassified as Unattributed.
+
+**Time and duration honesty:**
+
+- `request_finish.duration_ms` measures the MCP **request** including audit overhead and any tool wait/poll interval; `operation_finish.duration_ms` measures the admitted **operation lifecycle**, not necessarily a terminal child's runtime. In `terminal_start`, the recorded effect is **process launch**, not shell command completion. Do not infer runtime from two wall-clock timestamps.
+- Because `duration_ms` has `omitempty`, a current-schema finish with the matching start and no duration field means **less than 1ms**; a legacy/incomplete record without adequate start/finish evidence means **unknown**. The model distinguishes measured, sub-millisecond and unknown durations rather than inventing zero or displaying an unqualified “duration.” A terminal process without observed completion explicitly shows **runtime not recorded**.
+
+**Switching and attention:**
+
+- Manual chat selection is the default. **No Pause control**: incoming events continue to update history regardless of the selected lane or whether the browser page is open. With auto-switch off, activity in an inactive lane leaves focus unchanged and raises a **new activity indicator/count** (a small coloured dot is fine, with accessible text/count and distinct styling from audit health or success). New activity in the selected lane may be unread when its tab is hidden or the timeline is scrolled away from the live tail.
+- **[ ] Auto-switch chats** (optional, initially off; persist the non-secret preference locally) changes **attention only**, never the audit or stream subscription. A new, **live** non-polling `request_start` from another *identifiable* lane can select it. Do **not** focus-switch on initial snapshot history, earlier pages, late backfill, duplicated stream delivery, `request_finish`, `operation_finish`, repetitive `terminal_read` / download-result polls, or Unattributed calls. Other meaningful state changes still appear in that lane and may become unread.
+- Avoid thrashing: after **manual or automatic** selection, keep a short focus-hold interval (about five seconds; exact UI tuning owned by #9). During rapid interleaving, retain current focus and show indicators on other lanes rather than queueing stale switches. If the owner is reading older history, an expanded detail or selected text, **defer** auto-switch while leaving the checkbox on and show pending activity; returning to the live tail restores eligibility. Do not snap historical scrolling to the bottom: show `Jump to latest` for the selected lane.
+- Count **unviewed logical action rows**, including a collapsed polling group, **not raw audit phases**. A start plus finish of one action received while unseen counts once; a status change on an already-read row makes it unread again once. Deduplicate by source/action/record identity **before** counting; late origin backfill or replayed network deliveries do not create fresh activity. Selected-lane actions are marked seen only when the page is visible and the newest row is actually in view. Unread is ephemeral **per-tab presentation state**: historical snapshot and reload start at zero; reconnect replay cannot inflate it. Clear only the viewed lane, not other lanes.
+- #9 should define and test a small fixed class table for **mutation, process launch, read, polling**: which live starts may auto-switch, which updates count as unread and which polls are collapsed. Raw audited input remains accessible and unmodified; a compact/possibly truncated activity summary is labelled as such. States for live/reconnecting/coverage gap/audit disabled/draining/unauthenticated/expired remain visible.
+
+**MVP:** per-lane history with timestamps and honest request/effect elapsed times, bounded older-history navigation, live continuation, manual chat selection, optional auto-switch and per-lane new-activity markers, raw details on demand and owner-only access. **Defer:** full AI transcripts/names/models, complete process stdout, unobserved filesystem diffs, global full-text search/analytics, remote dashboard and decorative styling.
 
 ## 6. Handoff and validation
 
@@ -102,9 +125,9 @@ A deterministic icon can help locate a conversation at a glance, but a collision
 | [#4](https://github.com/dimchansky/terminal-mcp/issues/4) | Publish acknowledged frontier + nonblocking wake-up, read existing journal/archives without disturbing writer; native Windows delete-sharing/rotation check. |
 | [#5](https://github.com/dimchansky/terminal-mcp/issues/5) | Pure correlation/projection using opaque `RecordPos`; client-claimed keys, late origin, cross-chat replay and unknown outcomes. |
 | [#6](https://github.com/dimchansky/terminal-mcp/issues/6) | Separate viewer guard, CLI-assisted read-only login, token expiry/renewal, revocation, and the **shared fence/cancel primitive**. |
-| [#7](https://github.com/dimchansky/terminal-mcp/issues/7) | Bounded authenticated history/detail API, origin backfill and snapshot resume cursor. |
+| [#7](https://github.com/dimchansky/terminal-mcp/issues/7) | Bounded authenticated **per-conversation history and older-source discovery** via one backward scan primitive, origin backfill and snapshot resume cursor. |
 | [#8](https://github.com/dimchansky/terminal-mcp/issues/8) | One-way journal-backed live stream consuming #4 and #6; invoke #6's viewer fence once in the normal HTTP shutdown path and close viewers on abnormal exits; test long SSE, non-reading clients and stop/update. |
-| [#9](https://github.com/dimchansky/terminal-mcp/issues/9) | Implement accessible viewer layout and optional identicons; no fabricated metadata. |
+| [#9](https://github.com/dimchansky/terminal-mcp/issues/9) | Per-lane history UX, manual/automatic switching, unread indicators, scroll/read semantics, optional identicons; no fabricated metadata. |
 | [#10](https://github.com/dimchansky/terminal-mcp/issues/10) | End-to-end/platform/security regression tests, user docs and readiness. |
 
 **Validation of #3:** source and installed behavior reviewed separately; sanitized local aggregate evidence; cross-turn/same-chat stability observed, different-chat uniqueness **explicitly unverified**; A/A′/B tradeoffs resolved without production modifications; this ADR is the only new artifact. Future clients or ChatGPT updates may warrant revisiting the identity policy, not rewriting the audit history.
