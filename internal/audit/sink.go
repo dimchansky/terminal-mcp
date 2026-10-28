@@ -31,10 +31,16 @@ type auditFile interface {
 }
 
 type fileSink struct {
-	path     string
-	lock     *os.File
-	f        auditFile
-	size     int64
+	path string
+	lock *os.File
+	f    auditFile
+	size int64
+	// identity is captured from the opened writer handle, never a path Stat.
+	// A failed rotation may leave f nil while previously acknowledged bytes
+	// still reside at the active pathname.
+	identity os.FileInfo
+	baseline int64     // Existing bytes at the most recent open are historical.
+	sealed   []Segment // Copy-on-rotate; published slices remain immutable.
 	repair   bool
 	repairTo int64
 	total    int64  // Active file plus all existing numbered archives.
@@ -174,6 +180,7 @@ func (s *fileSink) open() error {
 		}
 	}
 	s.f, s.size, s.repair = f, size, false
+	s.identity, s.baseline = stat, size
 	return nil
 }
 
@@ -233,6 +240,12 @@ func (s *fileSink) rotate() error {
 	if err := s.rename(s.path, archive); err != nil {
 		return err
 	}
+	// This relocation can succeed even when the following open/append fails.
+	// The previously acknowledged bytes remain visible in the sealed file.
+	s.sealed = append(s.sealed[:len(s.sealed):len(s.sealed)], Segment{
+		Archive: s.next, Size: s.size, Baseline: s.baseline, identity: s.identity,
+	})
+	s.identity = nil // No current active file until the next open succeeds.
 	s.next++
 	return s.open()
 }

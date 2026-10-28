@@ -68,14 +68,15 @@ func NewEvent(e Event) Event {
 // Log serializes all sink operations, including writes, rotation, and Close.
 // Write waits for the sink to append the record; there is no in-memory queue.
 type Log struct {
-	mu         sync.Mutex
-	sink       eventSink
-	closed     bool
-	closeErr   error
-	path       string
-	failure    atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
-	bytesUsed  atomic.Int64
-	bytesLimit int64
+	mu          sync.Mutex
+	sink        eventSink
+	closed      bool
+	closeErr    error
+	path        string
+	failure     atomic.Pointer[auditFailure] // Accessible without waiting on a stalled sink.
+	bytesUsed   atomic.Int64
+	bytesLimit  int64
+	observation atomic.Pointer[observationState] // File frontier, read without Log.mu.
 }
 
 type auditFailure struct {
@@ -148,7 +149,11 @@ func reportDegraded(err error) {
 
 // newLog allows deterministic sink failure and concurrency tests.
 func newLog(sink eventSink) *Log {
-	return &Log{sink: sink}
+	l := &Log{sink: sink}
+	if file, ok := sink.(*fileSink); ok {
+		l.publishObservation(file, false, false)
+	}
+	return l
 }
 
 func Open(path string) (*Log, error) { return OpenWithLimit(path, DefaultMaxHistoryBytes) }
@@ -213,13 +218,19 @@ func (l *Log) write(e Event, requireHealthy bool) error {
 			return errors.Join(ErrDegraded, failed.err)
 		}
 	}
-	if err := l.sink.appendLine(line); err != nil {
-		writeErr := fmt.Errorf("audit write: %w", err)
+	appendErr := l.sink.appendLine(line)
+	if sink, ok := l.sink.(*fileSink); ok {
+		// Rotation/repair may have moved previously acknowledged bytes even
+		// if this append failed. Only a successful append wakes readers.
+		l.publishObservation(sink, appendErr == nil, false)
+	}
+	if appendErr != nil {
+		writeErr := fmt.Errorf("audit write: %w", appendErr)
 		// A failed pre-effect append never permits dispatch. A later request
 		// may retry the sink, but cannot run until its own start is written.
 		// An explicit history cap cannot change within this process, unlike
 		// a temporary filesystem error. Keep that denial until reconfiguration.
-		first := l.markDegraded(writeErr, errors.Is(err, ErrHistoryLimit) || errors.Is(err, ErrJournalChanged))
+		first := l.markDegraded(writeErr, errors.Is(appendErr, ErrHistoryLimit) || errors.Is(appendErr, ErrJournalChanged))
 		l.mu.Unlock()
 		if first {
 			reportDegraded(writeErr) // Slow stderr must not hold Log.mu.
@@ -253,6 +264,9 @@ func (l *Log) Close() error {
 	}
 	l.closed = true
 	l.closeErr = l.sink.close()
+	if sink, ok := l.sink.(*fileSink); ok {
+		l.publishObservation(sink, false, true)
+	}
 	first := l.markDegraded(l.closeErr, true)
 	result := l.closeErr
 	l.mu.Unlock()
