@@ -78,41 +78,44 @@ The four normalized identity field names above are fixed; the remaining contract
 
 **Primary view:** the page is a **history browser for observed MCP actions**, continuously extended by live events — **not** a live-only ticker. Opening the page immediately loads a bounded recent historical snapshot, shows the conversation/source lanes found within that coverage, and selects a recent identifiable lane (or Unattributed if none exists). Selecting another lane shows its own recorded timeline: *what the client requested, when, what outcome was observed and how long the relevant lifecycle phases took*. Older retained history is available on demand. Full AI chat messages and client windows are not visible to this server.
 
-Low-fidelity sketch (all data **fictional**; ▣/▧ are optional deterministic identicons, not authenticated identities). The selected conversation gets the main screen area; **actual supplied inputs, not bare tool/status rows, are the primary content**:
+Low-fidelity sketch (all data **fictional**). The selected conversation gets the main screen area. Its primary representation is a **human-readable command, a requested change, or actual submitted file content** — not field names from JSON. ▣/▧ are optional deterministic identicons, not authenticated identities.
 
 ```text
 MCP ACTIVITY   ● Connected · audit writes healthy      [ ] Auto-switch chats
-Sources                  Build work · claimed OpenAI 7fa2… · history
-▣ Build work             11:15:18  terminal_start · applied (process launched)
-▧ Deploy · 3 new             argv[0] = "go"       argv[1] = "test"
-◇ Unattributed · 1 new       argv[2] = "-race"   argv[3] = "./..."
-                            cwd = "/Users/demo/project"
-                            env.GOFLAGS = "-count=1"
-                            Request 38ms · launch 15ms · runtime not recorded
-                            [Original JSONL] [Recorded receipt]
+Sources                    Build work · claimed OpenAI 7fa2… · history
+▣ Build work                11:15:18  Process launched · terminal_start
+▧ Deploy · 3 new                Working directory: /Users/demo/project
+◇ Unattributed · 1 new          $ GOFLAGS=-count=1 go test -race ./...
+                                 Request 38ms · launch 15ms
+                                 Process runtime not observed
+                                 [Original JSONL] [Receipt if recorded]
 
-                         11:17:03  file_edit · applied
-                            path = "internal/service.go"
-                            edits[0].old_text = "timeout := 5 * time.Second"
-                            edits[0].new_text = "timeout := 10 * time.Second"
-                            Request 43ms · effect 24ms
-                            [Original JSONL] [Recorded receipt]
+                           11:17:03  File edit applied · internal/service.go
+                                 Requested replacement #1:
+                                 - timeout := 5 * time.Second
+                                 + timeout := 10 * time.Second
+                                 Request 43ms · operation 24ms
+                                 [Original JSONL]
 
-                         11:19:40  file_write · applied
-                            path = "internal/config.go"
-                            content:
-                              package config
+                           11:19:40  File write applied · internal/config.go
+                                 package config
 
-                              const TimeoutSeconds = 10
-                            [Original JSONL]
+                                 const TimeoutSeconds = 10
+                                 [Original JSONL]
 
 [Discover older conversations] [Earlier in this conversation] [Jump to latest]
 ```
 
+**Human-readable presentation is the default, forensic source is always available:**
+
+- **Process launch:** show **one readable command line with all supplied environment overrides placed before the executable and arguments**, with the working directory plainly visible. On Unix-like systems render a faithfully POSIX-shell-quoted *display equivalent* such as `GOFLAGS=-count=1 go test -race ./...` (quote spaces, quotes, dollars and other special characters correctly). This represents the direct `argv`/`env` invocation for human inspection; it **does not assert that the server ran a shell**. If an argument is itself a shell script (`sh -c`, `zsh -lc`, etc.), show that supplied script readably while retaining the real interpreter invocation. On Windows, render a deliberately labelled platform-appropriate form, not a fabricated POSIX command. If faithful command notation is impossible or ambiguous, fall back to visibly labelled individual arguments/env values with a warning — never silently change their meaning. Exact `argv`, `cwd`, env and options remain available in the original JSONL. A copyable command is offered only when its quoting/encoding is correct for the labelled shell.
+- **Requested file edits:** show the **filename and visual diff** for *every* `old_text` → `new_text` replacement, with removed text visually distinct from added text, including multiline edits. This is a comparison of what was **requested**, **not** a guaranteed diff of the resulting on-disk file. Do not elide unchanged lines inside supplied old/new text, hide later replacements, drop edit flags or guess line numbers; show exact complete before/after strings and remaining supplied parameters. If a faithful diff cannot be produced, show full old and new text side by side or in clearly labelled blocks.
+- **File writes:** show the actual supplied `content` as a readable, monospaced text/code block under the path, not the literal label `content:` followed by a JSON field listing. Include all original lines. Other tools use similarly human-oriented labels and layouts; raw field/property notation is a **fallback**, not the standard presentation.
+
 **Input-first cards (owner's actual audit, not a reduced telemetry dashboard):**
 
-- Every ordinary-sized action card automatically shows its **actual complete recorded model input inline**. For `terminal_start`, show each original `argv` token, exact `cwd`, **all** `env` overrides and execution options. For `terminal_write`, show each supplied `input` item (`text`, `bytes_base64`, `key`) and controls. For `file_edit`, show **all** requested `old_text`/`new_text` pairs and flags as complete readable text, clearly labelled *requested edit* rather than a guaranteed on-disk diff. For `file_write`, show the original **full `content`**, not “wrote N bytes”. Other tools likewise show their *exact supplied* paths, URL/parameters and options. Status and duration remain visible but **secondary**.
-- Tool-specific formatting never acts as a whitelist: **all supplied unknown/nested/extra fields** appear in an inline *Other supplied fields* section. If the input has an unexpected shape or failed schema validation, use a complete generic source display instead of a lossy typed template. Also expose recorded `call_meta`, `input_responses` and `request_state` if present. Never invent returned file bodies, process stdout/stderr, full command runtimes or fields the audit did not record. A replay shows **its own supplied args** and links to the original effect; it must not display original args as though they were resubmitted.
+- Every ordinary-sized action card automatically shows the **actual full recorded input in a human-readable form**: a quoted, environment-prefixed command for `terminal_start`; a complete visual requested-replacement diff for `file_edit`; complete source text for `file_write`; readable exact input text/keys/bytes for `terminal_write`; and recognizable paths, URLs and options for the other tools. **No raw `argv[0]`, `edits[0].old_text` or similar JSON-schema field listings as the normal main view.** Additional supplied flags/options must remain visible, while status/duration stay secondary.
+- Human-readable formatting never acts as a whitelist: **all supplied unknown/nested/extra fields** appear in an inline *Other supplied fields* section. If the input has an unexpected shape, contains ambiguous/unsafe characters, or failed schema validation, use a complete generic source display instead of a misleading command or diff. Specialized views must be deterministic and preserve all model-supplied values. Also expose recorded `call_meta`, `input_responses` and `request_state` if present. Never invent returned file bodies, process stdout/stderr, full command runtimes or fields the audit did not record. A replay shows **its own supplied args** and links to the original effect; it must not display original args as though they were resubmitted.
 - The *Original audit JSONL* view/copy action reveals the **entire persisted source record text**, not a JSON object serialized again by browser `JSON.parse`. Original *recorded values*, including large integers, duplicated keys, escaped characters and unexpected fields, must remain recoverable. If a friendly view would lose or misrepresent such values (e.g., duplicate keys, unsafe JavaScript numbers, lone surrogates), show a visible ambiguity warning and use the source-text view. Render terminal control bytes, ANSI sequences, NUL, carriage returns, bidirectional and zero-width Unicode visibly/escaped **for display** without altering the original copyable value. Do not present an argv array as though an actual shell executed a reconstituted command line.
 - **Honest absence:** if `request_start` lies outside the loaded window, show `origin_not_loaded` and offer bounded lookup. If the logger emitted only `request_rejected` because an input could not be fully recorded (oversize/unrepresentable), show **“Input not recorded — tool not executed”** and the actual reason: there is no original input available to expand. Show errors/statuses and `operation_finish.receipt` **only when actually present**; a server-truncated error must be marked truncated. No masking or censoring of complete model-supplied inputs, including secrets, signed URLs or private file content.
 - **Efficient delivery without reducing content:** history pages (#7) include **complete source records** within a bounded *total byte budget*, so typical visible cards already contain their actual input without one HTTP detail request per card. An exceptional near-4-MiB record exceeding the page budget is explicitly marked `deferred` with exact size and an authenticated in-card **Load complete original** action. This retrieves the **entire single record**; render it in a scrollable fixed-height block, never permanently replace it with a truncated preview. Pages must advance their cursor even over a deferred record. SSE (#8) stays compact (references/cursors only); the UI hydrates live cards via **batched history reads**, not N+1 single-card fetches or massive SSE broadcasts. Virtualize offscreen cards, keep scroll position stable and keep full private data only in memory (never browser persistence/telemetry). No separate chunking protocol, database or code-editor framework is required for supported audit records (up to about 4 MiB).
@@ -137,7 +140,7 @@ Sources                  Build work · claimed OpenAI 7fa2… · history
 - Count **unviewed logical action rows**, including a collapsed polling group, **not raw audit phases**. A start plus finish of one action received while unseen counts once; a status change on an already-read row makes it unread again once. Deduplicate by source/action/record identity **before** counting; late origin backfill or replayed network deliveries do not create fresh activity. Selected-lane actions are marked seen only when the page is visible and the newest row is actually in view. Unread is ephemeral **per-tab presentation state**: historical snapshot and reload start at zero; reconnect replay cannot inflate it. Clear only the viewed lane, not other lanes.
 - #9 should define and test a small fixed class table for **mutation, process launch, read, polling**: which live starts may auto-switch, which updates count as unread and which polls are collapsed. Raw audited input remains accessible and unmodified; a compact/possibly truncated activity summary is labelled as such. States for live/reconnecting/coverage gap/audit disabled/draining/unauthenticated/expired remain visible.
 
-**MVP:** per-lane history **with actual full model-supplied commands, edits and content visible inline**, truthful timestamps/request-effect elapsed times, bounded older-history navigation, live continuation, manual selection, optional auto-switch and new-activity markers, exact raw source-record access and owner-only authentication. **Defer:** full AI transcripts/names/models, complete process stdout, unobserved filesystem diffs, global full-text search/analytics, remote dashboard and decorative styling.
+**MVP:** per-lane history **with actual full model-supplied commands, edits and content rendered human-readably inline (environment-prefixed commands, visual requested-edit diffs and code/text blocks)**, truthful timestamps/request-effect elapsed times, bounded older-history navigation, live continuation, manual selection, optional auto-switch and new-activity markers, exact raw source-record access and owner-only authentication. **Defer:** full AI transcripts/names/models, complete process stdout, unobserved filesystem diffs, global full-text search/analytics, remote dashboard and decorative styling.
 
 ## 6. Handoff and validation
 
@@ -148,7 +151,7 @@ Sources                  Build work · claimed OpenAI 7fa2… · history
 | [#6](https://github.com/dimchansky/terminal-mcp/issues/6) | Separate viewer guard, CLI-assisted read-only login, token expiry/renewal, revocation, and the **shared fence/cancel primitive**. |
 | [#7](https://github.com/dimchansky/terminal-mcp/issues/7) | Bounded authenticated **per-conversation history and older-source discovery** via one backward scan primitive, origin backfill and snapshot resume cursor. |
 | [#8](https://github.com/dimchansky/terminal-mcp/issues/8) | One-way journal-backed live stream consuming #4 and #6; invoke #6's viewer fence once in the normal HTTP shutdown path and close viewers on abnormal exits; test long SSE, non-reading clients and stop/update. |
-| [#9](https://github.com/dimchansky/terminal-mcp/issues/9) | Per-lane history UX, manual/automatic switching, unread indicators, scroll/read semantics, optional identicons; no fabricated metadata. |
+| [#9](https://github.com/dimchansky/terminal-mcp/issues/9) | Human-readable, lossless command/diff/content cards as the primary view; per-lane history, manual/automatic switching, unread indicators, scrolling and optional identicons. |
 | [#10](https://github.com/dimchansky/terminal-mcp/issues/10) | End-to-end/platform/security regression tests, user docs and readiness. |
 
 **Validation of #3:** source and installed behavior reviewed separately; sanitized local aggregate evidence; cross-turn/same-chat stability observed, different-chat uniqueness **explicitly unverified**; A/A′/B tradeoffs resolved without production modifications; this ADR is the only new artifact. Future clients or ChatGPT updates may warrant revisiting the identity policy, not rewriting the audit history.
