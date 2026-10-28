@@ -31,6 +31,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Native Windows reader-delete-sharing proof
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '1'
+          go test -race -count=3 -v -timeout=180s -run '^TestWindowsAuditReader' ./internal/audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify, test and build Windows
         shell: pwsh
         run: |

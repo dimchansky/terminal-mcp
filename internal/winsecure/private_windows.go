@@ -117,6 +117,21 @@ func CheckPrivate(path string) error {
 	if err != nil {
 		return err
 	}
+	return checkPrivateDescriptor(sd, path)
+}
+
+// CheckPrivateHandle validates the security descriptor of the file already
+// opened by a reader. A pathname ACL lookup could race with audit rotation.
+func CheckPrivateHandle(file *os.File) error {
+	sd, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	return checkPrivateDescriptor(sd, file.Name())
+}
+
+func checkPrivateDescriptor(sd *windows.SECURITY_DESCRIPTOR, path string) error {
 	if sd == nil {
 		return fmt.Errorf("missing security descriptor: %s", path)
 	}
