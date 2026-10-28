@@ -35,6 +35,24 @@ The currently private audit `Log` serializes confirmed appends but **does not ye
 
 ## 3. Minimum semantic contract, not a wire schema
 
+**Normalized identity fields (fixed API names):** the reducer (#5) produces the following source-identity object for use by history/live APIs (#7/#8) and the UI (#9). The example values are illustrative, **not hashed or generated IDs**:
+
+```json
+{
+  "clientName": "openai-mcp",
+  "conversationId": "c7e42ab19d...",
+  "identitySource": "openai/session",
+  "identityVerified": false
+}
+```
+
+- `clientName`: the original name supplied by `call_meta["io.modelcontextprotocol/clientInfo"].name`, or `null` if absent; this name is **client-claimed**, not trusted.
+- `conversationId`: the **unchanged, full string value** from a recognized per-conversation metadata field, or `null` if missing/invalid. No hashing, truncation or synthetic fallback; preserve enough information to recover the original identifier.
+- `identitySource`: the **exact original metadata field name** used for `conversationId` (for example `"openai/session"`), or `null` when there is no conversation ID. The pair `(identitySource, conversationId)` is the grouping key, not `conversationId` alone.
+- `identityVerified`: `false` for all current client-supplied metadata; never infer verification from the client name, bearer, tool-call ID, or repeat frequency. A future `true` requires an explicitly established trusted server-side verification mechanism.
+
+For example, if a client identifies itself only as `claude-code` without a conversation hint, the object contains `"clientName": "claude-code"`, `"conversationId": null`, `"identitySource": null`, and `"identityVerified": false`. A missing client name is also `null`, not a fabricated name. Normalization is a **read-only projection**: preserve original `call_meta` in the audit; new providers may later map their documented per-conversation fields into these same four fields, without changing the UI contract. Per-tool IDs, request IDs, and terminal process session IDs are **not** substitutes for conversation IDs. Identicon generation and short visible labels belong to the UI and must not replace the original API values.
+
 - **Record identity and ordering:** `RecordPos` is an opaque, equality-comparable identifier for one journal record that survives rotation/rename. Reader #4 defines its internal segment/offset/fingerprint encoding; reducer #5 must **not import the reader**. `Cursor` is an opaque validated checkpoint **after** a complete OS-acknowledged append. It survives reconnects when history is intact. Position, not the event's pre-append timestamp, establishes journal order. Missing/truncated/repaired/replaced history or any segment that cannot be authenticated by its recorded fingerprint/record boundary produces an explicit `gap` / `resync`, never silent continuity.
 - **Source of truth:** one existing JSONL audit with numbered archives. A successful append advances an acknowledged frontier; a coalesced notification only wakes a reader **after** success. Physical EOF or a visible newline after a failed append is not evidence of admission. A crash/power loss may make prior completion unknowable; never fabricate certainty. Viewer reads never take the audit writer lock, perform recovery, alter the journal or hinder Windows rotation: a Windows handle without `FILE_SHARE_DELETE` can make writer rename fail and consequently deny pre-effect MCP work. #4 owns the native Windows share/delete and concurrent-rotation proof.
 - **Action correlation:** `RequestKey = (server_id, request_id)` identifies a specific MCP call. `EffectKey = (server_id, operation_id)` identifies the newly admitted effect; a retry gets a new request, not a second effect. The effect belongs to its original admitted request even if another chat replays it. `session_id` means a **managed terminal process**, not an AI chat. `request_finish` is not interchangeable with `operation_finish`, and process exit is known only through later recorded observations.
@@ -42,7 +60,7 @@ The currently private audit `Log` serializes confirmed appends but **does not ye
 - **Snapshot → live:** authenticated bounded history returns `coverage` and a **resume cursor at the acknowledged frontier**. The stream begins *after* that cursor, delivering at least once; consumers deduplicate using `RecordPos`. On invalidated history, rebuild from a fresh bounded snapshot and show a gap. Stream delivery does not participate in admission or fail-closed audit decisions.
 - **Unavailable data:** audit disabled or damaged is an explicit viewer status, not an empty “complete” history. No inference of actual model, chat title, chat creation/closure, trusted ingress or indirect filesystem mutation. Any live process-state overlay would be clearly *volatile* and is **not** added to the MVP without separate scope.
 
-These are behavioral boundaries only. The owning issues select the Go types, exact JSON fields, routing names, cursor encoding and implementation techniques, subject to [#2](https://github.com/dimchansky/terminal-mcp/issues/2).
+The four normalized identity field names above are fixed; the remaining contracts are behavioral boundaries. The owning issues select Go types, other wire fields, routing names, cursor encoding and implementation techniques, subject to [#2](https://github.com/dimchansky/terminal-mcp/issues/2).
 
 ## 4. Owner entry, security and service lifecycle
 
