@@ -28,12 +28,8 @@ func TestRecordRefHintIsReversibleWithoutChangingRecordIdentity(t *testing.T) {
 
 func TestCorruptUnrelatedCandidateCannotBlockValidCursor(t *testing.T) {
 	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
-	writer, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = writer.Close() }()
-	// A malformed historical .1 must not prevent resolving a valid .2.
+	// Create preexisting historical archives BEFORE Open. Archives invented
+	// after the writer starts are not part of its acknowledged snapshot.
 	if err := os.WriteFile(path+".1", []byte("not-json\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +37,11 @@ func TestCorruptUnrelatedCandidateCannotBlockValidCursor(t *testing.T) {
 	if err := os.WriteFile(path+".2", record, 0600); err != nil {
 		t.Fatal(err)
 	}
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.Close() }()
 	reader, err := NewReader(writer)
 	if err != nil {
 		t.Fatal(err)

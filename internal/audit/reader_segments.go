@@ -95,46 +95,80 @@ func (r *Reader) openObservedActive(ctx context.Context, afterObserve func()) (*
 	return nil, ErrInvalidCursor
 }
 
+// openOne uses the latest published observation for individual detail/cursor
+// lookups. History pages instead call openFrozen using the SAME snapshot for
+// every segment; that prevents the second Observe from including new appends.
 func (r *Reader) openOne(ctx context.Context, suffix uint64) (*readerSegment, error) {
+	return r.openWithSnapshot(ctx, suffix, nil)
+}
+
+func (r *Reader) openFrozen(ctx context.Context, snapshot journalSnapshot, suffix uint64) (*readerSegment, error) {
+	return r.openWithSnapshot(ctx, suffix, &snapshot)
+}
+
+// openCapturedActive follows the frozen active inode if the writer renamed it
+// between capture and opening. Only the two writer-defined names are tried:
+// the active pathname and the snapshot's NextArchive suffix. No new writer
+// observation is taken, and no new active generation is accepted.
+func (r *Reader) openCapturedActive(ctx context.Context, snapshot journalSnapshot) (*readerSegment, error) {
+	if !snapshot.observation.HasActive {
+		return nil, errOutsideSnapshot
+	}
+	active, err := r.openFrozen(ctx, snapshot, 0)
+	if err == nil {
+		return active, nil
+	}
+	if !errors.Is(err, errOutsideSnapshot) && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return r.openFrozen(ctx, snapshot, snapshot.observation.NextArchive)
+}
+
+func (r *Reader) openWithSnapshot(ctx context.Context, suffix uint64, frozen *journalSnapshot) (*readerSegment, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if frozen != nil {
+		if suffix == 0 && !frozen.observation.HasActive {
+			return nil, errOutsideSnapshot
+		}
+		if suffix > frozen.observation.NextArchive ||
+			(suffix == frozen.observation.NextArchive && !frozen.observation.HasActive) {
+			return nil, errOutsideSnapshot
+		}
+	}
 	name := r.path
 	if suffix != 0 {
 		name = fmt.Sprintf("%s.%d", r.path, suffix)
 	}
-	// Open FIRST, then take the writer snapshot. During rotation the same
-	// opened handle may still be known as Active although its name is .N.
 	f, err := openAuditReader(name)
 	if err != nil {
 		return nil, err
 	}
+	// Capture the selected observation after opening for ordinary lookups,
+	// but never refresh the supplied frozen snapshot in the page path.
+	var snapshot journalSnapshot
+	if frozen != nil {
+		snapshot = *frozen
+	} else {
+		snapshot, err = r.captureSnapshot()
+		if err != nil {
+			return nil, errors.Join(err, f.Close())
+		}
+	}
+	// Check the OPEN DESCRIPTOR's identity before fingerprinting any bytes.
 	info, err := f.Stat()
 	if err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
-	snapshot := r.writer.Observe()
-	if snapshot.Disabled {
-		return nil, errors.Join(ErrHistoryDisabled, f.Close())
-	}
-	limit, baseline := info.Size(), info.Size()
-	var known *Segment
-	if snapshot.HasActive && snapshot.Active.SameFile(info) {
-		known = &snapshot.Active
-	} else {
-		for i := range snapshot.Sealed {
-			if snapshot.Sealed[i].SameFile(info) {
-				known = &snapshot.Sealed[i]
-				break
-			}
+	limit, baseline, err := snapshot.bounds(suffix, info)
+	if err != nil {
+		// Legacy non-paged consumers already classify transient replacement
+		// of the active path as an invalid cursor and retry independently.
+		if frozen == nil && errors.Is(err, errOutsideSnapshot) {
+			err = ErrInvalidCursor
 		}
-	}
-	if known != nil {
-		if info.Size() < known.Size {
-			return nil, errors.Join(ErrInvalidCursor, f.Close())
-		}
-		limit, baseline = known.Size, known.Baseline
-	} else if suffix == 0 {
-		// A just-created active file not published by the writer may already
-		// contain a fully written but unacknowledged JSONL line.
-		return nil, errors.Join(ErrInvalidCursor, f.Close())
+		return nil, errors.Join(err, f.Close())
 	}
 	result := &readerSegment{file: f, archive: suffix, size: limit, baseline: baseline}
 	if limit > 0 {

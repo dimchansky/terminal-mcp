@@ -34,9 +34,13 @@ type Observation struct {
 	Active    Segment
 	HasActive bool
 	Sealed    []Segment
-	Closed    bool
-	Disabled  bool
-	Changed   <-chan struct{}
+	// NextArchive is the next suffix the writer could create. Together with
+	// Sealed it distinguishes preexisting archives from in-process rotations.
+	// It is published atomically with the committed byte boundary and Changed.
+	NextArchive uint64
+	Closed      bool
+	Disabled    bool
+	Changed     <-chan struct{}
 }
 
 type observationState struct {
@@ -85,9 +89,10 @@ func (l *Log) publishObservation(s *fileSink, appended, closed bool) {
 		next.changed = make(chan struct{})
 	}
 	next.value = Observation{
-		Sealed:  s.sealed,
-		Closed:  closed,
-		Changed: next.changed,
+		Sealed:      s.sealed,
+		NextArchive: s.next,
+		Closed:      closed,
+		Changed:     next.changed,
 	}
 	if s.identity != nil {
 		next.value.HasActive = true
