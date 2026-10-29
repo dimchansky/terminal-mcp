@@ -24,6 +24,13 @@ import (
 // read when resuming backwards. AtLiveEdge and Changed are left unset: those
 // are cross-segment/live concerns, not properties of a single file.
 func readSegmentPage(ctx context.Context, seg *readerSegment, direction PageDirection, offset int64, budget ReadBudget) (HistoryPage, error) {
+	return readSegmentPageBudget(ctx, seg, direction, offset, budget.normalize())
+}
+
+// readSegmentPageBudget accepts already-normalized limits. Unlike the entry
+// point above, zero MaxBytes means all subsequent valid rows are Deferred;
+// the aggregate history pager uses that after spending its whole data budget.
+func readSegmentPageBudget(ctx context.Context, seg *readerSegment, direction PageDirection, offset int64, budget ReadBudget) (HistoryPage, error) {
 	var page HistoryPage
 	if err := ctx.Err(); err != nil {
 		return page, err
@@ -41,7 +48,6 @@ func readSegmentPage(ctx context.Context, seg *readerSegment, direction PageDire
 	if seg.key == ([sha256.Size]byte{}) {
 		return page, ErrInvalidCursor
 	}
-	budget = budget.normalize()
 
 	var forward *forwardPageScanner
 	var backward *backwardPageScanner
