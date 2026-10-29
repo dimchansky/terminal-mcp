@@ -56,7 +56,7 @@ func TestFrozenSnapshotExcludesAppendAfterCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer opened.close()
+	defer func() { _ = opened.close() }()
 	if opened.size != originalSize || opened.baseline != 0 {
 		t.Fatalf("later append advanced frozen boundary: size=%d original=%d baseline=%d",
 			opened.size, originalSize, opened.baseline)

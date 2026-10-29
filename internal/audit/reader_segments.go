@@ -230,7 +230,7 @@ func (r *Reader) archiveSuffixes(ctx context.Context) ([]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	prefix := filepath.Base(r.path) + "."
 	var result []uint64
 	count := 0

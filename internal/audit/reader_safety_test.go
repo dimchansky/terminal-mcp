@@ -152,7 +152,7 @@ func TestReaderFingerprintCacheRejectsSameInodeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	afterInfo, err := f.Stat()
 	if err != nil {
 		t.Fatal(err)

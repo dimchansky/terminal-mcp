@@ -25,7 +25,7 @@ func (r *Reader) ReadRecord(ctx context.Context, ref RecordRef) ([]byte, bool, e
 	if err != nil {
 		return nil, false, err
 	}
-	defer seg.close()
+	defer func() { _ = seg.close() }()
 	if pos.start+int64(pos.length) > seg.size {
 		return nil, false, ErrInvalidCursor
 	}
