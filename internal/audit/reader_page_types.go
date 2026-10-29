@@ -46,14 +46,15 @@ type HistoryRecord struct {
 	Problem    *RecordProblem
 }
 
-// HistoryPage describes a bounded historical scan. The single-segment
-// primitive in #4d.1 leaves AtLiveEdge and Changed unset; later aggregate and
-// live-aware readers will own their semantics.
+// HistoryPage describes a bounded historical scan. Ordinary ReadPage and
+// the single-segment primitive leave live fields unset. WaitNextPage sets
+// them from the SAME immutable observation used for its page scan.
 type HistoryPage struct {
 	Records      []HistoryRecord
 	Next         Cursor
 	ScannedBytes int64
 	HasMore      bool
-	AtLiveEdge   bool
-	Changed      <-chan struct{} // Capture before read, then wait on THIS channel at live edge.
+	AtLiveEdge   bool            // This page reached the end of its frozen observation.
+	Closed       bool            // The writer closed AND the observed backlog is exhausted.
+	Changed      <-chan struct{} // Same-generation wake hint; nil when Closed.
 }

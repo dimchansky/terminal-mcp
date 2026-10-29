@@ -9,9 +9,9 @@ import (
 // order, without mixing in appends or rotations admitted after the call's
 // initial snapshot. Forward is oldest-first; Backward is newest-first.
 //
-// This stage implements historical pages only: AtLiveEdge and Changed are
-// intentionally unset until #4d.3. The cursor carries a stable source key,
-// validated preceding bytes, and the eventual archive number for active
+// Direct historical ReadPage leaves live/terminal fields unset; WaitNextPage
+// sets them using the same snapshot that bounds its scan. The cursor carries
+// a stable source key, validated preceding bytes, and the eventual archive number for active
 // records (so a long-lived cursor survives arbitrarily many normal rotations).
 // Entirely empty files are skipped inside this call: they cannot create a
 // legitimate RecordPos or a progress-making page cursor. Historical archives
@@ -33,8 +33,24 @@ func (r *Reader) ReadPage(ctx context.Context, cursor Cursor, direction PageDire
 	if err != nil {
 		return page, err
 	}
+	return r.readPageFromSnapshot(ctx, snapshot, cursor, direction, budget)
+}
+
+// readPageFromSnapshot uses the same immutable writer boundary throughout
+// the scan, including its filename relocations. It NEVER calls Observe; the
+// caller may safely wait on snapshot.observation.Changed after this returns.
+func (r *Reader) readPageFromSnapshot(ctx context.Context, snapshot journalSnapshot,
+	cursor Cursor, direction PageDirection, budget ReadBudget) (HistoryPage, error) {
+	var page HistoryPage
+	if err := ctx.Err(); err != nil {
+		return page, err
+	}
+	if direction != Forward && direction != Backward {
+		return page, ErrInvalidCursor
+	}
 	budget = budget.normalize()
 
+	var err error
 	var state cursorState
 	if cursor != "" {
 		state, err = decodePageCursor(cursor)
