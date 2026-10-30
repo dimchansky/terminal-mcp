@@ -193,6 +193,9 @@ func TestArchivePageHistoricalGapAndUnknownFutureFiles(t *testing.T) {
 	if _, err := reader.ReadPage(context.Background(), page.Next, Forward, ReadBudget{}); !errors.Is(err, ErrHistoryGap) {
 		t.Fatalf("a known missing archive silently disappeared: %v", err)
 	}
+	if _, _, err := reader.ReadRecord(context.Background(), page.Records[0].Ref); !errors.Is(err, ErrHistoryGap) {
+		t.Fatalf("detail lookup did not report the same missing archive: %v", err)
+	}
 
 	// A file with a future suffix was created externally after snapshot
 	// and must never be attributed to this writer's historical activity.
@@ -495,5 +498,57 @@ func TestArchivePageRotationRejectsArchiveSuffixCollision(t *testing.T) {
 		bytes.Contains(page.Records[0].Data, []byte("foreign")) ||
 		page.Records[0].Historical || page.Records[0].Ref.Hint != 1 {
 		t.Fatalf("foreign suffix falsely entered committed observation: %+v, %v", page, err)
+	}
+}
+
+// A complete damaged historical row must remain visible as a problem, but it
+// cannot prevent byte-exact pagination from older records through the
+// startup-historical prefix and on to newly acknowledged live input.
+func TestArchivePageLegacyCorruptionContinuesIntoAcknowledgedActive(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	old := []byte("{\"phase\":\"start\"}\n")
+	if err := os.WriteFile(path+".2", append(bytes.Clone(old), []byte("not-json\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	startup := []byte("{\"oldactive\":true}\n")
+	if err := os.WriteFile(path, startup, 0600); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	if err := writer.Start(NewEvent(Event{Tool: "terminal_list", Phase: "request_start", RequestID: "new"})); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := NewReader(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var cursor Cursor
+	var records []HistoryRecord
+	for i := range 4 {
+		page, err := reader.ReadPage(context.Background(), cursor, Forward, ReadBudget{MaxRecords: 1})
+		if err != nil || len(page.Records) != 1 || page.Next == cursor || page.HasMore != (i < 3) {
+			t.Fatalf("page %d must advance exactly once: %+v %v", i, page, err)
+		}
+		records = append(records, page.Records[0])
+		cursor = page.Next
+	}
+	if frontier, err := reader.FrontierCursor(context.Background()); err != nil || frontier != cursor {
+		t.Fatalf("legacy pagination ended at wrong frontier: %q, want %q, error %v", frontier, cursor, err)
+	}
+	if len(records) != 4 ||
+		!records[0].Historical || !bytes.Equal(records[0].Data, old) ||
+		!records[1].Historical || records[1].Problem == nil ||
+		!records[1].Problem.Complete || !errors.Is(records[1].Problem, ErrCorruptRecord) ||
+		records[1].Data != nil ||
+		records[1].Problem.Start != int64(len(old)) ||
+		records[1].Problem.End != int64(len(old)+len("not-json\n")) ||
+		!records[2].Historical || !bytes.Equal(records[2].Data, startup) ||
+		records[3].Historical || !bytes.Contains(records[3].Data, []byte("\"request_id\":\"new\"")) {
+		t.Fatalf("old/corrupt/startup/live row sequence changed: %+v", records)
 	}
 }

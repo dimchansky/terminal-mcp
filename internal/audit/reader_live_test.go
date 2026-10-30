@@ -182,6 +182,19 @@ func TestWaitNextPageFailedCompleteAppendNeverWakes(t *testing.T) {
 	if err != nil || !bytes.Contains(data, []byte("exact-input-denied")) {
 		t.Fatalf("test must leave complete rejected line physically present: %v", err)
 	}
+	// Both non-waiting directions must stop at the acknowledged boundary,
+	// even though a complete, newline-terminated failed append exists on disk.
+	backward, err := reader.ReadPage(context.Background(), "", Backward, ReadBudget{})
+	if err != nil || len(backward.Records) != 1 || backward.HasMore ||
+		backward.Records[0].Problem != nil ||
+		!bytes.Contains(backward.Records[0].Data, []byte("exact-input-before")) ||
+		bytes.Contains(backward.Records[0].Data, []byte("denied")) {
+		t.Fatalf("backward history did not preserve the acknowledged line: %+v %v", backward, err)
+	}
+	forward, err := reader.ReadPage(context.Background(), cursor, Forward, ReadBudget{})
+	if err != nil || len(forward.Records) != 0 || forward.HasMore || forward.Next != cursor {
+		t.Fatalf("forward history crossed the unacknowledged frontier: %+v %v", forward, err)
+	}
 	timeoutCtx, stop := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer stop()
 	if _, err := reader.WaitNextPage(timeoutCtx, cursor, ReadBudget{}); !errors.Is(err, context.DeadlineExceeded) {
@@ -669,5 +682,58 @@ func TestWaitNextPageClosedBacklogHasNoWakeChannel(t *testing.T) {
 	complete, err := reader.WaitNextPage(context.Background(), page.Next, ReadBudget{})
 	if err != nil || !complete.Closed || complete.Changed != nil {
 		t.Fatalf("terminal backlog did not terminate cleanly: %+v %v", complete, err)
+	}
+}
+
+// An archive-only frontier remains a valid live handoff when the current
+// journal is initially empty. The next append must be delivered from the same
+// frozen observation's Changed channel without polling or missing the wake.
+func TestWaitNextPageArchiveOnlyFrontierToFirstActive(t *testing.T) {
+	path := filepath.Join(privateAuditDir(t), "audit.jsonl")
+	old := []byte("{\"request_id\":\"archived\"}\n")
+	if err := os.WriteFile(path+".4", old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	reader, err := NewReader(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := reader.FrontierCursor(context.Background())
+	if err != nil || cursor == "" {
+		t.Fatalf("archive-only history must have a resumable frontier: %q %v", cursor, err)
+	}
+	history, err := reader.ReadPage(context.Background(), cursor, Forward, ReadBudget{})
+	if err != nil || len(history.Records) != 0 || history.HasMore || history.Next != cursor ||
+		history.AtLiveEdge || history.Changed != nil {
+		t.Fatalf("non-waiting history must not return live metadata: %+v %v", history, err)
+	}
+	snapshot, err := reader.captureSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	called := false
+	page, err := reader.waitNextPageFromSnapshot(ctx, snapshot, cursor, ReadBudget{}, func() {
+		if called {
+			t.Fatal("archive-only handoff waited more than once")
+		}
+		called = true
+		if err := writer.Start(liveEvent("first-active")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil || !called || len(page.Records) != 1 ||
+		page.Records[0].Historical || page.HasMore || !page.AtLiveEdge ||
+		page.Next == cursor || !bytes.Contains(page.Records[0].Data, []byte("exact-input-first-active")) {
+		t.Fatalf("archive-only frontier lost first acknowledged active event: %+v %v", page, err)
+	}
+	if frontier, err := reader.FrontierCursor(context.Background()); err != nil || frontier != page.Next {
+		t.Fatalf("live continuation ended at wrong frontier: %q, want %q, error %v", frontier, page.Next, err)
 	}
 }
