@@ -100,7 +100,7 @@ func (s *forwardPageScanner) next() ([]byte, int64, error) {
 				return nil, s.offset, &RecordProblem{Cause: ErrRecordTooLarge, Start: from, End: s.offset, Complete: true}
 			}
 			if !json.Valid(line[:len(line)-1]) {
-				return nil, s.offset, &RecordProblem{Cause: ErrCorruptRecord, Start: from, End: s.offset, Complete: true}
+				return line, s.offset, &RecordProblem{Cause: ErrCorruptRecord, Start: from, End: s.offset, Complete: true}
 			}
 			return line, s.offset, nil
 		}
@@ -190,7 +190,7 @@ func (s *backwardPageScanner) finish(from, to int64) ([]byte, int64, error) {
 	}
 	s.offset = from
 	if len(line) == 0 || line[len(line)-1] != '\n' || !json.Valid(line[:len(line)-1]) {
-		return nil, from, &RecordProblem{Cause: ErrCorruptRecord, Start: from, End: to, Complete: true}
+		return line, from, &RecordProblem{Cause: ErrCorruptRecord, Start: from, End: to, Complete: true}
 	}
 	return line, from, nil
 }

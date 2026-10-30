@@ -13,9 +13,12 @@ import (
 	"os"
 )
 
-// RecordPos is an equality-comparable, rotation-independent record identity.
-// Its private encoding identifies both the first complete line of a segment
-// and the exact target record. It is not a proof of tamper resistance.
+// RecordPos is an equality-comparable, rotation-independent byte position.
+// Its private encoding includes the first complete line of a segment and the
+// exact target record. Distinct archives with byte-identical first lines and
+// records at equal offsets can have the SAME RecordPos: it is not a globally
+// unique event identity or a proof of tamper resistance. Consumers requiring
+// distinct journal occurrences must also account for their source.
 type RecordPos struct {
 	segment [sha256.Size]byte
 	start   int64

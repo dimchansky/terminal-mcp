@@ -442,7 +442,7 @@ func TestSegmentPageOneRecordPagesAcrossDamagedRows(t *testing.T) {
 
 // Unbounded damage cannot be made into a valid cursor, but a page with
 // several subsequent good rows must still return the newest row(s). The
-// unrecoverable predecessor remains a visible explicit barrier for #4d.4.
+// unrecoverable predecessor remains a visible explicit barrier.
 // The same rollback must work if the removed row was marked Deferred.
 func TestSegmentPageBackwardRollbackOnIncompleteScanWithDeferredRows(t *testing.T) {
 	unbounded := []byte(strings.Repeat("z", int(maxCorruptScan)+1) + "\n")

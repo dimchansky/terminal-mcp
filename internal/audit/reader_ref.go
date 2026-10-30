@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 )
 
-// RecordRef includes a pathname hint to locate an old record for detail reads.
-// RecordPos remains the stable comparable identity used by the reducer: the
-// hint changes when a live segment is archived and is never part of equality.
+// RecordRef includes the expected archive suffix to locate source bytes for
+// detail reads. A live segment's pathname can change on rotation; a zero hint
+// also supports legacy source lookup. The hint is not part of RecordPos equality,
+// but it can distinguish occurrences whose byte-derived positions collide.
+// Neither hint nor RecordPos is a tamper-proof or globally unique event ID.
 type RecordRef struct {
 	Pos  RecordPos
 	Hint uint64

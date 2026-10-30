@@ -94,15 +94,9 @@ func (r *Reader) readPageFromSnapshot(ctx context.Context, snapshot journalSnaps
 	}
 	var matched *readerSegment
 	if cursor != "" {
-		matched, index, err = r.frozenCursorSource(ctx, snapshot, state, sources, needHistorical)
-		if errors.Is(err, errNeedHistorical) ||
-			(errors.Is(err, ErrInvalidCursor) && !needHistorical && state.hint == 0) {
-			if loadErr := reloadHistorical(new(int)); loadErr != nil {
-				return HistoryPage{}, loadErr
-			}
-			matched, index, err = r.frozenCursorSource(ctx, snapshot, state, sources, needHistorical)
-		}
-		if errors.Is(err, ErrInvalidCursor) && needHistorical && state.hint > 0 {
+		// A missing historical archive is a gap, even when another archive
+		// happens to have byte-identical contents. Check before fallback.
+		if needHistorical && state.hint > 0 {
 			first := snapshot.observation.NextArchive - uint64(len(snapshot.observation.Sealed))
 			if state.hint < first {
 				present := false
@@ -116,6 +110,14 @@ func (r *Reader) readPageFromSnapshot(ctx context.Context, snapshot journalSnaps
 					return HistoryPage{}, ErrHistoryGap
 				}
 			}
+		}
+		matched, index, err = r.frozenCursorSource(ctx, snapshot, state, sources, needHistorical)
+		if errors.Is(err, errNeedHistorical) ||
+			(errors.Is(err, ErrInvalidCursor) && !needHistorical && state.hint == 0) {
+			if loadErr := reloadHistorical(new(int)); loadErr != nil {
+				return HistoryPage{}, loadErr
+			}
+			matched, index, err = r.frozenCursorSource(ctx, snapshot, state, sources, needHistorical)
 		}
 		if err != nil {
 			return HistoryPage{}, err

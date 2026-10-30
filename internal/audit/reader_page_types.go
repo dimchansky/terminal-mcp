@@ -31,12 +31,14 @@ func (b ReadBudget) normalize() ReadBudget {
 	return b
 }
 
-// HistoryRecord is a single persisted JSONL record or a visible error at the
-// exact source offsets. Data is byte-exact (including newline), unless Deferred
-// marks a size-budgeted full-input fetch via ReadRecord. Corrupt records are
-// never silently discarded; they retain precise Problem.Start/End offsets,
-// but have no valid RecordRef yet. Forensic raw access to damaged ranges is
-// assigned to #4d.4; nothing is removed from the original journal.
+// HistoryRecord is a single persisted JSONL line or a visible problem at its
+// exact source offsets. Valid lines include byte-exact Data (with newline), or
+// Deferred means ReadRecord is needed due to the page's byte budget.
+// Complete malformed lines up to 4 MiB have Problem and a verifiable Ref for
+// fetching the original bytes via ReadRecord, but never inline Data or Deferred.
+// Complete oversized lines have no Ref; an incomplete tail stops pagination
+// with an error instead of becoming a row. Original bytes remain on disk.
+// A Ref alone does not guarantee valid JSON: always inspect Problem.
 type HistoryRecord struct {
 	Ref        RecordRef
 	Data       []byte

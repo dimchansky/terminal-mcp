@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -154,7 +155,17 @@ func TestReaderMatchesRenamedHandleBeforeWriterPublishes(t *testing.T) {
 	if opened.size != before.Active.Size || opened.baseline != before.Active.Baseline {
 		t.Fatalf("renamed segment was incorrectly treated as arbitrary historical bytes: %+v", opened)
 	}
+	original, _, err := readRecordForward(context.Background(), opened.file, 0, opened.size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := RecordRef{Pos: positionForRecord(opened.key, 0, original), Hint: before.NextArchive}
 	_ = opened.close()
+	if got, historical, err := reader.ReadRecord(context.Background(), ref); err != nil ||
+		historical || !bytes.Equal(got, original) {
+		t.Fatalf("detail read failed during unpublished rename: %d bytes historical=%v error=%v",
+			len(got), historical, err)
+	}
 	close(releaseRename)
 	if err := <-finished; err != nil {
 		t.Fatalf("writer could not complete after concurrent read: %v", err)

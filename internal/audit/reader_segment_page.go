@@ -63,8 +63,7 @@ func readSegmentPageBudget(ctx context.Context, seg *readerSegment, direction Pa
 			errors.Is(err, ErrRecordBoundary) {
 			// An unverified historical archive may end with an incomplete
 			// tail. Report that actual corruption instead of blaming the
-			// caller's valid end-of-file starting offset. Do not skip it;
-			// historical recovery/navigation belongs to #4d.4.
+			// caller's valid end-of-file starting offset. Never skip it.
 			_, problem, tailErr := historicalTail(ctx, seg.file, seg.size)
 			if tailErr != nil {
 				return HistoryPage{}, tailErr
@@ -159,11 +158,17 @@ func readSegmentPageBudget(ctx context.Context, seg *readerSegment, direction Pa
 		if problem != nil {
 			issue := *problem
 			record.Problem = &issue
-		} else {
+		}
+		// Complete malformed JSONL has verifiable raw bytes even though it
+		// is not a valid event. Oversized/partial rows get no detail ref.
+		if (problem == nil || errors.Is(problem, ErrCorruptRecord)) &&
+			len(line) > 0 && int64(len(line)) == length {
 			record.Ref = RecordRef{
 				Pos:  positionForRecord(seg.key, from, line),
 				Hint: seg.archive,
 			}
+		}
+		if problem == nil {
 			// The scanners return owned byte slices; no browser-facing record
 			// can be overwritten by the next 64 KiB window read.
 			if returnedBytes+length <= budget.MaxBytes {

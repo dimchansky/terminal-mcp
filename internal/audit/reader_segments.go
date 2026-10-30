@@ -266,7 +266,8 @@ func (r *Reader) archiveSuffixes(ctx context.Context) ([]uint64, error) {
 
 // resolveCursor tries the exact pathname hint and current file first; this
 // hot path needs neither an archive directory scan nor an index. On relocation,
-// search only a small bounded group of recently numbered archives.
+// search a small bounded group of recent archives. A known missing assigned
+// pathname cannot be replaced by a byte-identical row from another archive.
 func (r *Reader) resolveCursor(ctx context.Context, cursor cursorState) (*readerSegment, error) {
 	seen := make(map[uint64]bool, maxArchiveCandidates+2)
 	knownMissing := false
@@ -327,9 +328,33 @@ func (r *Reader) resolveCursor(ctx context.Context, cursor cursorState) (*reader
 			continue
 		}
 		seen[suffix] = true
+		// A nonzero hint identifies the suffix this generation will get on
+		// rotation. A different active generation cannot substitute for a
+		// missing archive merely because its record bytes match.
+		if suffix == 0 && cursor.hint != 0 && r.writer.Observe().NextArchive != cursor.hint {
+			continue
+		}
 		opened, err := try(suffix)
+		if opened != nil && suffix == 0 && cursor.hint != 0 &&
+			r.writer.Observe().NextArchive != cursor.hint {
+			_ = opened.close()
+			opened = nil // Rotation won; retry the archive below.
+		}
 		if opened != nil || err != nil {
 			return opened, err
+		}
+	}
+	if knownMissing && cursor.hint != 0 {
+		// The assigned file may have appeared during a concurrent rotation.
+		// Retry the hinted pathname, but do not substitute another archive
+		// merely because its first line and record bytes happen to match.
+		knownMissing = false
+		opened, err := try(cursor.hint)
+		if opened != nil || err != nil {
+			return opened, err
+		}
+		if knownMissing {
+			return nil, ErrHistoryGap
 		}
 	}
 	suffixes, err := r.archiveSuffixes(ctx)
