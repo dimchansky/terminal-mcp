@@ -566,6 +566,93 @@ The audit is not tamper-proof. A crash or power loss can lose recently written b
 
 In stdio mode, auditing is off by default. A direct `--audit-file` argument can set a path or disable auditing with `off`. The `--audit-max-bytes` flag accepts a non-negative integer: 0 (the default) means unlimited; a positive value configures an optional total history budget. For `start`, omission retains the saved setting and an explicit zero clears it. The selected setting persists across standalone starts and updates. Server diagnostics use standard-library `log/slog` to stderr. Runtime status includes real redirected diagnostic paths when detected; stdout remains MCP protocol in stdio mode. Detached stdout/stderr logs do not rotate automatically while their writer retains an open descriptor; rotation is a controlled offline operation only, after verified server shutdown.
 
+### Read-only journal history (internal Go API)
+
+`internal/audit.NewReader(writer)` reads the selected writer's JSONL and
+numbered archives without acquiring the writer lock, repairing files, or
+creating another authoritative store. These Go methods are **not** an
+implemented dashboard, HTTP route, or authorization boundary.
+
+- `Log.Observe()` publishes an immutable active/sealed segment snapshot,
+  its current-instance acknowledged byte ranges and baselines, a `Closed`
+  flag, and a coalesced `Changed` channel. A successful complete OS append
+  advances/wakes; a failed append or rename alone does not. `Close` wakes
+  terminal waiters. OS acknowledgement does **not** mean per-record `fsync`
+  or survival of a crash or power loss.
+- `Reader.FrontierCursor(ctx)` returns a **Forward** checkpoint at the
+  latest complete boundary within an observed historical baseline or
+  acknowledged writer range (empty for empty history). `Reader.ReadPage(ctx, cursor, Forward|Backward, budget)`
+  returns bounded, oldest-first or newest-first source records and an
+  opaque `Next` checkpoint. Continue only in the **same direction**.
+  `HasMore` means more records remain in that page's captured history.
+- `Reader.WaitNextPage(ctx, after, budget)` takes a **Forward** cursor.
+  It returns existing records immediately, otherwise waits for a
+  successful append, terminal close, or context cancellation. The
+  frozen scan and its wake channel refer to the same observation, and
+  wake-up causes replay from `after`. Only `WaitNextPage` sets
+  `AtLiveEdge`, `Closed`, and `Changed`; `Closed=true` means the writer
+  has closed **and** the observed backlog is exhausted, with a nil
+  `Changed` channel. Check `Closed` before waiting on `Changed`; a nil
+  channel never wakes. Ordinary `ReadPage` leaves these fields unset.
+- For the **history-to-live handoff**, capture `FrontierCursor` **before**
+  fetching backward history (`ReadPage(ctx, "", Backward, ...)`), then
+  start `WaitNextPage` from the previously captured frontier. This
+  permits duplicates across the handoff without silently missing
+  admitted appends; loss of a referenced source still yields an error.
+  A Forward cursor cannot resume Backward pages.
+- `ReadBudget` defaults to 100 records, 1 MiB of inline original
+  bytes, and 8 MiB counted scanned-record bytes; maxima are 1,000,
+  8 MiB, and 32 MiB respectively. Nonpositive values select defaults;
+  values over the caps are clamped.
+  `MaxScanBytes` is **soft**: processing one complete row may exceed it
+  to allow cursor progress. It does not include fingerprint, boundary
+  proof, directory or candidate-open I/O; it is **not** a total I/O cap.
+  A damaged row exceeding the 16 MiB corrupt-scan limit can be an
+  explicit non-resumable barrier.
+- Valid `HistoryRecord` entries always include a `Ref` plus exact
+  newline-ended `Data`, or `Deferred=true` and `Data=nil` when their size
+  exceeds the page byte budget. `Reader.ReadRecord(ctx, ref)` verifies source identity,
+  acknowledged bounds, line boundaries, and raw-byte digest, and
+  returns exact original JSONL bytes (up to 4 MiB) plus a `historical`
+  flag. It **does not** guarantee that JSON is valid: the
+  `HistoryRecord.Problem` classification exists only on the page row,
+  not in the `ReadRecord` return value. Complete malformed rows up to
+  4 MiB have `Problem` and a verifiable `Ref` but no inline `Data` or
+  `Deferred`; oversized damaged rows lack `Ref`. An incomplete
+  historical tail is a non-skippable explicit error. Any physical row
+  over 4 MiB is outside the supported record-detail API.
+- `Historical` means the bytes preceded the *current writer's*
+  acknowledged baseline, including old archives and bytes that already
+  existed when this writer opened or reopened the journal. Appends
+  after the new baseline are not historical; earlier admission cannot
+  be inferred.
+
+`Cursor` and page-provided `RecordRef` can survive normal rotation and
+restart while the relevant source bytes remain available and unchanged. Invalid/stale
+proofs or boundaries return `ErrInvalidCursor`; a **known missing**
+referenced/observed segment returns `ErrHistoryGap`. A gap in
+pre-existing archive suffixes alone is **not** evidence of deletion:
+removing an archive not referenced by a cursor may remain
+undetectable after a fresh inventory. `ErrHistoryDisabled` means no
+file-backed audit enabled for this writer; `ErrHistoryScanLimit` denotes
+a bounded navigation failure. `ErrCorruptRecord`, `ErrRecordTooLarge`, and
+`ErrRecordBoundary` report damaged or invalid line boundaries,
+sometimes as `HistoryRecord.Problem`. Cancellation and disk I/O errors
+are kept distinct. Do not silently continue after a detected gap;
+start a new bounded history snapshot.
+
+`RecordPos` is an equality-comparable byte-derived position that
+survives normal rename, **not** a globally unique event ID. Distinct
+archives with identical first-line bytes and identical target-record
+bytes at the same offset may have equal `RecordPos`. A page-provided
+`RecordRef` also carries an eventual archive suffix hint, stable on
+ordinary rotation and useful for distinguishing such occurrences.
+This hint is a locator, **not** tamper-proof identity. Consumers must
+retain source/ordering context rather than deduplicating by `RecordPos`
+alone. Cursor proofs detect supported changes but are not tamper-proof
+authentication: for a complete damaged row over 4 MiB, the proof uses
+the row's length and last 64 KiB rather than a full-row digest.
+
 ## 12. Standalone background operation and self-update
 
 `terminal-mcp serve` runs a foreground HTTP server. The **first**

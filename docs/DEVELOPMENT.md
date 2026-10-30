@@ -423,6 +423,43 @@ The audit is not a tamper-proof record. It does not identify individual callers 
 The updater disables auditing for temporary preflight instances so
 the candidate's probe calls do not pollute the real audit journal.
 
+### Internal read-only audit history
+
+`internal/audit` now exposes `NewReader(writer)`, `FrontierCursor`,
+`ReadPage`, `WaitNextPage`, and `ReadRecord` for future dashboard code.
+A `Reader` is bound to its selected `Log`; create a new one when a
+writer instance restarts. The reader never uses the writer's lock or
+modifies or repairs audit files. No viewer HTTP API, token, or UI exists
+yet.
+
+- Obtain the **Forward** `FrontierCursor` before querying backward
+  history (`ReadPage(ctx, "", Backward, budget)`). Then continue
+  live from the saved frontier using `WaitNextPage`. Expect possible
+  duplicate delivery; loss of a referenced source still reports an error.
+  Only resume page `Next` with the same direction; a Backward cursor cannot be passed to `WaitNextPage`.
+- Use `HistoryRecord.Problem` to classify damaged JSONL before parsing
+  source bytes. `ReadRecord` returns the byte-exact newline-terminated
+  source (up to 4 MiB), not a decoded or necessarily valid JSON object.
+  A complete malformed row up to the limit has a verifiable detail
+  `Ref`; oversized damaged rows and incomplete tails do not.
+- Handle `ErrHistoryGap` and `ErrInvalidCursor` as explicit
+  resynchronization cases, without promising to detect gaps between
+  previously uninventoried historical archives. `Historical` describes
+  the current writer's baseline, not verified admission history.
+  Identical first-line and target-record bytes at equal offsets can
+  produce equal `RecordPos` across archives. Page-provided `RecordRef`
+  includes an eventual archive suffix hint stable on ordinary rotation;
+  retain source and ordering context, without calling it proof.
+- Validate changes with `go test -race ./internal/audit`, `make check`
+  and `make lint`. CI includes native Windows reader-delete-sharing
+  tests (`TestWindowsAuditReader*`) and a Linux-only descriptor leak
+  test. The existing `BenchmarkAuditObservationAppend` measures append
+  overhead without a hard timing threshold:
+
+  ```sh
+  go test -run '^$' -bench '^BenchmarkAuditObservationAppend$' -benchmem ./internal/audit
+  ```
+
 ## 6. Standalone files
 
 | Path | Purpose |
