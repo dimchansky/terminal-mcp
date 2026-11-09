@@ -21,7 +21,10 @@ type Row struct {
 // cursor. Call BeginPage only for a page that was read successfully and close
 // every page with EndPage or ReachedStart. Rows waiting at a cursor that is
 // never continued (the chain stopped at a gap, or a retry ended elsewhere)
-// stay provisional. Use one HistoryCarry per window.
+// stay provisional. Use one HistoryCarry per window and discard it when the
+// window's history chain stops (coverage end or raised floor): a resolution
+// applied after an eviction may name an evicted provisional row and fail with
+// ErrResolve, which means the window must be rebuilt.
 type HistoryCarry struct {
 	pending []OccurrenceKey // Provisional keys of the current page, newest first.
 	waiting map[string][]OccurrenceKey

@@ -154,6 +154,21 @@ type Projection struct {
 	byOrigin         map[RequestKey]map[EffectKey]bool  // operation_* request_id.
 	byProcessEffect  map[ProcessKey]map[EffectKey]bool  // terminal_start operation_finish session_id.
 	byProcessRequest map[ProcessKey]map[RequestKey]bool // terminal_start request_finish session_id.
+
+	join       joinPhase
+	joinNewest OccurrenceKey // Newest row of the most recent H1 read.
+	h1Read     bool          // A newest-page history read happened.
+	h1First    bool          // The next history row is the first of an H1 read.
+	pageOpen   bool
+	anyPage    bool
+
+	capacity    int // Maximum occurrences; 0 = unlimited.
+	coverage    CoverageEnd
+	boundaries  []boundary
+	floor       string
+	floorSet    bool
+	floorRank   int64
+	liveCursors []liveCursor
 }
 
 // NewProjection returns an empty window for the server instance that owns the
@@ -181,11 +196,29 @@ func (p *Projection) Apply(rec Record) (Change, error) {
 	if (rec.Raw == nil) == (rec.Problem == "") || (rec.Delivery.Key.Ref == "" && rec.Raw != nil) {
 		return Change{}, ErrRecordContract
 	}
+	live := rec.Delivery.Chain == ChainLive
+	if live && p.join != joinPending && p.join != joinDone {
+		return Change{}, ErrJoinProtocol
+	}
+	if !live && (!p.pageOpen || p.coverage != CoverageOpen) {
+		// History rows belong to an open page; after the chain stopped a
+		// re-read could bring evicted rows back as new activity.
+		return Change{}, ErrJoinProtocol
+	}
+	if _, known := p.occ.byKey[rec.Delivery.Key]; !known && p.capacity > 0 && len(p.occ.byKey) >= p.capacity {
+		return Change{}, ErrCapacity
+	}
 	obs, err := p.occ.observe(rec.Delivery)
 	if err != nil {
 		return Change{}, err
 	}
 	key, chain := rec.Delivery.Key, rec.Delivery.Chain
+	if !live && p.h1First {
+		p.joinNewest, p.h1First = key, false
+	}
+	if live && p.join == joinPending && p.joinNewest.Ref != "" && key == p.joinNewest {
+		p.join = joinDone // The live chain reached the snapshot's newest row.
+	}
 	if !obs.first {
 		return Change{Kind: ChangeRedelivery, Chain: chain, Moved: obs.moved}, nil
 	}

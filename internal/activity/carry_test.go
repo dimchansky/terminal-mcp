@@ -109,7 +109,7 @@ func TestRefLessRowsGetTheSameKeyOnBothChains(t *testing.T) {
 	want := []OccurrenceKey{weak("A", 0, 10, 20), weak("A", 1, 20, 30), weak("B", 0, 10, 20)}
 	// History snapshot saw everything; the live chain starts at F after A
 	// and overlaps with history.
-	f := &feeder{t: t, p: NewProjection(current), l: NewLiveCarry("A")}
+	f := &feeder{t: t, p: startedProjection(t), l: NewLiveCarry("A")}
 	f.history(testJournal, true)
 	f.history(testJournal[3:], false) // Retried newest page.
 	f.liveRows(testJournal[1:])
@@ -154,7 +154,7 @@ func TestHistoryRefLessRowsWaitForTheirOlderNeighbour(t *testing.T) {
 func TestUnresolvedRowsArePossibleRepeatsNotHidden(t *testing.T) {
 	// The history chain stops at a gap before x and y find their neighbour,
 	// and the live seed is unknown.
-	f := &feeder{t: t, p: NewProjection(current), l: NewLiveCarry("")}
+	f := &feeder{t: t, p: startedProjection(t), l: NewLiveCarry("")}
 	f.history(testJournal[1:], false)
 	f.liveRows(testJournal[1:])
 	diags := f.p.Diagnostics()
@@ -183,7 +183,7 @@ func TestLiveCarryResumesFromAStoredCopy(t *testing.T) {
 }
 
 func TestEqualSpansAfterDifferentNeighboursStayDistinct(t *testing.T) {
-	f := &feeder{t: t, p: NewProjection(current), l: NewLiveCarry("A")}
+	f := &feeder{t: t, p: startedProjection(t), l: NewLiveCarry("A")}
 	f.liveRows(testJournal[1:])
 	if got := diagnosticKeys(f.p); len(got) != 3 || got[0] == got[2] {
 		t.Fatalf("x and z merged: %+v", got)
@@ -191,7 +191,7 @@ func TestEqualSpansAfterDifferentNeighboursStayDistinct(t *testing.T) {
 }
 
 func TestResolveRejectsInvalidResolutions(t *testing.T) {
-	p := NewProjection(current)
+	p := startedProjection(t)
 	prov := OccurrenceKey{Weak: WeakKey{Start: 1, End: 2, Provisional: "h1"}}
 	if _, err := p.Apply(Record{Delivery: Delivery{prov, ChainHistory, -1}, Problem: "too large"}); err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestResolveRejectsInvalidResolutions(t *testing.T) {
 // TestRetriedPagesDoNotInventNeighbours: a page ends with x and y pending;
 // a retried newer page must not resolve them, the continuation must.
 func TestRetriedPagesDoNotInventNeighbours(t *testing.T) {
-	f := &feeder{t: t, p: NewProjection(current), l: NewLiveCarry("")}
+	f := &feeder{t: t, p: startedProjection(t), l: NewLiveCarry("")}
 	f.page("", testJournal[1:], false, "before-x") // y.. C: x, y wait at "before-x"
 	f.page("", testJournal[3:], false, "before-B") // Retry of the newest page.
 	f.page("before-x", testJournal[:1], true, "")  // Continuation: A, start.
@@ -242,7 +242,7 @@ func TestRetriedPagesDoNotInventNeighbours(t *testing.T) {
 // at the same cursor before its continuation; the first read's provisional
 // rows cannot be matched and stay visible as possible repeats.
 func TestRepeatedPageEndKeepsRowsVisible(t *testing.T) {
-	f := &feeder{t: t, p: NewProjection(current), l: NewLiveCarry("")}
+	f := &feeder{t: t, p: startedProjection(t), l: NewLiveCarry("")}
 	f.page("", testJournal[1:], false, "before-x")
 	f.page("", testJournal[1:], false, "before-x")
 	f.page("before-x", testJournal[:1], true, "")
@@ -261,7 +261,7 @@ func TestRepeatedPageEndKeepsRowsVisible(t *testing.T) {
 
 func TestRefLessPagesCarryInheritedRows(t *testing.T) {
 	// Pages of one row each: y waits, x continues it, then A resolves both.
-	f := &feeder{t: t, p: NewProjection(current), l: NewLiveCarry("")}
+	f := &feeder{t: t, p: startedProjection(t), l: NewLiveCarry("")}
 	f.page("", testJournal[2:3], false, "c1")
 	f.page("c1", testJournal[1:2], false, "c2")
 	f.page("unknown", testJournal[3:4], false, "c9") // Unrelated cursor: no inherited rows.
@@ -273,7 +273,7 @@ func TestRefLessPagesCarryInheritedRows(t *testing.T) {
 }
 
 func TestResolveMergeKeepsFirstRanks(t *testing.T) {
-	p := NewProjection(current)
+	p := startedProjection(t)
 	final := weak("A", 0, 10, 20)
 	if _, err := p.Apply(Record{Delivery: Delivery{final, ChainLive, 1}, Problem: "too large"}); err != nil {
 		t.Fatal(err)

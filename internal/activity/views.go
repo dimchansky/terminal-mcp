@@ -157,9 +157,13 @@ type ServerStartView struct {
 }
 
 // Need asks the adapter to look further back for a missing origin.
+// BeyondCoverage is set when the window's history chain has stopped (start
+// reached, gap, changed source or eviction): the adapter must not scan for it
+// in this window, and the origin is shown as outside the loaded history.
 type Need struct {
-	Request *RequestKey
-	Effect  *EffectKey
+	Request        *RequestKey
+	Effect         *EffectKey
+	BeyondCoverage bool
 }
 
 func (p *Projection) phaseView(ph phase) *PhaseView {
@@ -433,12 +437,13 @@ func (p *Projection) Needs() []Need {
 			}
 		}
 	}
+	beyond := p.coverage != CoverageOpen
 	var out []Need
 	for _, key := range sortedKeys(requests, compareRequest) {
-		out = append(out, Need{Request: &key})
+		out = append(out, Need{Request: &key, BeyondCoverage: beyond})
 	}
 	for _, key := range sortedKeys(effects, compareEffect) {
-		out = append(out, Need{Effect: &key})
+		out = append(out, Need{Effect: &key, BeyondCoverage: beyond})
 	}
 	return out
 }

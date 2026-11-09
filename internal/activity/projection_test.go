@@ -18,8 +18,22 @@ type window struct {
 	hist, live int64
 }
 
+// startedProjection is a test harness: its newest history page H1 was empty
+// (as at a gap) and the join has started, so the live chain may deliver and
+// an older history page (from cursor "h1") is open. It is not yet joined.
+func startedProjection(t *testing.T) *Projection {
+	t.Helper()
+	p := NewProjection(current)
+	for _, err := range []error{p.BeginHistoryPage(""), p.EndHistoryPage("h1"), p.StartJoin(), p.BeginHistoryPage("h1")} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p
+}
+
 func newWindow(t *testing.T) *window {
-	return &window{t: t, p: NewProjection(current)}
+	return &window{t: t, p: startedProjection(t)}
 }
 
 func (w *window) history(ref, raw string) Change {
@@ -386,7 +400,7 @@ func TestProjectionIgnoresChainInterleaving(t *testing.T) {
 	var reference *snapshot
 	for split := 0; split <= len(h); split++ {
 		for _, liveFirst := range []bool{false, true} {
-			p := NewProjection(current)
+			p := startedProjection(t)
 			order := slices.Concat(h[:split], l, h[split:])
 			if liveFirst {
 				order = slices.Concat(l, h)
@@ -410,7 +424,7 @@ func TestProjectionIgnoresChainInterleaving(t *testing.T) {
 }
 
 func TestRecordContract(t *testing.T) {
-	p := NewProjection(current)
+	p := startedProjection(t)
 	for _, rec := range []Record{
 		{Delivery: Delivery{OccurrenceKey{Ref: "a"}, ChainHistory, -1}},
 		{Delivery: Delivery{OccurrenceKey{Ref: "a"}, ChainHistory, -1}, Raw: []byte(`{}`), Problem: "x"},
