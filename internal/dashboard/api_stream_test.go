@@ -3,12 +3,13 @@ package dashboard
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,57 +247,79 @@ func TestAPIStreamEndsOnLogoutAndStop(t *testing.T) {
 	stopped.ended(5 * time.Second)
 }
 
-// TestAPIStalledStreamIsCutOff: a stream client that stops reading is cut
-// off by the write deadline, while another viewer's stream goes on.
+// stallingWriter is a response writer whose client never reads: every
+// write blocks until the write deadline passes.
+type stallingWriter struct {
+	header   http.Header
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (w *stallingWriter) Header() http.Header { return w.header }
+func (w *stallingWriter) WriteHeader(int)     {}
+func (w *stallingWriter) Flush()              {}
+
+func (w *stallingWriter) SetWriteDeadline(t time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deadline = t
+	return nil
+}
+
+func (w *stallingWriter) Write([]byte) (int, error) {
+	for {
+		w.mu.Lock()
+		d := w.deadline
+		w.mu.Unlock()
+		if !d.IsZero() && time.Now().After(d) {
+			return 0, os.ErrDeadlineExceeded
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestAPIStalledStreamIsCutOff: a stream whose client stopped reading is
+// cut off by the per-write deadline, while another viewer's stream goes on.
 func TestAPIStalledStreamIsCutOff(t *testing.T) {
 	j := openJournal(t)
 	api, mg := streamAPI(t, j)
-	mg.coalesce = time.Millisecond
 	tokenA, tokenB := api.signIn(), api.signIn()
 	var envA, envB Envelope
 	api.ok(tokenA, PathWindow, map[string]any{}, &envA)
 	api.ok(tokenB, PathWindow, map[string]any{}, &envB)
-
-	conn, err := net.Dial("tcp", api.host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = conn.Close() }()
-	_ = conn.(*net.TCPConn).SetReadBuffer(4096)
-	body, _ := json.Marshal(map[string]any{"window": envA.Window, "generation": envA.Generation, "after": envA.LiveCursor})
-	_, _ = conn.Write([]byte("POST " + PathStream + " HTTP/1.1\r\nHost: " + api.host + "\r\nSec-Fetch-Site: same-origin\r\n" +
-		"Sec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\nOrigin: http://" + api.host + "\r\nAuthorization: Viewer " + tokenA +
-		"\r\nContent-Type: application/json\r\nContent-Length: " + itoa(len(body)) + "\r\n\r\n" + string(body)))
 	b, code, data := api.openSSE(tokenB, map[string]any{"window": envB.Window, "generation": envB.Generation, "after": envB.LiveCursor})
 	if code != http.StatusOK {
 		t.Fatalf("stream B %d %s", code, data)
 	}
 	b.next(EventReady)
-	// Large activity events (a new long lane each) fill the stalled client.
-	long := strings.Repeat("c", 3<<10)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	body, _ := json.Marshal(map[string]any{"window": envA.Window, "generation": envA.Generation, "after": envA.LiveCursor})
+	req := httptest.NewRequest(http.MethodPost, "http://"+api.host+PathStream, bytes.NewReader(body))
+	req.Host = api.host
+	for k, v := range map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty",
+		"Origin": "http://" + api.host, "Content-Type": "application/json", "Authorization": "Viewer " + tokenA} {
+		req.Header.Set(k, v)
+	}
+	ended := make(chan time.Time, 1)
+	start := time.Now()
 	go func() {
-		for i := 0; ctx.Err() == nil && i < 5000; i++ {
-			chatStart(j, "s"+itoa(i), long+itoa(i))
-			time.Sleep(2 * time.Millisecond)
-		}
+		api.handler.ServeHTTP(&stallingWriter{header: http.Header{}}, req)
+		ended <- time.Now()
 	}()
-	b.next(EventActivity) // B keeps receiving meanwhile.
-	attached := time.Now().Add(10 * time.Second)
-	for mg.streams() != 2 { // A's stream is attached and then stalls.
-		if time.Now().After(attached) {
-			t.Fatal("the stalled client's stream never started")
+	j.requests(1)
+	b.next(EventActivity) // B goes on while A is stuck.
+	select {
+	case at := <-ended:
+		if at.Sub(start) < chunkTimeout/2 {
+			t.Fatalf("A ended after %v, before its write deadline", at.Sub(start))
 		}
-		time.Sleep(10 * time.Millisecond)
+	case <-time.After(chunkTimeout + 10*time.Second):
+		t.Fatal("the stalled stream was not cut off")
 	}
-	deadline := time.Now().Add(3*chunkTimeout + 5*time.Second)
-	for mg.streams() != 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the stalled stream is still held (%d streams)", mg.streams())
-		}
-		time.Sleep(50 * time.Millisecond)
+	if n := mg.streams(); n != 1 {
+		t.Fatalf("%d streams held", n)
 	}
+	j.requests(1)
 	b.next(EventActivity)
 }
 
