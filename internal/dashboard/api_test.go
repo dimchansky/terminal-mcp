@@ -381,12 +381,21 @@ func TestAPIBusySlotsAndRecordErrors(t *testing.T) {
 		t.Fatalf("earlier coverage %+v", earlier.Coverage)
 	}
 	// Both page slots of the session are busy: the next page is refused.
+	// A handler releases its slot just after the client has read the whole
+	// answer, so wait for the previous requests' slots.
 	for i := 0; i < 2; i++ {
-		release, err := sess.Attach(viewer.KindPage, viewer.NewStream(httptest.NewRecorder()))
-		if err != nil {
-			t.Fatal(err)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			release, err := sess.Attach(viewer.KindPage, viewer.NewStream(httptest.NewRecorder()))
+			if err == nil {
+				defer release()
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal(err)
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
-		defer release()
 	}
 	code2, data, header := api.post(token, PathRecent, map[string]any{"window": env.Window})
 	if code2 != http.StatusTooManyRequests || errCode(t, data) != "capacity" || header.Get("Retry-After") == "" {
