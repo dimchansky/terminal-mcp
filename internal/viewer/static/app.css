@@ -1,0 +1,5 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+main { max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+input { font-family: ui-monospace, monospace; font-size: 1.1rem; width: 100%; box-sizing: border-box; padding: 0.5rem; }
+button { margin-top: 0.75rem; padding: 0.4rem 1rem; }
+[role="alert"] { color: #b00020; }

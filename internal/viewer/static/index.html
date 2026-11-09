@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>terminal-mcp activity</title>
+<link rel="stylesheet" href="/dashboard/app.css">
+<script src="/dashboard/app.js" defer></script>
+</head>
+<body>
+<main>
+<h1>terminal-mcp activity</h1>
+<section id="login" hidden>
+<p>Run <code>terminal-mcp dashboard</code> in your terminal and enter the one-time code it prints.</p>
+<label for="code">One-time code</label>
+<input id="code" type="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" inputmode="text">
+<button id="submit" type="button">Sign in</button>
+<p id="login-error" role="alert"></p>
+</section>
+<section id="signed-in" hidden>
+<p id="status" role="status"></p>
+<p>The activity view is not implemented yet.</p>
+<button id="logout" type="button">Sign out</button>
+</section>
+<section id="offline" hidden>
+<p id="offline-reason" role="alert"></p>
+<button id="retry" type="button">Retry</button>
+</section>
+<section id="ended" hidden>
+<p id="ended-reason" role="alert"></p>
+<button id="again" type="button">Sign in again</button>
+</section>
+</main>
+</body>
+</html>
