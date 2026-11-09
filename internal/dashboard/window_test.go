@@ -124,14 +124,14 @@ func TestLiveWindowJoinsAndCatchesUp(t *testing.T) {
 		t.Fatalf("state %v unseen %v", state, unseen)
 	}
 	more := j.requests(2)
-	changes, next, hasMore, err := w.CatchUp(context.Background(), head, 4)
+	changes, next, hasMore, _, err := w.CatchUp(context.Background(), head, 4)
 	if err != nil || hasMore || next == head {
 		t.Fatalf("catch-up: %v more=%v next=%q", err, hasMore, next)
 	}
 	if len(changes.Actions) != 2 || changes.Actions[0].RequestID != more[0] || len(changes.Occurrences) != 4 {
 		t.Fatalf("changes %+v", changes)
 	}
-	if _, _, _, err := w.CatchUp(context.Background(), "not-issued", 1); !errors.Is(err, ErrRebuild) {
+	if _, _, _, _, err := w.CatchUp(context.Background(), "not-issued", 1); !errors.Is(err, ErrRebuild) {
 		t.Fatalf("unknown cursor: %v", err)
 	}
 }
@@ -246,11 +246,11 @@ func TestLiveCapacityRaisesTheFloor(t *testing.T) {
 	w := buildLive(t, j, WindowConfig{Capacity: 300}, nil)
 	_, _, head, _ := w.Info()
 	newer := j.requests(150) // 300 more rows.
-	changes, _, _, err := w.CatchUp(context.Background(), head, 10)
+	changes, _, _, floorChanged, err := w.CatchUp(context.Background(), head, 10)
 	if err != nil {
 		t.Fatalf("catch-up: %v", err)
 	}
-	if len(changes.Actions) != len(newer) || occurrences(w) > 300 {
+	if len(changes.Actions) != len(newer) || occurrences(w) > 300 || !floorChanged {
 		t.Fatalf("changes %d actions, occurrences %d", len(changes.Actions), occurrences(w))
 	}
 }
@@ -262,7 +262,7 @@ func TestLiveCapacityWithNothingToEvict(t *testing.T) {
 	for i := 0; i < 230; i++ { // Unfinished current-server requests are pinned.
 		j.write(audit.Event{ServerID: testServer, RequestID: fmt.Sprintf("open-%d", i), Tool: "file_read", Phase: "request_start"})
 	}
-	if _, _, _, err := w.CatchUp(context.Background(), head, 10); !errors.Is(err, ErrCapacity) {
+	if _, _, _, _, err := w.CatchUp(context.Background(), head, 10); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("catch-up: %v", err)
 	}
 	if _, state, _, _ := w.Info(); state != StateCapacity {
@@ -387,12 +387,12 @@ func TestCatchUpFromAnOlderCursor(t *testing.T) {
 	w := buildLive(t, j, WindowConfig{}, nil)
 	_, _, first, _ := w.Info()
 	j.requests(3)
-	_, second, _, err := w.CatchUp(context.Background(), first, 4)
+	_, second, _, _, err := w.CatchUp(context.Background(), first, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	j.requests(2)
-	changes, head, _, err := w.CatchUp(context.Background(), first, 4) // Older cursor.
+	changes, head, _, _, err := w.CatchUp(context.Background(), first, 4) // Older cursor.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestCatchUpFromAnOlderCursor(t *testing.T) {
 		t.Fatalf("head %q current %q changes %d", head, current, len(changes.Actions))
 	}
 	// Idle catch-up does not issue a duplicate cursor.
-	if _, again, _, err := w.CatchUp(context.Background(), head, 4); err != nil || again != head {
+	if _, again, _, _, err := w.CatchUp(context.Background(), head, 4); err != nil || again != head {
 		t.Fatalf("idle catch-up %q %v", again, err)
 	}
 	w.With(func(p *activity.Projection) {
@@ -413,7 +413,7 @@ func TestCatchUpFromAnOlderCursor(t *testing.T) {
 		}
 	})
 	before := occurrences(w)
-	changes, _, _, err = w.CatchUp(context.Background(), second, 4)
+	changes, _, _, _, err = w.CatchUp(context.Background(), second, 4)
 	if err != nil || len(changes.Occurrences) != 4 || occurrences(w) != before {
 		t.Fatalf("resume after eviction: %v changes %d occurrences %d→%d", err, len(changes.Occurrences), before, occurrences(w))
 	}

@@ -60,7 +60,8 @@ type Continuation struct {
 }
 
 // Record is one original journal record on the wire. DataB64 holds the exact
-// JSONL bytes; Deferred records are loaded in full with the record endpoint.
+// JSONL bytes; Deferred records are loaded in full with the record endpoint
+// (Size is zero when a deferred record was not read).
 // Unavailable records cannot be read now; Retryable ones may be read later.
 type Record struct {
 	Occurrence  string `json:"occurrence"`
@@ -94,6 +95,9 @@ type Coverage struct {
 	End string `json:"end"`
 	// UseArchive: older rows were evicted; read them with an archive window.
 	UseArchive bool `json:"use_archive"`
+	// Recorded times of the oldest and newest loaded items (writer clock).
+	OldestTime string `json:"oldest_time,omitempty"`
+	NewestTime string `json:"newest_time,omitempty"`
 }
 
 // Page is a delivery of whole items, newest first, with their records.
@@ -210,11 +214,17 @@ func phaseOccurrences(phases ...*activity.PhaseView) []activity.OccurrenceKey {
 	return out
 }
 
-// snapshot is a consistent view of the window taken under its lock.
+// snapshot is a consistent view of the window taken under its lock. It is
+// cached and shared between requests: never modify its items or views.
 type snapshot struct {
 	generation uint64
 	items      []item // Newest first.
 	coverage   Coverage
+	// head and unseen were read with the items. A cached snapshot keeps an
+	// older head only while no rows were applied since, so catching up
+	// from it never skips a row.
+	head   string
+	unseen bool
 }
 
 // collect snapshots the window's items newest first, reusing the views of
@@ -230,8 +240,8 @@ func (mg *Manager) collect(m *managed) snapshot {
 		return *cached
 	}
 	var s snapshot
-	m.win.View(func(p *activity.Projection, generation uint64, k ViewKey) {
-		s.generation, key = generation, k
+	m.win.View(func(p *activity.Projection, meta ViewMeta) {
+		s.generation, key, s.head, s.unseen = meta.Generation, meta.Key, meta.Head, meta.PossibleUnseen
 		s.coverage = coverageOf(p.Coverage())
 		m.hints.prune(p.HasAction)
 		for _, v := range p.Actions() {
@@ -268,6 +278,12 @@ func (mg *Manager) collect(m *managed) snapshot {
 	slices.SortFunc(s.items, func(a, b item) int { return compareItems(b.Item, a.Item) })
 	for i := range s.items {
 		s.items[i].Lane = m.laneID(s.generation, s.items[i].laneKey)
+		if t := itemTime(s.items[i].Item); t != "" {
+			if s.coverage.NewestTime == "" {
+				s.coverage.NewestTime = t
+			}
+			s.coverage.OldestTime = t
+		}
 	}
 	m.mu.Lock()
 	m.cached, m.cachedKey = &s, key
@@ -311,6 +327,13 @@ func (mg *Manager) deliver(ctx context.Context, s snapshot, items []item, before
 		for _, key := range it.occ {
 			if want != nil && !want(key) {
 				continue // The client already has it.
+			}
+			if key.Ref != "" && (budget <= 0 || records >= maxRecords) {
+				// Not read at all: the client loads it with the record
+				// endpoint (its size is then unknown here).
+				records++
+				page.Records = append(page.Records, Record{Occurrence: occurrenceID(key), Deferred: true})
+				continue
 			}
 			rec := mg.readRecord(ctx, key)
 			encoded := len(rec.DataB64)
@@ -480,44 +503,49 @@ func (mg *Manager) Origins(ctx context.Context, owner viewer.Attacher, id string
 func (mg *Manager) Lanes(ctx context.Context, owner viewer.Attacher, id string) ([]Lane, error) {
 	var lanes []Lane
 	err := mg.run(ctx, owner, id, func(m *managed) error {
-		byID := map[string]*Lane{}
-		for _, it := range mg.collect(m).items { // Newest first.
-			l := byID[it.Lane]
-			if l == nil {
-				l = &Lane{ID: it.Lane, Kind: laneJournal}
-				switch {
-				case it.Action != nil:
-					_, l.Kind = laneKey(*it.Action)
-				case it.Kind == ItemEffect:
-					l.Kind = laneOriginNotLoaded
-				}
-				if l.Kind == laneConversation {
-					l.IdentitySource, l.ConversationID = it.Action.Identity.IdentitySource, it.Action.Identity.ConversationID
-				}
-				byID[l.ID] = l
-				lanes = append(lanes, Lane{}) // Placeholder keeps the order.
-				lanes[len(lanes)-1].ID = l.ID
-			}
-			l.Items++
-			if t := itemTime(it.Item); t != "" {
-				if l.LastTime == "" {
-					l.LastTime = t
-				}
-				l.FirstTime = t
-			}
-			if it.Action != nil {
-				if n := it.Action.Identity.ClientName; n != nil && len(l.ClientNames) < maxClientNames &&
-					!slices.Contains(l.ClientNames, *n) {
-					l.ClientNames = append(l.ClientNames, *n)
-				}
-			}
-		}
-		for i := range lanes {
-			lanes[i] = *byID[lanes[i].ID]
-		}
+		lanes = lanesOf(mg.collect(m).items)
 		return nil
 	})
 	return lanes, err
+}
+
+// lanesOf summarizes the lanes of items given newest first.
+func lanesOf(items []item) []Lane {
+	lanes := []Lane{}
+	index := map[string]int{}
+	for _, it := range items {
+		i, ok := index[it.Lane]
+		if !ok {
+			l := Lane{ID: it.Lane, Kind: laneJournal}
+			switch {
+			case it.Action != nil:
+				_, l.Kind = laneKey(*it.Action)
+			case it.Kind == ItemEffect:
+				l.Kind = laneOriginNotLoaded
+			}
+			if l.Kind == laneConversation {
+				l.IdentitySource, l.ConversationID = it.Action.Identity.IdentitySource, it.Action.Identity.ConversationID
+			}
+			i = len(lanes)
+			index[it.Lane] = i
+			lanes = append(lanes, l)
+		}
+		l := &lanes[i]
+		l.Items++
+		if t := itemTime(it.Item); t != "" {
+			if l.LastTime == "" {
+				l.LastTime = t
+			}
+			l.FirstTime = t
+		}
+		if it.Action != nil {
+			if n := it.Action.Identity.ClientName; n != nil && len(l.ClientNames) < maxClientNames &&
+				!slices.Contains(l.ClientNames, *n) {
+				l.ClientNames = append(l.ClientNames, *n)
+			}
+		}
+	}
+	return lanes
 }
 
 func itemTime(it Item) string {
@@ -539,12 +567,14 @@ func itemTime(it Item) string {
 // catchUpState fixes the changed set of the first call of a catch-up, so
 // continuation calls page it without reading or issuing cursors.
 type catchUpState struct {
-	generation uint64
-	after      string
-	head       string
-	more       bool
-	keys       map[string]bool // Keys of changed items.
-	records    map[activity.OccurrenceKey]bool
+	generation   uint64
+	after        string
+	head         string
+	more         bool
+	floorChanged bool
+	seq          uint64          // Creation order, to evict the oldest set.
+	keys         map[string]bool // Keys of changed items.
+	records      map[activity.OccurrenceKey]bool
 }
 
 // CatchUpResult is what changed since a live cursor.
@@ -552,7 +582,13 @@ type CatchUpResult struct {
 	Page
 	Head string `json:"head"`
 	More bool   `json:"more"` // More journal follows the head.
+	// FloorChanged: the window evicted older rows meanwhile; items the
+	// client holds below the floor are no longer in the window.
+	FloorChanged bool `json:"floor_changed"`
 }
+
+// maxCatchUps bounds the fixed changed sets kept for continuations.
+const maxCatchUps = 4
 
 // CatchUp reports items changed since the live cursor after, with only the
 // records the client lacks. generation is the client's generation: a cursor
@@ -562,19 +598,22 @@ func (mg *Manager) CatchUp(ctx context.Context, owner viewer.Attacher, id string
 	cont *Continuation) (CatchUpResult, error) {
 	var res CatchUpResult
 	err := mg.run(ctx, owner, id, func(m *managed) error {
+		if m.mode != ModeLive || after == "" {
+			return errBadRequest // Never a rebuild: archive windows have no live cursor.
+		}
 		if gen, _, _, _ := m.win.Info(); gen != generation {
 			return ErrGenerationChanged
 		}
 		m.mu.Lock()
-		state := m.catchUp
+		state := m.catchUps[after]
 		m.mu.Unlock()
 		if cont == nil {
-			changes, head, more, err := m.win.CatchUp(ctx, after, catchUpPages)
+			changes, head, more, floorChanged, err := m.win.CatchUp(ctx, after, catchUpPages)
 			if err != nil {
 				return err
 			}
 			state = &catchUpState{generation: generation, after: after, head: head, more: more,
-				keys: map[string]bool{}, records: map[activity.OccurrenceKey]bool{}}
+				floorChanged: floorChanged, keys: map[string]bool{}, records: map[activity.OccurrenceKey]bool{}}
 			for _, k := range changes.Actions {
 				state.keys[actionKey(k)] = true
 			}
@@ -587,7 +626,21 @@ func (mg *Manager) CatchUp(ctx context.Context, owner viewer.Attacher, id string
 				state.keys["s:"+occurrenceID(k)] = true
 			}
 			m.mu.Lock()
-			m.catchUp = state
+			if m.catchUps == nil {
+				m.catchUps = map[string]*catchUpState{} // Concurrent catch-ups keep their own sets.
+			}
+			if len(m.catchUps) >= maxCatchUps {
+				var oldest string
+				for k, st := range m.catchUps {
+					if oldest == "" || st.seq < m.catchUps[oldest].seq {
+						oldest = k
+					}
+				}
+				delete(m.catchUps, oldest)
+			}
+			m.catchUpSeq++
+			state.seq = m.catchUpSeq
+			m.catchUps[after] = state
 			m.mu.Unlock()
 		} else if state == nil || state.after != after || state.generation != generation {
 			return ErrGenerationChanged
@@ -604,15 +657,20 @@ func (mg *Manager) CatchUp(ctx context.Context, owner viewer.Attacher, id string
 			}
 		}
 		res = CatchUpResult{Page: mg.deliver(ctx, s, changed, cont, func(k activity.OccurrenceKey) bool { return state.records[k] }),
-			Head: state.head, More: state.more}
+			Head: state.head, More: state.more, FloorChanged: state.floorChanged}
 		return nil
 	})
 	return res, err
 }
 
-// ErrUnknownOccurrence: the record endpoint only serves occurrences the
-// window has loaded.
-var ErrUnknownOccurrence = errors.New("dashboard: occurrence not in this window")
+var (
+	// ErrUnknownOccurrence: the record endpoint only serves occurrences the
+	// window has loaded.
+	ErrUnknownOccurrence = errors.New("dashboard: occurrence not in this window")
+	// ErrUnavailable: the record cannot be read (a row without a readable
+	// reference, or a journal source that changed or is missing).
+	ErrUnavailable = errors.New("dashboard: record unavailable")
+)
 
 // RecordBytes returns one complete original record known to the window.
 func (mg *Manager) RecordBytes(ctx context.Context, owner viewer.Attacher, id, occurrence string) ([]byte, error) {
@@ -623,6 +681,9 @@ func (mg *Manager) RecordBytes(ctx context.Context, owner viewer.Attacher, id, o
 			known = occurrence != "" && p.Knows(activity.OccurrenceKey{Ref: occurrence})
 		})
 		if !known {
+			if strings.HasPrefix(occurrence, "w:") || strings.HasPrefix(occurrence, "p:") {
+				return ErrUnavailable // A weak key names a row without a readable reference.
+			}
 			return ErrUnknownOccurrence
 		}
 		ref, err := audit.ParseRecordRef(occurrence)
@@ -630,6 +691,9 @@ func (mg *Manager) RecordBytes(ctx context.Context, owner viewer.Attacher, id, o
 			return ErrUnknownOccurrence
 		}
 		data, _, err = mg.reader.ReadRecord(ctx, ref)
+		if errors.Is(err, audit.ErrHistoryGap) || errors.Is(err, audit.ErrInvalidCursor) {
+			return ErrUnavailable
+		}
 		return err
 	})
 	return data, err

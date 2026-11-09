@@ -48,6 +48,7 @@ var (
 type issued struct {
 	rank  int64 // Last live rank applied when the cursor was issued.
 	carry activity.LiveCarry
+	floor activity.CoverageView // Coverage when issued, to report floor changes.
 }
 
 // Window is one projection over the journal. Its methods are safe for
@@ -208,7 +209,7 @@ func (w *Window) build(ctx context.Context) error {
 func (w *Window) issue() string {
 	c := string(w.head)
 	w.proj.IssueLiveCursor(c)
-	w.issued[c] = issued{rank: w.liveRank, carry: w.carry}
+	w.issued[c] = issued{rank: w.liveRank, carry: w.carry, floor: w.proj.Coverage()}
 	return c
 }
 
@@ -462,26 +463,32 @@ func (w *Window) Scan(ctx context.Context, maxPages int, deadline time.Time) err
 // CatchUp reads forward from the window's own head (at most maxPages pages)
 // and reports what changed since the live cursor `after`, which must be one
 // this window issued and can still resume from. It returns the new head
-// cursor and whether more journal follows.
-func (w *Window) CatchUp(ctx context.Context, after string, maxPages int) (activity.Changes, string, bool, error) {
+// cursor, whether more journal follows and whether the floor moved since
+// `after` was issued.
+func (w *Window) CatchUp(ctx context.Context, after string, maxPages int) (_ activity.Changes, _ string, _ bool, floorChanged bool, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.state != StateOK {
-		return activity.Changes{}, "", false, &StateError{State: w.state}
+		return activity.Changes{}, "", false, false, &StateError{State: w.state}
 	}
 	from, ok := w.issued[after]
 	if !ok || !w.proj.CanResume(after) || w.archive {
-		return activity.Changes{}, "", false, ErrRebuild
+		return activity.Changes{}, "", false, false, ErrRebuild
 	}
 	before := w.head
+	defer func() {
+		if err != nil && w.head != before && w.state == StateOK {
+			w.issue() // Applied pages: keep the head a cursor a snapshot may hand out.
+		}
+	}()
 	more := false
 	for i := 0; i < maxPages; i++ {
 		page, err := w.reader.ReadPage(ctx, w.head, audit.Forward, pageBudget)
 		if err != nil {
-			return activity.Changes{}, "", false, liveError(err)
+			return activity.Changes{}, "", false, false, liveError(err)
 		}
 		if err := w.applyLive(ctx, page); err != nil {
-			return activity.Changes{}, "", false, err
+			return activity.Changes{}, "", false, false, err
 		}
 		if more = page.HasMore; !more {
 			break
@@ -496,7 +503,8 @@ func (w *Window) CatchUp(ctx context.Context, after string, maxPages int) (activ
 			delete(w.issued, c)
 		}
 	}
-	return w.proj.ChangedSince(from.rank), head, more, nil
+	cov := w.proj.Coverage()
+	return w.proj.ChangedSince(from.rank), head, more, cov.FloorSet != from.floor.FloorSet || cov.Floor != from.floor.Floor, nil
 }
 
 // Rebuild replaces the projection with a fresh one: a new generation whose
@@ -510,7 +518,9 @@ func (w *Window) Rebuild(ctx context.Context) error {
 	return w.build(ctx)
 }
 
-// With runs fn with the projection under the window lock.
+// With runs fn with the projection under the window lock. fn must only
+// read: mutations are not versioned, so cached views would go stale (index
+// sync goes through SyncIndex).
 func (w *Window) With(fn func(p *activity.Projection)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -557,9 +567,22 @@ func (w *Window) SyncIndex(x *Index) {
 	w.synced, w.hasSync = key, true
 }
 
-// View runs fn with the projection and its view key under the window lock.
-func (w *Window) View(fn func(p *activity.Projection, generation uint64, key ViewKey)) {
+// ViewMeta describes the window state a view was built from. Head is the
+// live cursor whose rows the view contains (empty for archive windows).
+type ViewMeta struct {
+	Generation     uint64
+	Key            ViewKey
+	Head           string
+	PossibleUnseen bool
+}
+
+// View runs fn with the projection and its state under the window lock.
+func (w *Window) View(fn func(p *activity.Projection, meta ViewMeta)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	fn(w.proj, w.generation, ViewKey{Window: w.version, Index: w.synced.Index})
+	meta := ViewMeta{Generation: w.generation, Key: ViewKey{Window: w.version, Index: w.synced.Index}, PossibleUnseen: w.unseen}
+	if !w.archive {
+		meta.Head = string(w.head)
+	}
+	fn(w.proj, meta)
 }

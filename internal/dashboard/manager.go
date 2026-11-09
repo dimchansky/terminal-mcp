@@ -23,6 +23,9 @@ var (
 	// ErrGenerationChanged: an ID or continuation from an older generation
 	// of the window; the client must take a new snapshot.
 	ErrGenerationChanged = errors.New("dashboard: window generation changed")
+	// ErrWindowLimit: the session holds its maximum number of windows (or
+	// the server its total); close one before opening another.
+	ErrWindowLimit = errors.New("dashboard: window limit reached")
 )
 
 // RebuildingError asks the client to retry after a backoff.
@@ -53,6 +56,9 @@ type Manager struct {
 	// beforeRaise lets the in-flight index sync windows before eviction.
 	beforeRaise func(*activity.Projection)
 	index       *Index
+	status      func() audit.Status
+	// snapshotErr is a test hook failing snapshots; nil in production.
+	snapshotErr func() error
 
 	mu      sync.Mutex
 	windows map[string]*managed
@@ -64,7 +70,8 @@ type ManagerConfig struct {
 	Capacity    int // Per window; 0 selects 50,000.
 	Now         func() time.Time
 	BeforeRaise func(*activity.Projection)
-	Index       *Index // Server-wide in-flight index; may be nil.
+	Index       *Index              // Server-wide in-flight index; may be nil.
+	Status      func() audit.Status // Audit health; nil reports ok.
 }
 
 // NewManager returns a manager reading reader (nil when audit is disabled).
@@ -76,7 +83,7 @@ func NewManager(reader *audit.Reader, cfg ManagerConfig) *Manager {
 		cfg.BeforeRaise = cfg.Index.Sync
 	}
 	return &Manager{reader: reader, serverID: cfg.ServerID, capacity: cfg.Capacity, now: cfg.Now,
-		beforeRaise: cfg.BeforeRaise, index: cfg.Index, windows: make(map[string]*managed)}
+		beforeRaise: cfg.BeforeRaise, index: cfg.Index, status: cfg.Status, windows: make(map[string]*managed)}
 }
 
 type managed struct {
@@ -90,7 +97,8 @@ type managed struct {
 
 	mu          sync.Mutex
 	lanes       *laneIDs
-	catchUp     *catchUpState
+	catchUps    map[string]*catchUpState // By the cursor caught up from.
+	catchUpSeq  uint64
 	cached      *snapshot // Views of the window state named by cachedKey.
 	cachedKey   ViewKey
 	rebuilding  bool
@@ -149,6 +157,9 @@ func (mg *Manager) Open(ctx context.Context, owner viewer.Attacher, mode Mode, f
 	mg.sweep()
 	m := &managed{mg: mg, id: hex.EncodeToString(raw[:]), owner: owner, mode: mode, hints: newHints(), lastUsed: mg.now()}
 	release, err := owner.Attach(viewer.KindWindow, m)
+	if errors.Is(err, viewer.ErrCapacity) {
+		return "", ErrWindowLimit
+	}
 	if err != nil {
 		return "", err
 	}
@@ -229,7 +240,7 @@ func (mg *Manager) forget(m *managed) {
 	mg.mu.Unlock()
 	m.mu.Lock()
 	release := m.release
-	m.release = nil
+	m.release, m.cached = nil, nil
 	m.mu.Unlock()
 	if release != nil {
 		release()
@@ -312,7 +323,7 @@ func (mg *Manager) rebuild(ctx context.Context, m *managed, gen uint64) error {
 	m.mu.Lock()
 	m.rebuilding = false
 	if err == nil {
-		m.failures, m.catchUp = 0, nil
+		m.failures, m.catchUps = 0, nil
 		m.mu.Unlock()
 		return ErrRebuild // The client must take the new generation's snapshot.
 	}
