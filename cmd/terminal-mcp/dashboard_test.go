@@ -34,7 +34,7 @@ func dashboardServer(t *testing.T, viewers *viewer.Registry) string {
 	manager := session.New(nil)
 	t.Cleanup(manager.Close)
 	return startDashboardServer(t, func(address string) http.Handler {
-		h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, viewers)
+		h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, &viewerRuntime{registry: viewers})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -53,7 +53,7 @@ func TestViewerAndAdminRoutesThroughTheMainHandler(t *testing.T) {
 	t.Cleanup(manager.Close)
 	const address = "127.0.0.1:45679"
 	viewers := viewer.NewRegistry(viewer.Config{})
-	h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, viewers)
+	h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, &viewerRuntime{registry: viewers})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 // whatever credentials the remote side presents.
 func TestTunnelCannotReachViewerRoutes(t *testing.T) {
 	const address = "127.0.0.1:45680"
-	h, err := newViewerHandler(address, viewer.NewRegistry(viewer.Config{}))
+	h, err := newViewerHandler(address, &viewerRuntime{registry: viewer.NewRegistry(viewer.Config{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestTunnelCannotReachViewerRoutes(t *testing.T) {
 			}
 		}
 	}
-	if reached || len(paths) != len(h.Routes())+3 || len(h.Routes()) < 7 {
+	if reached || len(paths) != len(h.Routes())+3 || len(h.Routes()) < 16 { // 7 viewer + 9 dashboard routes.
 		t.Fatalf("reached=%v paths=%v", reached, paths)
 	}
 }
@@ -223,7 +223,7 @@ func TestShutdownFencesAViewerStreamWhoseClientStoppedReading(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				done <- serveHTTPWithOptions(ctx, manager, mcpserver.New(manager), listener, viewerTestToken, 0, nil, viewers)
+				done <- serveHTTPWithOptions(ctx, manager, mcpserver.New(manager), listener, viewerTestToken, 0, nil, &viewerRuntime{registry: viewers})
 			}()
 			code, _, _ := viewers.Issue()
 			token, _, err := viewers.Login(code)
@@ -324,7 +324,7 @@ func TestAbnormalServeExitFencesViewers(t *testing.T) {
 	_, s, _ := viewers.Login(code)
 	done := make(chan error, 1)
 	go func() {
-		done <- serveHTTPWithOptions(context.Background(), manager, mcpserver.New(manager), listener, viewerTestToken, 0, nil, viewers)
+		done <- serveHTTPWithOptions(context.Background(), manager, mcpserver.New(manager), listener, viewerTestToken, 0, nil, &viewerRuntime{registry: viewers})
 	}()
 	time.Sleep(50 * time.Millisecond)
 	_ = listener.Close() // Serve fails.
@@ -351,7 +351,7 @@ func TestRuntimeReportsViewerCounts(t *testing.T) {
 	_, _, _ = viewers.Login(code)
 	_, _, _ = viewers.Issue()
 	state := &updateServer{info: mcpserver.RuntimeInfo{ServerID: manager.ID()}, shutdown: func() {}}
-	h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, viewers, state)
+	h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, &viewerRuntime{registry: viewers}, state)
 	if err != nil {
 		t.Fatal(err)
 	}

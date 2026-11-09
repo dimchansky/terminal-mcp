@@ -21,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"terminalmcp/internal/audit"
+	"terminalmcp/internal/dashboard"
 	"terminalmcp/internal/filesystem"
 	"terminalmcp/internal/httpguard"
 	"terminalmcp/internal/mcpserver"
@@ -198,8 +199,10 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 			return fmt.Errorf("embedded tunnel setup: %w", err)
 		}
 	}
-	// Read-only dashboard viewers. HTTP mode only; stdio has no viewer.
-	viewers := viewer.NewRegistry(viewer.Config{})
+	// Read-only dashboard viewers. HTTP mode only; stdio has no viewer. The
+	// in-flight index starts at the frontier after server_start, before any
+	// MCP call is admitted.
+	viewers := newViewerRuntime(ctx, viewer.NewRegistry(viewer.Config{}), recorder, manager.ID())
 	if len(args) == 0 || args[0] != "serve" {
 		return serveHTTPWithTunnel(ctx, manager, server, listener, token, tunnel, viewers)
 	}
@@ -216,7 +219,7 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	defer cancel()
 	return serveHTTPWithTunnel(serveCtx, manager, server, listener, token, tunnel, viewers, &updateServer{
 		info: info, recorder: recorder, tunnel: tunnel, shutdown: cancel,
-		force: forceStop(viewers, func() {
+		force: forceStop(viewers.registry, func() {
 			files.AbortTransfers()
 			manager.AbortManagedSessions()
 		}, cancel),
@@ -239,6 +242,46 @@ func forceStop(viewers *viewer.Registry, abort func(), cancel context.CancelFunc
 // final server_stopping event during a normal stop or update.
 const viewerStopGrace = time.Second
 
+// viewerRuntime holds the dashboard viewer registry and the dashboard
+// window manager of one HTTP server.
+type viewerRuntime struct {
+	registry  *viewer.Registry
+	dashboard *dashboard.Manager
+}
+
+// newViewerRuntime builds the dashboard over the audit journal. Without a
+// readable audit the dashboard routes still exist and report the audit as
+// disabled; a missing frontier leaves the in-flight index unknown.
+func newViewerRuntime(ctx context.Context, registry *viewer.Registry, recorder *audit.Log, serverID string) *viewerRuntime {
+	status := func() audit.Status { return recorder.Status() }
+	reader, err := audit.NewReader(recorder)
+	if err != nil {
+		return &viewerRuntime{registry: registry,
+			dashboard: dashboard.NewManager(nil, dashboard.ManagerConfig{ServerID: serverID, Status: status})}
+	}
+	f0, err := reader.FrontierCursor(ctx)
+	if err != nil {
+		slog.Warn("dashboard in-flight index unavailable: the audit frontier could not be read")
+	}
+	index := dashboard.NewIndex(reader, serverID, f0, err == nil, status)
+	return &viewerRuntime{registry: registry,
+		dashboard: dashboard.NewManager(reader, dashboard.ManagerConfig{ServerID: serverID, Index: index, Status: status})}
+}
+
+// orDefault returns v, or a private registry with a disabled dashboard.
+func (v *viewerRuntime) orDefault(serverID string) *viewerRuntime {
+	if v == nil {
+		v = &viewerRuntime{}
+	}
+	if v.registry == nil {
+		v = &viewerRuntime{registry: viewer.NewRegistry(viewer.Config{}), dashboard: v.dashboard}
+	}
+	if v.dashboard == nil {
+		v = &viewerRuntime{registry: v.registry, dashboard: dashboard.NewManager(nil, dashboard.ManagerConfig{ServerID: serverID})}
+	}
+	return v
+}
+
 // testViewerRoutes lets tests register extra viewer routes (for example a
 // stream exercising the shutdown fence). It is nil in production; tests that
 // set it must not run in parallel.
@@ -246,11 +289,13 @@ var testViewerRoutes func(*viewer.Handler)
 
 // newViewerHandler builds the dashboard viewer handler. Its route table is
 // also what the tunnel-exclusion tests enumerate.
-func newViewerHandler(host string, viewers *viewer.Registry) (*viewer.Handler, error) {
-	h, err := viewer.NewHandler(host, viewers)
+func newViewerHandler(host string, viewers *viewerRuntime) (*viewer.Handler, error) {
+	viewers = viewers.orDefault("")
+	h, err := viewer.NewHandler(host, viewers.registry)
 	if err != nil {
 		return nil, err
 	}
+	dashboard.Register(h, viewers.dashboard)
 	if testViewerRoutes != nil {
 		testViewerRoutes(h)
 	}
@@ -345,14 +390,12 @@ func standaloneInfo(args []string, serverID, listen, root string, envToken bool)
 // Dashboard viewer paths go to the viewer guard; everything else goes through
 // the unchanged MCP bearer guard. A nil registry selects a private one.
 // Tests can exercise this handler with httptest without starting a service.
-func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string, viewers *viewer.Registry, standalone ...*updateServer) (http.Handler, error) {
-	if viewers == nil {
-		viewers = viewer.NewRegistry(viewer.Config{})
-	}
+func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string, viewers *viewerRuntime, standalone ...*updateServer) (http.Handler, error) {
+	viewers = viewers.orDefault(manager.ID())
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.HTTP(server))
-	mux.Handle(viewer.AdminGrantPath, viewer.AdminGrant(viewers))
-	mux.Handle(viewer.AdminRevokePath, viewer.AdminRevoke(viewers))
+	mux.Handle(viewer.AdminGrantPath, viewer.AdminGrant(viewers.registry))
+	mux.Handle(viewer.AdminRevokePath, viewer.AdminRevoke(viewers.registry))
 	if len(standalone) != 0 && standalone[0] != nil {
 		state := standalone[0]
 		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager, state.shutdown, state.force))
@@ -367,7 +410,7 @@ func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token st
 			state, _ := manager.List(r.Context(), session.ListArgs{})
 			info.ActiveOperations = state.ActiveOperations
 			info.ActiveSessions = state.Counts.Running
-			info.ViewerSessions, info.ViewerPendingCodes = viewers.Counts()
+			info.ViewerSessions, info.ViewerPendingCodes = viewers.registry.Counts()
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 		})
@@ -405,11 +448,11 @@ func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server 
 	return serveHTTPWithOptions(ctx, manager, server, listener, token, timeout, nil, nil, standalone...)
 }
 
-func serveHTTPWithTunnel(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, tunnel *tunnelRuntime, viewers *viewer.Registry, standalone ...*updateServer) error {
+func serveHTTPWithTunnel(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, tunnel *tunnelRuntime, viewers *viewerRuntime, standalone ...*updateServer) error {
 	return serveHTTPWithOptions(ctx, manager, server, listener, token, 0, tunnel, viewers, standalone...)
 }
 
-func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, tunnel *tunnelRuntime, viewers *viewer.Registry, standalone ...*updateServer) error {
+func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, tunnel *tunnelRuntime, viewers *viewerRuntime, standalone ...*updateServer) error {
 	defer func() { _ = listener.Close() }()
 	defer manager.Close()
 	if tunnel != nil {
@@ -420,14 +463,12 @@ func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server 
 			}
 		}()
 	}
-	if viewers == nil {
-		viewers = viewer.NewRegistry(viewer.Config{})
-	}
+	viewers = viewers.orDefault(manager.ID())
 	// Every exit fences viewers; the normal path below does it first, with
 	// its stop reason and grace, and a forced stop already did.
 	defer func() {
-		viewers.CloseAdmission(viewer.StopAbnormal)
-		viewers.StopAll(0)
+		viewers.registry.CloseAdmission(viewer.StopAbnormal)
+		viewers.registry.StopAll(0)
 	}()
 	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token, viewers, standalone...)
 	if err != nil {
@@ -483,8 +524,8 @@ func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server 
 		if manager.DrainMode() == "update" {
 			reason = viewer.StopUpdate
 		}
-		viewers.CloseAdmission(reason)
-		viewers.StopAll(viewerStopGrace)
+		viewers.registry.CloseAdmission(reason)
+		viewers.registry.StopAll(viewerStopGrace)
 		shutdownCtx := context.Background()
 		cancel := func() {}
 		if timeout > 0 {
