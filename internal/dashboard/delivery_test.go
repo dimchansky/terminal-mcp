@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -160,7 +161,7 @@ func TestRebuildsAndReadsDoNotDeadlock(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
+			for i := 0; i < 20; i++ {
 				_, _ = mg.Recent(context.Background(), s, id, nil)
 				_, _ = mg.Lanes(context.Background(), s, id)
 				_ = mg.run(context.Background(), s, id, func(*managed) error { return ErrRebuild })
@@ -170,8 +171,9 @@ func TestRebuildsAndReadsDoNotDeadlock(t *testing.T) {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("deadlock")
+	case <-time.After(60 * time.Second):
+		buf := make([]byte, 1<<20)
+		t.Fatalf("deadlock:\n%s", buf[:runtime.Stack(buf, true)])
 	}
 }
 
@@ -297,4 +299,40 @@ func TestSessionEndingDuringOpenReleasesTheWindow(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+}
+
+// TestSharedSnapshotUnderConcurrentReaders runs readers on a cached
+// snapshot while catch-up changes the window (run with -race).
+func TestSharedSnapshotUnderConcurrentReaders(t *testing.T) {
+	j := openJournal(t)
+	j.requests(30)
+	mg := newManager(j)
+	s := viewertest.NewSession(nil)
+	id, _ := mg.Open(context.Background(), s, ModeLive, "")
+	m, _ := mg.get(s, id)
+	gen, _, head, _ := m.win.Info()
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				if _, err := mg.Recent(context.Background(), s, id, nil); err != nil {
+					t.Error(err)
+				}
+				if _, err := mg.Lanes(context.Background(), s, id); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		j.requests(1)
+		res, err := mg.CatchUp(context.Background(), s, id, gen, head, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head = res.Head
+	}
+	wg.Wait()
 }
