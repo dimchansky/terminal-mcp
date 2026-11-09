@@ -232,12 +232,14 @@ type snapshot struct {
 // cache and lane IDs are handled outside it, so the window lock and the
 // managed lock are never nested. The snapshot is shared and read-only.
 func (mg *Manager) collect(m *managed) snapshot {
-	key := m.win.Key()
+	key, head := m.win.keyAndHead()
 	m.mu.Lock()
 	cached, hit := m.cached, m.cached != nil && m.cachedKey == key
 	m.mu.Unlock()
 	if hit {
-		return *cached
+		s := *cached
+		s.head = head // Issued since the view was built; the view holds its rows.
+		return s
 	}
 	var s snapshot
 	m.win.View(func(p *activity.Projection, meta ViewMeta) {
@@ -598,7 +600,7 @@ func (mg *Manager) CatchUp(ctx context.Context, owner viewer.Attacher, id string
 	cont *Continuation) (CatchUpResult, error) {
 	var res CatchUpResult
 	err := mg.run(ctx, owner, id, func(m *managed) error {
-		if m.mode != ModeLive || after == "" {
+		if m.mode != ModeLive {
 			return errBadRequest // Never a rebuild: archive windows have no live cursor.
 		}
 		if gen, _, _, _ := m.win.Info(); gen != generation {

@@ -319,17 +319,8 @@ func TestAPIResnapshotAfterRebuild(t *testing.T) {
 	if len(cu.Items) != 1 || !cu.PossibleUnseen || cu.State != StateOK {
 		t.Fatalf("catch-up after rebuild %+v", cu)
 	}
-	for _, body := range []map[string]any{
-		{"window": env.Window, "generation": again.Generation, "after": ""},
-		{"window": env.Window, "mode": "live"},
-	} {
-		path := PathCatchUp
-		if _, ok := body["mode"]; ok {
-			path = PathWindow
-		}
-		if code, data, _ := api.post(token, path, body); code != http.StatusBadRequest {
-			t.Errorf("%v: %d %s", body, code, data)
-		}
+	if code, data, _ := api.post(token, PathWindow, map[string]any{"window": env.Window, "mode": "live"}); code != http.StatusBadRequest {
+		t.Errorf("window with mode: %d %s", code, data)
 	}
 }
 

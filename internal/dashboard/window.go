@@ -28,6 +28,9 @@ const (
 	StateFailed   State = "failed"   // Rebuilds kept failing.
 )
 
+// errNotLive: archive windows have no live position (a bad request).
+var errNotLive = errors.New("dashboard: archive windows have no live position")
+
 var (
 	// ErrUseArchive: the window's history chain is closed by eviction;
 	// older history is read by an archive window from the floor.
@@ -80,9 +83,15 @@ type Window struct {
 	unseen     bool // possible_unseen_activity after a rebuild.
 	// version changes whenever the projection may have changed; synced is
 	// the key of the last index sync.
-	version     uint64
-	synced      ViewKey
-	hasSync     bool
+	version uint64
+	synced  ViewKey
+	hasSync bool
+	// changed is closed and replaced whenever the window may have changed
+	// (a version bump, an issued cursor, a close), to wake streams.
+	changed chan struct{}
+	// newest is the most recently issued live cursor and its live rank.
+	newest      string
+	newestRank  int64
 	onApply     func(activity.OccurrenceKey, []byte, activity.Change)
 	beforeRaise func(*activity.Projection)
 }
@@ -102,7 +111,7 @@ func newWindow(reader *audit.Reader, cfg WindowConfig) *Window {
 		cfg.Capacity = 50_000
 	}
 	return &Window{reader: reader, serverID: cfg.ServerID, capacity: cfg.Capacity,
-		onApply: cfg.OnApply, beforeRaise: cfg.BeforeRaise, state: StateOK}
+		onApply: cfg.OnApply, beforeRaise: cfg.BeforeRaise, state: StateOK, changed: make(chan struct{})}
 }
 
 // NewLiveWindow builds a window joined to the live journal. With
@@ -132,10 +141,36 @@ func (w *Window) reset() {
 	w.histRank, w.liveRank = 0, 0
 	w.histNext, w.histClosed, w.head = "", false, ""
 	w.issued = make(map[string]issued)
+	w.newest, w.newestRank = "", 0
+}
+
+// bump marks a possible change of the projection.
+func (w *Window) bump() {
+	w.version++
+	w.signal()
+}
+
+func (w *Window) signal() {
+	close(w.changed)
+	w.changed = make(chan struct{})
+}
+
+// Changed returns a channel closed on the window's next change.
+func (w *Window) Changed() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.changed
+}
+
+// Notify wakes the window's streams (for example when it is closed).
+func (w *Window) Notify() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.signal()
 }
 
 func (w *Window) build(ctx context.Context) error {
-	w.version++
+	w.bump()
 	w.reset()
 	if w.buildErr != nil {
 		if err := w.buildErr(); err != nil {
@@ -210,6 +245,8 @@ func (w *Window) issue() string {
 	c := string(w.head)
 	w.proj.IssueLiveCursor(c)
 	w.issued[c] = issued{rank: w.liveRank, carry: w.carry, floor: w.proj.Coverage()}
+	w.newest, w.newestRank = c, w.liveRank
+	w.signal()
 	return c
 }
 
@@ -217,7 +254,7 @@ func (w *Window) nextHist() int64 { w.histRank--; return w.histRank }
 
 // historyPage reads and applies one backward page from `from`.
 func (w *Window) historyPage(ctx context.Context, from audit.Cursor) error {
-	w.version++
+	w.bump()
 	if w.histClosed {
 		return ErrUseArchive
 	}
@@ -334,7 +371,7 @@ func (w *Window) closeHistoryForCapacity() error {
 }
 
 func (w *Window) raise(floor string) int {
-	w.version++
+	w.bump()
 	if w.beforeRaise != nil {
 		w.beforeRaise(w.proj)
 	}
@@ -403,7 +440,7 @@ func rowOf(rec audit.HistoryRecord) activity.Row {
 // retries the same delivery with the same rank while that frees room.
 func (w *Window) applyLive(ctx context.Context, page audit.HistoryPage) (err error) {
 	if len(page.Records) > 0 {
-		w.version++
+		w.bump()
 	}
 	records, err := w.hydrate(ctx, page)
 	if err != nil {
@@ -538,7 +575,7 @@ func (w *Window) Info() (generation uint64, state State, head string, possibleUn
 func (w *Window) fail() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.version++
+	w.bump()
 	w.state = StateFailed
 }
 
@@ -548,9 +585,27 @@ type ViewKey struct{ Window, Index uint64 }
 
 // Key returns the current view key.
 func (w *Window) Key() ViewKey {
+	k, _ := w.keyAndHead()
+	return k
+}
+
+// keyAndHead returns the view key with the newest issued live cursor, read
+// together: a view of that key holds every row up to that cursor, because
+// issuing a cursor applies no rows.
+func (w *Window) keyAndHead() (ViewKey, string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return ViewKey{Window: w.version, Index: w.synced.Index}
+	head := w.newest
+	if w.archive {
+		head = ""
+	}
+	return ViewKey{Window: w.version, Index: w.synced.Index}, head
+}
+
+// Newest returns the newest issued live cursor.
+func (w *Window) Newest() string {
+	_, head := w.keyAndHead()
+	return head
 }
 
 // SyncIndex copies the index's possibly-unrecorded flags into the projection
@@ -568,7 +623,9 @@ func (w *Window) SyncIndex(x *Index) {
 }
 
 // ViewMeta describes the window state a view was built from. Head is the
-// live cursor whose rows the view contains (empty for archive windows).
+// newest issued live cursor (empty for archive windows): the view holds at
+// least its rows, possibly more applied by a stream since, which a catch-up
+// from Head delivers again.
 type ViewMeta struct {
 	Generation     uint64
 	Key            ViewKey
@@ -582,7 +639,89 @@ func (w *Window) View(fn func(p *activity.Projection, meta ViewMeta)) {
 	defer w.mu.Unlock()
 	meta := ViewMeta{Generation: w.generation, Key: ViewKey{Window: w.version, Index: w.synced.Index}, PossibleUnseen: w.unseen}
 	if !w.archive {
-		meta.Head = string(w.head)
+		meta.Head = w.newest
 	}
 	fn(w.proj, meta)
+}
+
+// Resumable reports whether a live cursor can still be caught up from.
+func (w *Window) Resumable(cursor string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.issued[cursor]
+	return ok && w.proj.CanResume(cursor)
+}
+
+// StreamStart returns the rank and coverage of a resumable live cursor of
+// the given generation: a stream reports changes after it.
+func (w *Window) StreamStart(generation uint64, after string) (int64, activity.CoverageView, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch {
+	case w.state != StateOK:
+		return 0, activity.CoverageView{}, &StateError{State: w.state}
+	case w.archive:
+		return 0, activity.CoverageView{}, errNotLive
+	case w.generation != generation:
+		return 0, activity.CoverageView{}, ErrGenerationChanged
+	}
+	from, ok := w.issued[after]
+	if !ok || !w.proj.CanResume(after) {
+		return 0, activity.CoverageView{}, ErrRebuild
+	}
+	return from.rank, from.floor, nil
+}
+
+// AdvanceResult is what a stream learns from one advance.
+type AdvanceResult struct {
+	Changes  activity.Changes // Changed since the stream's rank.
+	Rank     int64            // The stream's new rank.
+	Head     audit.Cursor     // Where to wait for new journal data.
+	More     bool             // Journal beyond Head was not read yet.
+	Waiting  bool             // Backpressure: the client must catch up first.
+	Coverage activity.CoverageView
+	Changed  <-chan struct{} // Closed on the next change after this result.
+}
+
+// Advance applies forward pages for a stream without issuing a cursor, so
+// streams never push a client's cursors out of the resume window. It stops
+// once the window holds maxAhead live rows beyond the newest issued cursor
+// (backpressure), after maxPages pages or at the deadline. The result is
+// read under one lock with the generation check.
+func (w *Window) Advance(ctx context.Context, generation uint64, since int64, maxPages int, deadline time.Time,
+	maxAhead int64) (AdvanceResult, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch {
+	case w.state != StateOK:
+		return AdvanceResult{}, &StateError{State: w.state}
+	case w.archive:
+		return AdvanceResult{}, errNotLive
+	case w.generation != generation:
+		return AdvanceResult{}, ErrGenerationChanged
+	}
+	var res AdvanceResult
+	for i := 0; i < maxPages && time.Now().Before(deadline); i++ {
+		if w.liveRank-w.newestRank >= maxAhead {
+			res.Waiting = true
+			break
+		}
+		page, err := w.reader.ReadPage(ctx, w.head, audit.Forward, pageBudget)
+		if errors.Is(err, audit.ErrHistoryScanLimit) {
+			// No progress from the head: treat it as a source problem.
+			return AdvanceResult{}, fmt.Errorf("%w: %v", ErrRebuild, err)
+		}
+		if err != nil {
+			return AdvanceResult{}, liveError(err)
+		}
+		if err := w.applyLive(ctx, page); err != nil {
+			return AdvanceResult{}, err
+		}
+		if res.More = page.HasMore; !res.More {
+			break
+		}
+	}
+	res.Changes = w.proj.ChangedSince(since)
+	res.Rank, res.Head, res.Coverage, res.Changed = w.liveRank, w.head, w.proj.Coverage(), w.changed
+	return res, nil
 }

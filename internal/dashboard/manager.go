@@ -59,6 +59,8 @@ type Manager struct {
 	status      func() audit.Status
 	// snapshotErr is a test hook failing snapshots; nil in production.
 	snapshotErr func() error
+	// Stream timing; zero selects the production values (tests shorten them).
+	heartbeat, coalesce time.Duration
 
 	mu      sync.Mutex
 	windows map[string]*managed
@@ -99,7 +101,8 @@ type managed struct {
 	lanes       *laneIDs
 	catchUps    map[string]*catchUpState // By the cursor caught up from.
 	catchUpSeq  uint64
-	cached      *snapshot // Views of the window state named by cachedKey.
+	stream      *streamHold // The window's current stream, if any.
+	cached      *snapshot   // Views of the window state named by cachedKey.
 	cachedKey   ViewKey
 	rebuilding  bool
 	closed      bool
@@ -177,7 +180,9 @@ func (mg *Manager) Open(ctx context.Context, owner viewer.Attacher, mode Mode, f
 		release()
 		return "", err
 	}
-	m.win = w
+	m.mu.Lock()
+	m.win = w // Under m.mu: a concurrent forget reads it.
+	m.mu.Unlock()
 	mg.mu.Lock()
 	mg.windows[m.id] = m
 	mg.mu.Unlock()
@@ -239,9 +244,12 @@ func (mg *Manager) forget(m *managed) {
 	delete(mg.windows, m.id)
 	mg.mu.Unlock()
 	m.mu.Lock()
-	release := m.release
+	release, win := m.release, m.win
 	m.release, m.cached = nil, nil
 	m.mu.Unlock()
+	if win != nil {
+		win.Notify() // A stream of this window ends with window_gone.
+	}
 	if release != nil {
 		release()
 	}
@@ -294,6 +302,13 @@ func (mg *Manager) run(ctx context.Context, owner viewer.Attacher, id string, op
 		return err
 	}
 	return mg.rebuild(ctx, m, gen)
+}
+
+// rebuildPending reports a failed or running rebuild of the window.
+func (mg *Manager) rebuildPending(m *managed) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebuilding || m.failures > 0
 }
 
 // rebuild runs one rebuild at a time per window. The managed lock is never
