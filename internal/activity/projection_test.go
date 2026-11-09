@@ -510,6 +510,14 @@ func TestConflictBeyondTheCopyLimitIsKept(t *testing.T) {
 	}
 }
 
+func TestRequestStateIsSurfaced(t *testing.T) {
+	w := newWindow(t)
+	w.onLive("s", reqStart(current, "r", "terminal_list", "", `,"request_state":"opaque-state"`))
+	if a := w.action(current, "r"); a.RequestState != "opaque-state" {
+		t.Fatalf("request state %q", a.RequestState)
+	}
+}
+
 func TestRareLinkShapes(t *testing.T) {
 	t.Run("process creator from request_finish only", func(t *testing.T) {
 		w := newWindow(t)

@@ -109,15 +109,17 @@ type ActionView struct {
 	// PossiblyUnrecorded: open, but the audit was degraded meanwhile, so the
 	// finish may never be recorded (see SyncIndex).
 	PossiblyUnrecorded bool
-	Status             string
-	Outcome            string
-	Reason             string
-	Replayed           bool
-	Duration           Duration
-	Start              *PhaseView
-	Finish             *PhaseView
-	Rejected           *PhaseView
-	Effect             *EffectLink
+	// RequestState is the SDK requestState recorded in request_start.
+	RequestState string
+	Status       string
+	Outcome      string
+	Reason       string
+	Replayed     bool
+	Duration     Duration
+	Start        *PhaseView
+	Finish       *PhaseView
+	Rejected     *PhaseView
+	Effect       *EffectLink
 	// Process is the managed process the call created or used. The creator
 	// is the terminal_start effect (and its request) that launched it, when
 	// loaded; a call from another conversation stays in its own lane.
@@ -218,6 +220,9 @@ func (p *Projection) Action(key RequestKey) (ActionView, bool) {
 		v.Input = InputNotRecorded
 	default:
 		v.Input = InputUnknown
+	}
+	if hasStart {
+		v.RequestState = start.RequestState
 	}
 	switch {
 	case hasFinish:
