@@ -91,8 +91,10 @@ func serveStream(w http.ResponseWriter, r *http.Request, s *viewer.Session, mg *
 	// one of our own that the stop can still cut.
 	// The session's cause is set before its resources are stopped, even
 	// when this request's context has not seen it yet.
+	// Only a normal stop or an update has a grace period; force and
+	// abnormal exits end streams without an event, whatever the timing.
 	var stop *viewer.StopError
-	if errors.As(context.Cause(s.Context()), &stop) {
+	if errors.As(context.Cause(s.Context()), &stop) && (stop.Reason == viewer.StopNormal || stop.Reason == viewer.StopUpdate) {
 		extended := vs.Extend(time.Now().Add(time.Second)) == nil
 		stopped, deadline, _ := vs.Stopped()
 		if extended || (stopped && time.Now().Before(deadline)) {
