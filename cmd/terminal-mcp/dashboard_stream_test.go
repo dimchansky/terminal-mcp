@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"terminalmcp/internal/activity"
 	"terminalmcp/internal/audit"
 	"terminalmcp/internal/dashboard"
@@ -79,7 +81,7 @@ func startLiveServerWith(t *testing.T, small bool) *liveServer {
 	s := &liveServer{t: t, address: listener.Addr().String(), manager: manager, recorder: recorder, viewers: viewers,
 		listener: listener, cancel: cancel, done: make(chan struct{})}
 	go func() {
-		s.err = serveHTTPWithOptions(ctx, manager, mcpserver.NewWithAudit(manager, recorder), listener, testToken, 0, nil, rt)
+		s.err = serveHTTPWithOptions(ctx, manager, mcpserver.NewWithAudit(manager, recorder), listener, viewerTestToken, 0, nil, rt)
 		close(s.done)
 	}()
 	t.Cleanup(func() {
@@ -457,7 +459,7 @@ func TestDashboardStreamSlowConsumer(t *testing.T) {
 	waitEvent(t, events, dashboard.EventActivity, 10*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	mcpList(t, ctx, connectHTTP(t, ctx, s.address))
+	s.mcpListTerminals(ctx)
 	s.audit("after-mcp")
 	for {
 		ev, ok := waitEvent(t, events, dashboard.EventActivity, 10*time.Second)
@@ -504,4 +506,30 @@ func TestDashboardStreamLogoutAndClosedAudit(t *testing.T) {
 			t.Fatal("the stream ended without audit_closed")
 		}
 	})
+}
+
+type bearerTransport struct{ token string }
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// mcpListTerminals makes one real MCP tool call over /mcp.
+func (s *liveServer) mcpListTerminals(ctx context.Context) {
+	s.t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "dashboard-stream-test", Version: "1"}, nil)
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: "http://" + s.address + "/mcp", DisableStandaloneSSE: true, MaxRetries: -1,
+		HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: bearerTransport{viewerTestToken}},
+	}, nil)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "terminal_list", Arguments: struct{}{}})
+	if err != nil || res == nil || res.IsError {
+		s.t.Fatalf("MCP terminal_list: %v %+v", err, res)
+	}
 }
