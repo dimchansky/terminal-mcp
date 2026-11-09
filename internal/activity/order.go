@@ -108,6 +108,10 @@ type Order struct {
 	rank int64
 }
 
+// SortKey exposes the order for clients: live keys sort after history keys,
+// then by rank. Keys are comparable only within one window generation.
+func (o Order) SortKey() (live bool, rank int64) { return o.live, o.rank }
+
 // Compare returns -1, 0 or +1 when o is older than, equal to or newer than p.
 func (o Order) Compare(p Order) int {
 	if o.live != p.live {

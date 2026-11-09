@@ -1,6 +1,9 @@
 package activity
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 var (
 	// ErrCapacity means the window holds its maximum number of occurrences;
@@ -270,3 +273,73 @@ func dropFromIndex[K, V comparable](index map[K]map[V]bool, gone map[V]bool) {
 		}
 	}
 }
+
+// Occurrences reports how many occurrences the window holds, for capacity
+// prechecks.
+func (p *Projection) Occurrences() int { return len(p.occ.byKey) }
+
+// Boundaries lists the recorded history page boundaries in reading order,
+// newest first; the last one is where the history chain would continue.
+func (p *Projection) Boundaries() []string {
+	out := make([]string, len(p.boundaries))
+	for i, b := range p.boundaries {
+		out[i] = b.cursor
+	}
+	return out
+}
+
+// Changes lists what holds an occurrence first delivered on the live chain
+// after liveRank: the occurrences themselves in journal order (including
+// diagnostics), and the actions and effects they belong to.
+type Changes struct {
+	Occurrences []OccurrenceKey
+	Actions     []RequestKey
+	Effects     []EffectKey
+}
+
+// ChangedSince reports the changes after a live rank the caller recorded when
+// it issued a live cursor.
+func (p *Projection) ChangedSince(liveRank int64) Changes {
+	var c Changes
+	newer := func(key OccurrenceKey) bool {
+		r := p.occ.byKey[key]
+		return r != nil && r.live > liveRank
+	}
+	for key := range p.occ.byKey {
+		if newer(key) {
+			c.Occurrences = append(c.Occurrences, key)
+		}
+	}
+	slices.SortFunc(c.Occurrences, func(a, b OccurrenceKey) int { return p.order(a).Compare(p.order(b)) })
+	for rk, a := range p.actions {
+		if anyNewer(a.phases[:], newer) {
+			c.Actions = append(c.Actions, rk)
+		}
+	}
+	for ek, f := range p.effects {
+		if anyNewer(f.phases[:], newer) {
+			c.Effects = append(c.Effects, ek)
+		}
+	}
+	slices.SortFunc(c.Actions, compareRequest)
+	slices.SortFunc(c.Effects, compareEffect)
+	return c
+}
+
+func anyNewer(phases []phase, newer func(OccurrenceKey) bool) bool {
+	for _, ph := range phases {
+		for _, key := range ph.occ {
+			if newer(key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Knows reports whether the window holds an occurrence.
+func (p *Projection) Knows(key OccurrenceKey) bool { return p.occ.byKey[key] != nil }
+
+// HasAction reports whether the window holds an action, without building
+// its view.
+func (p *Projection) HasAction(key RequestKey) bool { return p.actions[key] != nil }

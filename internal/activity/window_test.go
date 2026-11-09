@@ -264,3 +264,28 @@ func TestRaiseFloorClosesAnOpenPageAndDropsProvisionalRows(t *testing.T) {
 		t.Fatalf("late resolution: %v", err)
 	}
 }
+
+func TestDashboardAccessors(t *testing.T) {
+	w := pagedWindow(t)
+	if got := w.p.Boundaries(); len(got) != 4 || got[0] != "h1" || got[3] != "p3" {
+		t.Fatalf("boundaries %v", got)
+	}
+	before := w.p.Occurrences()
+	w.onLive("l1", reqFinish(current, "r4", "terminal_list", `,"status":"ok"`))
+	w.onLive("l2", opFinish(current, "dl", "file_receive", "op", ""))
+	if w.p.Occurrences() != before+2 {
+		t.Fatalf("occurrences %d, before %d", w.p.Occurrences(), before)
+	}
+	c := w.p.ChangedSince(0)
+	if len(c.Occurrences) != 2 || c.Occurrences[0].Ref != "l1" ||
+		len(c.Actions) != 1 || c.Actions[0].RequestID != "r4" || len(c.Effects) != 1 {
+		t.Fatalf("changes %+v", c)
+	}
+	if c := w.p.ChangedSince(w.live); len(c.Occurrences)+len(c.Actions)+len(c.Effects) != 0 {
+		t.Fatalf("nothing after the head: %+v", c)
+	}
+	a := w.action(current, "r4")
+	if live, rank := a.Order.SortKey(); live || rank >= 0 || a.Start.Time != "t" {
+		t.Fatalf("history action order %v %v time %q", live, rank, a.Start.Time)
+	}
+}

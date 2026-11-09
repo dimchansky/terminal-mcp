@@ -90,6 +90,7 @@ type EffectLink struct {
 // order. Primary is the earliest; Conflict reports copies with other bytes.
 type PhaseView struct {
 	Primary     OccurrenceKey
+	Time        string // Recorded time of the primary copy (writer clock, before append).
 	Occurrences []OccurrenceKey
 	More        int // Copies beyond the tracked limit.
 	Conflict    bool
@@ -179,7 +180,8 @@ func (p *Projection) phaseView(ph phase) *PhaseView {
 	if !ok {
 		return nil
 	}
-	view := &PhaseView{Primary: primary, Occurrences: slices.Clone(ph.occ), More: ph.more, Conflict: ph.conflict}
+	view := &PhaseView{Primary: primary, Time: p.facts[primary].event.Time,
+		Occurrences: slices.Clone(ph.occ), More: ph.more, Conflict: ph.conflict}
 	slices.SortFunc(view.Occurrences, func(a, b OccurrenceKey) int { return p.order(a).Compare(p.order(b)) })
 	return view
 }

@@ -65,6 +65,7 @@ const (
 	KindStream Kind = "stream" // A long-lived live stream response.
 	KindWindow Kind = "window" // A projection window.
 	KindDetail Kind = "detail" // A concurrent full-record read.
+	KindPage   Kind = "page"   // A history page or live catch-up response.
 )
 
 // Limit bounds resources of one kind per session and in total.
@@ -105,6 +106,7 @@ func DefaultLimits() map[Kind]Limit {
 		KindStream: {PerSession: 1, Total: 4},
 		KindWindow: {PerSession: 2, Total: 16},
 		KindDetail: {PerSession: 2, Total: 4},
+		KindPage:   {PerSession: 2, Total: 8},
 	}
 }
 
