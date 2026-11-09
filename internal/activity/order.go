@@ -30,18 +30,63 @@ var (
 )
 
 // OccurrenceKey identifies one physical journal occurrence within one writer
-// instance. Ref is the reader's opaque RecordRef string: the byte-derived
-// record position plus the archive suffix hint. Equal positions alone are not
-// unique (byte-identical copies in different archives share them); the hint
-// keeps such copies distinct, while one row keeps its key when the active
-// file is rotated into its archive. Keys must not be compared across server
-// instances: after a restart an archive suffix can be reused.
+// instance. Exactly one form is set:
 //
-// Ref is currently required; rows without a reader reference get a separate
-// key form in a later change.
+//   - Ref is the reader's opaque RecordRef string: the byte-derived record
+//     position plus the archive suffix hint. Equal positions alone are not
+//     unique (byte-identical copies in different archives share them); the
+//     hint keeps such copies distinct, while one row keeps its key when the
+//     active file is rotated into its archive.
+//   - Weak identifies a damaged row the reader returned without a Ref
+//     (oversized or incomplete). See WeakKey.
+//
+// Keys must not be compared across server instances: after a restart an
+// archive suffix can be reused.
 type OccurrenceKey struct {
-	Ref string
+	Ref  string
+	Weak WeakKey
 }
+
+// WeakKey identifies a row without a reader reference by its position after
+// the nearest older row that has one. Both chains walk the same source
+// sequence, so (OlderRef, Between) names the same row on every chain, retry
+// and reconnect within one writer instance; Start and End (the reader's byte
+// range of the row within its file) are an extra consistency check. For an
+// incomplete row End is the read limit and may differ between reads; the row
+// then gets two keys (a visible repeat) or its resolution fails (a rebuild),
+// but it is never hidden.
+//
+// A row whose older neighbour is not known yet carries a Provisional identity
+// instead of OlderRef. History rows are resolved once the older neighbour
+// arrives; a provisional row that is never resolved may duplicate another
+// one and is reported as a possible repeat rather than hidden.
+type WeakKey struct {
+	OlderRef    string // Ref of the nearest older row with a Ref; StartOfHistory if none.
+	Between     int    // Ref-less rows between OlderRef and this row (0 = adjacent).
+	Start, End  int64
+	Provisional string // Temporary identity; set only while OlderRef is unknown.
+}
+
+// StartOfHistory is the OlderRef of a ref-less row with no older row that has
+// a Ref in the visible history. It is not proof of the journal's beginning:
+// removing an unreferenced earlier archive is undetectable.
+const StartOfHistory = "^"
+
+func (k OccurrenceKey) valid() bool {
+	if k.Ref != "" {
+		return k.Weak == WeakKey{}
+	}
+	w := k.Weak
+	if w.Start < 0 || w.End <= w.Start || w.Between < 0 {
+		return false
+	}
+	if w.Provisional != "" {
+		return w.OlderRef == "" && w.Between == 0
+	}
+	return w.OlderRef != ""
+}
+
+func (k OccurrenceKey) provisional() bool { return k.Ref == "" && k.Weak.Provisional != "" }
 
 // Delivery is one arrival of an occurrence on a chain. Ranks are assigned
 // when the delivery is applied, by one counter per chain per window: strictly
@@ -120,7 +165,7 @@ func newOccurrences() *occurrences {
 
 // observe records d after checking the adapter's rank contract.
 func (o *occurrences) observe(d Delivery) (observation, error) {
-	if d.Key.Ref == "" {
+	if !d.Key.valid() {
 		return observation{}, ErrInvalidOccurrence
 	}
 	switch {

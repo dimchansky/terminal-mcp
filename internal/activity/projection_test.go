@@ -25,13 +25,13 @@ func newWindow(t *testing.T) *window {
 func (w *window) history(ref, raw string) Change {
 	w.t.Helper()
 	w.hist--
-	return w.apply(Record{Delivery: Delivery{OccurrenceKey{ref}, ChainHistory, w.hist}, Raw: rawOrNil(raw)})
+	return w.apply(Record{Delivery: Delivery{OccurrenceKey{Ref: ref}, ChainHistory, w.hist}, Raw: rawOrNil(raw)})
 }
 
 func (w *window) onLive(ref, raw string) Change {
 	w.t.Helper()
 	w.live++
-	return w.apply(Record{Delivery: Delivery{OccurrenceKey{ref}, ChainLive, w.live}, Raw: rawOrNil(raw)})
+	return w.apply(Record{Delivery: Delivery{OccurrenceKey{Ref: ref}, ChainLive, w.live}, Raw: rawOrNil(raw)})
 }
 
 func (w *window) apply(rec Record) Change {
@@ -181,7 +181,7 @@ func TestLateOriginIsReattributedNotNewActivity(t *testing.T) {
 	}
 	a = w.action(current, "r1")
 	if a.Attribution != Attributed || a.Input != InputRecorded || a.Duration.State != DurationSubMillisecond ||
-		a.Order != w.p.order(OccurrenceKey{"s"}) || len(w.p.Needs()) != 0 {
+		a.Order != w.p.order(OccurrenceKey{Ref: "s"}) || len(w.p.Needs()) != 0 {
 		t.Fatalf("after backfill: %+v needs %+v", a, w.p.Needs())
 	}
 }
@@ -314,12 +314,12 @@ func TestRejectedAndLegacyRequests(t *testing.T) {
 func TestUncorrelatableRowsAreDiagnostics(t *testing.T) {
 	w := newWindow(t)
 	cases := []Record{
-		{Delivery: Delivery{OccurrenceKey{"d1"}, ChainHistory, -1}, Problem: "corrupt JSONL"},
-		{Delivery: Delivery{OccurrenceKey{"d2"}, ChainHistory, -2}, Raw: []byte(`{"phase":`)},
-		{Delivery: Delivery{OccurrenceKey{"d3"}, ChainHistory, -3}, Raw: []byte(`{"schema_version":2,"phase":"future"}`)},
-		{Delivery: Delivery{OccurrenceKey{"d4"}, ChainHistory, -4}, Raw: []byte(`{"schema_version":2,"phase":"request_start"}`)},
-		{Delivery: Delivery{OccurrenceKey{"d5"}, ChainHistory, -5}, Raw: []byte(`{"schema_version":2,"phase":"operation_start","request_id":"r"}`)},
-		{Delivery: Delivery{OccurrenceKey{"d6"}, ChainHistory, -6}, Raw: []byte(`{"phase":"request_start","request_id":"a","request_id":"b"}`)},
+		{Delivery: Delivery{OccurrenceKey{Ref: "d1"}, ChainHistory, -1}, Problem: "corrupt JSONL"},
+		{Delivery: Delivery{OccurrenceKey{Ref: "d2"}, ChainHistory, -2}, Raw: []byte(`{"phase":`)},
+		{Delivery: Delivery{OccurrenceKey{Ref: "d3"}, ChainHistory, -3}, Raw: []byte(`{"schema_version":2,"phase":"future"}`)},
+		{Delivery: Delivery{OccurrenceKey{Ref: "d4"}, ChainHistory, -4}, Raw: []byte(`{"schema_version":2,"phase":"request_start"}`)},
+		{Delivery: Delivery{OccurrenceKey{Ref: "d5"}, ChainHistory, -5}, Raw: []byte(`{"schema_version":2,"phase":"operation_start","request_id":"r"}`)},
+		{Delivery: Delivery{OccurrenceKey{Ref: "d6"}, ChainHistory, -6}, Raw: []byte(`{"phase":"request_start","request_id":"a","request_id":"b"}`)},
 	}
 	for _, rec := range cases {
 		if c := w.apply(rec); c.Kind != ChangeDiagnostic {
@@ -343,7 +343,7 @@ func TestUncorrelatableRowsAreDiagnostics(t *testing.T) {
 func TestApplyRejectsAdapterErrors(t *testing.T) {
 	w := newWindow(t)
 	w.history("a", reqStart(current, "r1", "terminal_list", "", ""))
-	_, err := w.p.Apply(Record{Delivery: Delivery{OccurrenceKey{"b"}, ChainHistory, -1}, Raw: []byte(reqStart(current, "r2", "terminal_list", "", ""))})
+	_, err := w.p.Apply(Record{Delivery: Delivery{OccurrenceKey{Ref: "b"}, ChainHistory, -1}, Raw: []byte(reqStart(current, "r2", "terminal_list", "", ""))})
 	if !errors.Is(err, ErrInvalidRank) {
 		t.Fatalf("reused rank accepted: %v", err)
 	}
@@ -372,10 +372,10 @@ func TestProjectionIgnoresChainInterleaving(t *testing.T) {
 	}
 	var h, l []Record
 	for i, it := range history {
-		h = append(h, Record{Delivery: Delivery{OccurrenceKey{it.ref}, ChainHistory, int64(-1 - i)}, Raw: []byte(it.raw)})
+		h = append(h, Record{Delivery: Delivery{OccurrenceKey{Ref: it.ref}, ChainHistory, int64(-1 - i)}, Raw: []byte(it.raw)})
 	}
 	for i, it := range live {
-		l = append(l, Record{Delivery: Delivery{OccurrenceKey{it.ref}, ChainLive, int64(1 + i)}, Raw: []byte(it.raw)})
+		l = append(l, Record{Delivery: Delivery{OccurrenceKey{Ref: it.ref}, ChainLive, int64(1 + i)}, Raw: []byte(it.raw)})
 	}
 	type snapshot struct {
 		Actions []ActionView
@@ -412,8 +412,8 @@ func TestProjectionIgnoresChainInterleaving(t *testing.T) {
 func TestRecordContract(t *testing.T) {
 	p := NewProjection(current)
 	for _, rec := range []Record{
-		{Delivery: Delivery{OccurrenceKey{"a"}, ChainHistory, -1}},
-		{Delivery: Delivery{OccurrenceKey{"a"}, ChainHistory, -1}, Raw: []byte(`{}`), Problem: "x"},
+		{Delivery: Delivery{OccurrenceKey{Ref: "a"}, ChainHistory, -1}},
+		{Delivery: Delivery{OccurrenceKey{Ref: "a"}, ChainHistory, -1}, Raw: []byte(`{}`), Problem: "x"},
 	} {
 		if _, err := p.Apply(rec); !errors.Is(err, ErrRecordContract) {
 			t.Fatalf("%+v accepted: %v", rec, err)
@@ -421,7 +421,7 @@ func TestRecordContract(t *testing.T) {
 	}
 	// A rejected record must not consume the occurrence: the hydrated row
 	// is still decoded on its first valid delivery.
-	c, err := p.Apply(Record{Delivery: Delivery{OccurrenceKey{"a"}, ChainHistory, -1}, Raw: []byte(reqStart(current, "r1", "file_write", "op1", ""))})
+	c, err := p.Apply(Record{Delivery: Delivery{OccurrenceKey{Ref: "a"}, ChainHistory, -1}, Raw: []byte(reqStart(current, "r1", "file_write", "op1", ""))})
 	if err != nil || c.Kind != ChangeNewAction {
 		t.Fatalf("hydrated row: %+v %v", c, err)
 	}

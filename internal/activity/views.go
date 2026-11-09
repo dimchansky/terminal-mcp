@@ -139,11 +139,14 @@ type EffectView struct {
 }
 
 // DiagnosticView is a journal row that could not be correlated. Its original
-// bytes, if any, remain available from the journal.
+// bytes, if any, remain available from the journal. PossibleRepeat marks a
+// ref-less row whose identity could not be established; it may be the same
+// row as another diagnostic and is shown rather than hidden.
 type DiagnosticView struct {
-	Key     OccurrenceKey
-	Problem string
-	Order   Order
+	Key            OccurrenceKey
+	Problem        string
+	Order          Order
+	PossibleRepeat bool
 }
 
 // ServerStartView marks the start of a server instance.
@@ -387,7 +390,7 @@ func (p *Projection) Effects() []EffectView {
 func (p *Projection) Diagnostics() []DiagnosticView {
 	out := make([]DiagnosticView, 0, len(p.diagnostics))
 	for key, d := range p.diagnostics {
-		out = append(out, DiagnosticView{Key: key, Problem: d.problem, Order: p.order(key)})
+		out = append(out, DiagnosticView{Key: key, Problem: d.problem, Order: p.order(key), PossibleRepeat: key.provisional()})
 	}
 	slices.SortFunc(out, func(a, b DiagnosticView) int { return a.Order.Compare(b.Order) })
 	return out

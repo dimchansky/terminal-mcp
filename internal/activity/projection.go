@@ -16,9 +16,13 @@ var (
 	// needed to correlate it; the record becomes a diagnostic instead.
 	ErrMissingKey = errors.New("activity: record lacks its correlation key")
 	// ErrRecordContract means a Record carries neither or both of Raw and
-	// Problem. Deferred rows must be read in full before they are applied:
-	// an occurrence is decoded only on its first delivery.
+	// Problem, or a weak (ref-less) key with record bytes. Deferred rows must
+	// be read in full before they are applied: an occurrence is decoded only
+	// on its first delivery.
 	ErrRecordContract = errors.New("activity: record needs exactly one of Raw or Problem")
+	// ErrResolve means a Resolution does not name a provisional occurrence of
+	// this window and a valid final weak key.
+	ErrResolve = errors.New("activity: invalid provisional resolution")
 )
 
 // RequestKey identifies one MCP tool call. ServerID is empty for legacy
@@ -81,6 +85,10 @@ const (
 	ChangeDuplicate
 	// ChangeConflict: another journal copy of a known record, other bytes.
 	ChangeConflict
+	// ChangeResolved: a provisional ref-less row got its final key. Moved
+	// reports that it merged into an occurrence already known by that key
+	// and the merge changed that occurrence's order.
+	ChangeResolved
 )
 
 // Change reports what one Apply call changed.
@@ -90,6 +98,8 @@ type Change struct {
 	Moved   bool        // A redelivery changed the occurrence's order.
 	Request *RequestKey // Affected action, if any.
 	Effect  *EffectKey  // Affected effect, if any.
+	// For ChangeResolved: the provisional key and its replacement.
+	Replaced, Occurrence *OccurrenceKey
 }
 
 type phaseSlot uint8
@@ -168,7 +178,7 @@ func NewProjection(currentServerID string) *Projection {
 // changes nothing but possibly its order. An error means the adapter broke
 // the delivery contract and the window must be rebuilt.
 func (p *Projection) Apply(rec Record) (Change, error) {
-	if (rec.Raw == nil) == (rec.Problem == "") {
+	if (rec.Raw == nil) == (rec.Problem == "") || (rec.Delivery.Key.Ref == "" && rec.Raw != nil) {
 		return Change{}, ErrRecordContract
 	}
 	obs, err := p.occ.observe(rec.Delivery)
@@ -202,6 +212,41 @@ func (p *Projection) Apply(rec Record) (Change, error) {
 	default:
 		return p.applyRequest(key, chain, f), nil
 	}
+}
+
+// Resolution replaces a provisional ref-less occurrence with its final key.
+type Resolution struct {
+	Provisional OccurrenceKey
+	Final       OccurrenceKey
+}
+
+// Resolve gives a provisional ref-less row its final key. If the final key is
+// already known (the same row arrived on the other chain or in an earlier
+// read), the two merge and keep the first rank of each chain.
+func (p *Projection) Resolve(r Resolution) (Change, error) {
+	from, ok := p.occ.byKey[r.Provisional]
+	if !r.Provisional.provisional() || !ok || !r.Final.valid() || r.Final.Ref != "" || r.Final.provisional() ||
+		r.Final.Weak.Start != r.Provisional.Weak.Start || r.Final.Weak.End != r.Provisional.Weak.End {
+		return Change{}, ErrResolve
+	}
+	diag := p.diagnostics[r.Provisional]
+	delete(p.occ.byKey, r.Provisional)
+	delete(p.diagnostics, r.Provisional)
+	change := Change{Kind: ChangeResolved, Replaced: &r.Provisional, Occurrence: &r.Final}
+	if to, merged := p.occ.byKey[r.Final]; merged {
+		before := to.order()
+		if from.history != 0 && (to.history == 0 || from.history > to.history) {
+			to.history = from.history
+		}
+		if from.live != 0 && (to.live == 0 || from.live < to.live) {
+			to.live = from.live
+		}
+		change.Moved = to.order() != before
+		return change, nil
+	}
+	p.occ.byKey[r.Final] = from
+	p.diagnostics[r.Final] = diag
+	return change, nil
 }
 
 func correlatable(e Event) error {
