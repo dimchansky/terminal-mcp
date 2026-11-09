@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -287,5 +288,38 @@ func TestDashboardAccessors(t *testing.T) {
 	a := w.action(current, "r4")
 	if live, rank := a.Order.SortKey(); live || rank >= 0 || a.Start.Time != "t" {
 		t.Fatalf("history action order %v %v time %q", live, rank, a.Start.Time)
+	}
+}
+
+func TestViewEnumsMarshalAsNames(t *testing.T) {
+	v := struct {
+		A Attribution
+		I InputState
+		R RequestState
+		E EffectState
+		L LinkKind
+		D DurationState
+	}{Attributed, InputNotRecorded, RequestOpen, EffectInFlight, LinkReplay, DurationSubMillisecond}
+	got, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"A":"attributed","I":"not_recorded","R":"open","E":"in_flight","L":"replay","D":"sub_millisecond"}`
+	if string(got) != want {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestViewEnumsRoundTrip(t *testing.T) {
+	var v struct {
+		A Attribution
+		S EffectState
+	}
+	if err := json.Unmarshal([]byte(`{"A":"origin_not_loaded","S":"in_flight"}`), &v); err != nil ||
+		v.A != OriginNotLoaded || v.S != EffectInFlight {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if err := json.Unmarshal([]byte(`{"A":"bogus"}`), &v); err == nil {
+		t.Fatal("an unknown name was accepted")
 	}
 }
