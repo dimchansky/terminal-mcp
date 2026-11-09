@@ -175,7 +175,8 @@ func TestAPIWindowCatchUpRecordAndClose(t *testing.T) {
 	chatStart(j, "a2", "chat-a")
 	var cu CatchUpPage
 	api.ok(token, PathCatchUp, map[string]any{"window": env.Window, "generation": env.Generation, "after": env.LiveCursor}, &cu)
-	if requestIDs(cu.Page) != "a2" || len(cu.Records) != 1 || cu.Head == env.LiveCursor {
+	if requestIDs(cu.Page) != "a2" || len(cu.Records) != 1 || cu.Head == env.LiveCursor ||
+		len(cu.Lanes) != 1 || cu.Lanes[0].ID != cu.Items[0].Lane || *cu.Lanes[0].ConversationID != "chat-a" {
 		t.Fatalf("catch-up %+v", cu)
 	}
 	code, data, _ = api.post(token, PathCatchUp, map[string]any{"window": env.Window, "generation": env.Generation + 1, "after": cu.Head})

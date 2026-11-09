@@ -587,6 +587,9 @@ type CatchUpResult struct {
 	// FloorChanged: the window evicted older rows meanwhile; items the
 	// client holds below the floor are no longer in the window.
 	FloorChanged bool `json:"floor_changed"`
+	// Lanes are the current lane objects of the lanes of Items, so a client
+	// learns lanes that appeared after its snapshot.
+	Lanes []Lane `json:"lanes"`
 }
 
 // maxCatchUps bounds the fixed changed sets kept for continuations.
@@ -659,7 +662,16 @@ func (mg *Manager) CatchUp(ctx context.Context, owner viewer.Attacher, id string
 			}
 		}
 		res = CatchUpResult{Page: mg.deliver(ctx, s, changed, cont, func(k activity.OccurrenceKey) bool { return state.records[k] }),
-			Head: state.head, More: state.more, FloorChanged: state.floorChanged}
+			Head: state.head, More: state.more, FloorChanged: state.floorChanged, Lanes: []Lane{}}
+		used := map[string]bool{}
+		for _, it := range res.Items {
+			used[it.Lane] = true
+		}
+		for _, l := range lanesOf(s.items) {
+			if used[l.ID] {
+				res.Lanes = append(res.Lanes, l)
+			}
+		}
 		return nil
 	})
 	return res, err
