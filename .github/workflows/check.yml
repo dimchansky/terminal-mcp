@@ -37,6 +37,14 @@ jobs:
           $env:CGO_ENABLED = '1'
           go test -race -count=3 -v -timeout=180s -run '^TestWindowsAuditReader' ./internal/audit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native Windows viewer guard, fence and dashboard tests
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '1'
+          go test -race -count=3 -timeout=300s ./internal/viewer/...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -race -count=3 -timeout=300s -run '^Test(Viewer|TunnelCannotReachViewerRoutes|ShutdownFencesAViewer|ForceStopEndsViewersFirst|AbnormalServeExitFencesViewers|RuntimeReportsViewerCounts|Dashboard|BrowserCommands)' ./cmd/terminal-mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify, test and build Windows
         shell: pwsh
         run: |

@@ -524,6 +524,23 @@ A shared bearer token identifies a trusted local service principal. It does not 
 
 Do not expose the local HTTP endpoint through an unauthenticated public tunnel.
 
+### Dashboard viewer access
+
+The HTTP server also serves a read-only owner dashboard under `/dashboard/`. Only its login exists so far; history and live activity come later. Viewer routes have their **own guard** and never relax the MCP guard above:
+
+- **Pairing.** `terminal-mcp dashboard` authenticates with the MCP bearer to `POST /admin/viewer-grant` and prints a single-use pairing code (130 random bits, valid 5 minutes, at most 4 unused). It opens the grant-free address `http://<listen>/dashboard/`; the code never appears in a URL, browser argv or log. The command uses the saved standalone configuration, or `--listen` with `--token-file` (or `TERMINAL_MCP_TOKEN`) for a foreground server. `--revoke-all` calls `POST /admin/viewer-revoke`, which ends every viewer session and drops unused codes. These two exact admin paths are the only additions to the bearer guard.
+- **Login.** The page exchanges the pasted code for a separate read-only viewer token (256 bits). The tab keeps it in `sessionStorage` and sends it as `Authorization: Viewer <token>` on every request. Cookies never authorize, the MCP bearer is refused on viewer routes, and viewer tokens never authorize `/mcp` or administration.
+  - A valid code always succeeds. Guessing is bounded by the code's entropy and lifetime; failed logins are throttled (5 per minute, then 429) only to bound failure responses and work. Responses for unknown, used and expired codes are identical.
+  - Sessions expire after 30 idle minutes (the page renews every 5 minutes) and after at most 12 hours. At most 8 sessions exist; a new login replaces the least recently used one. Logout and revocation end a session immediately, including its live streams and other attached work. A server restart invalidates all codes and sessions.
+- **Viewer guard.**
+  - Exact `Host`; no query string or encoded path.
+  - Fetch Metadata per route: a top-level navigation for the page, same-origin script/style for its assets, a same-origin fetch for the API. An exact `Origin` is required on POST. Requests without Fetch Metadata are refused, so a browser that sends it is required (current Chrome/Edge, Firefox or Safari ≥ 16.4; verified so far: Chromium on macOS).
+  - 4 KiB bodies; strict JSON.
+  - `no-store`, `nosniff`, frame denial, `no-referrer`, COOP/CORP and a strict CSP without inline script on every response. No CORS.
+  - These checks stop other web origins, other local ports and DNS rebinding. A local non-browser process can forge Fetch Metadata, but then reaches only the public page and throttled code guesses: private routes need a viewer token.
+- **Tunnel.** The embedded Secure MCP Tunnel still reaches only exact `/mcp`. No viewer route and neither admin path is reachable through it (tested against the complete route table).
+- **Scope.** A viewer token grants read access to complete audit inputs, which may contain secrets. Any holder of the MCP bearer can issue codes, so this is not a new trust boundary. `/admin/runtime` and `status` report `viewer_sessions` and `viewer_pending_codes`. The server log records pairing, throttled logins, login, logout, replacement, expiry, revocation and fence events with counts, reasons or session numbers, never codes or tokens.
+
 ## 11. Audit log
 
 **Threat model (owner-first, non-negotiable):** this audit is for the local
@@ -668,6 +685,13 @@ and returns `draining` if existing operations or managed processes are active;
 the server shuts down itself once all such work and its audit finish.
 `stop --force` explicitly aborts transfers and managed processes instead. Background mode does not automatically
 start at login or restart after an unexpected crash.
+
+Dashboard viewers can delay `stop`, `update`, SIGINT or SIGTERM at most by a one-second stream grace and the HTTP server's existing read/write timeouts for short requests.
+- Viewer pairing, login and renewal stay available during a graceful drain, because read-only viewing is not new MCP work.
+- After the drain (stop, SIGINT, SIGTERM) or freeze (update), and immediately before the unbounded HTTP shutdown, the server closes viewer admission: new pairing, logins and authorized viewer requests get 503 `server_stopping`. Live viewer streams then get the one-second grace for a final event before they are ended, even for a tab that stopped reading.
+- `stop --force` ends viewers first, without grace, before aborting work.
+- Any other exit (for example a listener failure) ends them as an abnormal stop.
+- Viewer routes that send more than a few KiB must write through a stoppable stream (required for the history and live routes), so they cannot hold up shutdown.
 
 Standalone settings live at
 `~/.config/terminal-mcp/standalone/config.json`. The controller retains the

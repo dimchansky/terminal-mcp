@@ -48,6 +48,8 @@ The `file_*` tools use absolute paths inside the configured `file_root`:
 - **New Windows installation:** Your home directory.
 - **Existing standalone settings:** Keep the saved root.
 
+To watch what MCP clients asked the server to do, run `terminal-mcp dashboard` (see [Open the read-only dashboard](docs/DEVELOPMENT.md#open-the-read-only-dashboard)).
+
 Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`.
 
 **This limit does not apply to terminal commands.**

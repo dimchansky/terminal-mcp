@@ -384,6 +384,21 @@ private update directory. A lost shutdown acknowledgment or a crashed worker
 may require manual intervention. Do not delete a pending update marker
 without first checking whether its worker is still running.
 
+### Open the read-only dashboard
+
+```sh
+terminal-mcp dashboard
+```
+
+The command asks the running standalone server for a one-time code, prints the code and the local address in your terminal (on stderr when stdout is redirected), and opens `http://127.0.0.1:8090/dashboard/` (your saved listener). Paste the code into the page. The tab then stays signed in across reloads until one of these happens: the tab has been closed or unreachable for 30 minutes, 12 hours pass, a newer sign-in replaces it (more than 8 sessions), you sign out, or the server restarts. Only the login exists so far; the activity view comes later.
+
+- For a foreground `serve`, pass `--listen` and `--token-file` (or set `TERMINAL_MCP_TOKEN`).
+- `--no-open` prints without opening a browser; this is useful over SSH.
+- `--revoke-all` ends every dashboard session and unused code.
+- `terminal-mcp status` shows `viewer_sessions` and `viewer_pending_codes`.
+
+The dashboard shows complete audit inputs, including any secrets a model supplied, so do not share the screen casually. It is local only: the embedded tunnel never forwards it. See SPEC §10 for the guard and lifetimes.
+
 ## 5. Audit and diagnostics
 
 Use:
