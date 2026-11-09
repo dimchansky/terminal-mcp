@@ -19,14 +19,14 @@ import (
 const testServer = "srv-test"
 
 type journal struct {
-	t      *testing.T
+	t      testing.TB
 	path   string
 	log    *audit.Log
 	reader *audit.Reader
 	n      int
 }
 
-func openJournal(t *testing.T) *journal {
+func openJournal(t testing.TB) *journal {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "logs")
 	if err := audit.PrepareDirectory(dir); err != nil {
@@ -35,7 +35,7 @@ func openJournal(t *testing.T) *journal {
 	return openJournalAt(t, filepath.Join(dir, "audit.jsonl"))
 }
 
-func openJournalAt(t *testing.T, path string) *journal {
+func openJournalAt(t testing.TB, path string) *journal {
 	t.Helper()
 	log, err := audit.Open(path)
 	if err != nil {

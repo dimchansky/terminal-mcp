@@ -91,6 +91,8 @@ type managed struct {
 	mu          sync.Mutex
 	lanes       *laneIDs
 	catchUp     *catchUpState
+	cached      *snapshot // Views of the window state named by cachedKey.
+	cachedKey   ViewKey
 	rebuilding  bool
 	closed      bool
 	lastUsed    time.Time
@@ -273,7 +275,7 @@ func (mg *Manager) run(ctx context.Context, owner viewer.Attacher, id string, op
 	}
 	if mg.index != nil {
 		_ = mg.index.CatchUp(ctx, catchUpPages) // Transient errors show in the index status.
-		m.win.With(mg.index.Sync)
+		m.win.SyncIndex(mg.index)
 	}
 	gen, _, _, _ := m.win.Info()
 	err = op(m)

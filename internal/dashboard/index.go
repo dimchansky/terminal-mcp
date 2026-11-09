@@ -25,6 +25,17 @@ type Index struct {
 	mu           sync.Mutex
 	idx          *activity.InFlightIndex
 	degradedSeen bool // Latched until catch-up reaches the frontier.
+	version      uint64
+}
+
+// Version changes whenever the index state may have changed.
+func (x *Index) Version() uint64 {
+	if x == nil {
+		return 0
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.version
 }
 
 // NewIndex starts the index at f0, the frontier captured after server_start
@@ -61,12 +72,14 @@ func (x *Index) CatchUp(ctx context.Context, maxPages int) error {
 			if rows, err = x.rows(ctx, page); err == nil {
 				x.mu.Lock()
 				err = x.idx.ApplyPage(string(cursor), rows, string(page.Next), page.HasMore)
+				x.version++
 				x.mu.Unlock()
 			}
 		}
 		if errors.Is(err, audit.ErrHistoryGap) || errors.Is(err, audit.ErrInvalidCursor) {
 			x.mu.Lock()
 			x.idx.Fail() // F0 cannot be re-derived until restart.
+			x.version++
 			x.mu.Unlock()
 			return nil
 		}
@@ -78,6 +91,7 @@ func (x *Index) CatchUp(ctx context.Context, maxPages int) error {
 			x.mu.Lock()
 			if x.degradedSeen {
 				x.idx.ObserveAuditDegraded()
+				x.version++
 				x.degradedSeen = false
 			}
 			x.mu.Unlock()

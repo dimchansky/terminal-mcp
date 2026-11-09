@@ -64,19 +64,24 @@ type Window struct {
 	afterHistory  func()
 	buildErr      func() error
 
-	mu          sync.Mutex
-	proj        *activity.Projection
-	hist        activity.HistoryCarry
-	histRank    int64
-	histNext    audit.Cursor
-	histClosed  bool
-	liveRank    int64
-	head        audit.Cursor
-	carry       activity.LiveCarry
-	issued      map[string]issued
-	generation  uint64
-	state       State
-	unseen      bool // possible_unseen_activity after a rebuild.
+	mu         sync.Mutex
+	proj       *activity.Projection
+	hist       activity.HistoryCarry
+	histRank   int64
+	histNext   audit.Cursor
+	histClosed bool
+	liveRank   int64
+	head       audit.Cursor
+	carry      activity.LiveCarry
+	issued     map[string]issued
+	generation uint64
+	state      State
+	unseen     bool // possible_unseen_activity after a rebuild.
+	// version changes whenever the projection may have changed; synced is
+	// the key of the last index sync.
+	version     uint64
+	synced      ViewKey
+	hasSync     bool
 	onApply     func(activity.OccurrenceKey, []byte, activity.Change)
 	beforeRaise func(*activity.Projection)
 }
@@ -129,6 +134,7 @@ func (w *Window) reset() {
 }
 
 func (w *Window) build(ctx context.Context) error {
+	w.version++
 	w.reset()
 	if w.buildErr != nil {
 		if err := w.buildErr(); err != nil {
@@ -210,6 +216,7 @@ func (w *Window) nextHist() int64 { w.histRank--; return w.histRank }
 
 // historyPage reads and applies one backward page from `from`.
 func (w *Window) historyPage(ctx context.Context, from audit.Cursor) error {
+	w.version++
 	if w.histClosed {
 		return ErrUseArchive
 	}
@@ -326,6 +333,7 @@ func (w *Window) closeHistoryForCapacity() error {
 }
 
 func (w *Window) raise(floor string) int {
+	w.version++
 	if w.beforeRaise != nil {
 		w.beforeRaise(w.proj)
 	}
@@ -393,6 +401,9 @@ func rowOf(rec audit.HistoryRecord) activity.Row {
 // applyLive applies one forward page. On capacity it raises the floor and
 // retries the same delivery with the same rank while that frees room.
 func (w *Window) applyLive(ctx context.Context, page audit.HistoryPage) (err error) {
+	if len(page.Records) > 0 {
+		w.version++
+	}
 	records, err := w.hydrate(ctx, page)
 	if err != nil {
 		return liveError(err)
@@ -517,5 +528,38 @@ func (w *Window) Info() (generation uint64, state State, head string, possibleUn
 func (w *Window) fail() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.version++
 	w.state = StateFailed
+}
+
+// ViewKey identifies a state of the window's views: it changes whenever the
+// projection or the index state synced into it changes.
+type ViewKey struct{ Window, Index uint64 }
+
+// Key returns the current view key.
+func (w *Window) Key() ViewKey {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return ViewKey{Window: w.version, Index: w.synced.Index}
+}
+
+// SyncIndex copies the index's possibly-unrecorded flags into the projection
+// unless neither changed since the last sync (index lock inside the window
+// lock).
+func (w *Window) SyncIndex(x *Index) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := ViewKey{Window: w.version, Index: x.Version()}
+	if w.hasSync && key == w.synced {
+		return
+	}
+	x.Sync(w.proj) // The index may move on meanwhile; the next sync sees a newer version.
+	w.synced, w.hasSync = key, true
+}
+
+// View runs fn with the projection and its view key under the window lock.
+func (w *Window) View(fn func(p *activity.Projection, generation uint64, key ViewKey)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	fn(w.proj, w.generation, ViewKey{Window: w.version, Index: w.synced.Index})
 }

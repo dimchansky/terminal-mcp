@@ -217,13 +217,21 @@ type snapshot struct {
 	coverage   Coverage
 }
 
-// collect snapshots the window's items newest first. Views are built under
-// the window lock; lane IDs are assigned afterwards, so the window lock and
-// the managed lock are never nested.
+// collect snapshots the window's items newest first, reusing the views of
+// an unchanged window state. Views are built under the window lock; the
+// cache and lane IDs are handled outside it, so the window lock and the
+// managed lock are never nested. The snapshot is shared and read-only.
 func (mg *Manager) collect(m *managed) snapshot {
+	key := m.win.Key()
+	m.mu.Lock()
+	cached, hit := m.cached, m.cached != nil && m.cachedKey == key
+	m.mu.Unlock()
+	if hit {
+		return *cached
+	}
 	var s snapshot
-	m.win.With(func(p *activity.Projection) {
-		s.generation = m.win.generation
+	m.win.View(func(p *activity.Projection, generation uint64, k ViewKey) {
+		s.generation, key = generation, k
 		s.coverage = coverageOf(p.Coverage())
 		m.hints.prune(p.HasAction)
 		for _, v := range p.Actions() {
@@ -261,6 +269,9 @@ func (mg *Manager) collect(m *managed) snapshot {
 	for i := range s.items {
 		s.items[i].Lane = m.laneID(s.generation, s.items[i].laneKey)
 	}
+	m.mu.Lock()
+	m.cached, m.cachedKey = &s, key
+	m.mu.Unlock()
 	return s
 }
 
