@@ -27,6 +27,7 @@ const (
 	PathRecord    = viewer.Prefix + "api/record"
 	PathCatchUp   = viewer.Prefix + "api/catch-up"
 	PathClose     = viewer.Prefix + "api/close"
+	PathStream    = viewer.Prefix + "api/stream"
 )
 
 const (
@@ -253,6 +254,17 @@ func Register(h *viewer.Handler, mg *Manager) {
 			data, err := mg.RecordBytes(ctx, s, req.Window, req.Occurrence)
 			return data, "application/octet-stream", err
 		})
+	})
+	h.HandleAuthorized(http.MethodPost, PathStream, func(w http.ResponseWriter, r *http.Request, s *viewer.Session) {
+		req, ok := decode(w, r, "window", "generation", "after")
+		if !ok {
+			return
+		}
+		if req.Generation == nil {
+			writeError(w, errBadRequest)
+			return
+		}
+		serveStream(w, r, s, mg, req)
 	})
 	h.HandleAuthorized(http.MethodPost, PathClose, func(w http.ResponseWriter, r *http.Request, s *viewer.Session) {
 		req, ok := decode(w, r, "window")

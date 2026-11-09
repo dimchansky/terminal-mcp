@@ -148,9 +148,11 @@ func (mg *Manager) OpenStream(ctx context.Context, owner viewer.Attacher, id str
 
 // ClaimStream makes the caller the window's only stream: a previous stream
 // of the window is stopped (stop must not block) and awaited for up to 2 s.
-// The returned done must be called exactly once, when the new stream has
+// If ctx ends while waiting, the previous stream stays stopped (its client
+// reconnected or the session is ending). The returned done must be called
+// exactly once, when the new stream has
 // fully ended (after its viewer attachment was released).
-func (mg *Manager) ClaimStream(owner viewer.Attacher, id string, stop func()) (func(), error) {
+func (mg *Manager) ClaimStream(ctx context.Context, owner viewer.Attacher, id string, stop func()) (func(), error) {
 	m, err := mg.get(owner, id)
 	if err != nil {
 		return nil, err
@@ -178,6 +180,8 @@ func (mg *Manager) ClaimStream(owner viewer.Attacher, id string, stop func()) (f
 		case <-old.done:
 		case <-deadline:
 			return nil, viewer.ErrCapacity
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
 		}
 	}
 }

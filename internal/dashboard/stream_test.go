@@ -296,22 +296,22 @@ func TestClaimStreamReplacesThePreviousStream(t *testing.T) {
 	id, _ := mg.Open(context.Background(), s, ModeLive, "")
 	var firstDone func()
 	stopped := make(chan struct{})
-	firstDone, err := mg.ClaimStream(s, id, func() { close(stopped); go firstDone() })
+	firstDone, err := mg.ClaimStream(context.Background(), s, id, func() { close(stopped); go firstDone() })
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := mg.ClaimStream(s, id, func() {})
+	second, err := mg.ClaimStream(context.Background(), s, id, func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
 	<-stopped
 	second()
 	// A stream that does not end in time leaves the slot busy.
-	_, err = mg.ClaimStream(s, id, func() {})
+	_, err = mg.ClaimStream(context.Background(), s, id, func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mg.ClaimStream(s, id, func() {}); !errors.Is(err, viewer.ErrCapacity) {
+	if _, err := mg.ClaimStream(context.Background(), s, id, func() {}); !errors.Is(err, viewer.ErrCapacity) {
 		t.Fatalf("stuck stream: %v", err)
 	}
 }
