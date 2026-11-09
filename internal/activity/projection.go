@@ -162,6 +162,10 @@ type Projection struct {
 	pageOpen   bool
 	anyPage    bool
 
+	// Possibly unrecorded work copied from the in-flight index (SyncIndex).
+	unrecordedRequests map[RequestKey]bool
+	unrecordedEffects  map[EffectKey]bool
+
 	capacity    int // Maximum occurrences; 0 = unlimited.
 	coverage    CoverageEnd
 	boundaries  []boundary
@@ -186,6 +190,9 @@ func NewProjection(currentServerID string) *Projection {
 		byOrigin:         make(map[RequestKey]map[EffectKey]bool),
 		byProcessEffect:  make(map[ProcessKey]map[EffectKey]bool),
 		byProcessRequest: make(map[ProcessKey]map[RequestKey]bool),
+
+		unrecordedRequests: make(map[RequestKey]bool),
+		unrecordedEffects:  make(map[EffectKey]bool),
 	}
 }
 

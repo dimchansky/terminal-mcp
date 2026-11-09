@@ -117,7 +117,8 @@ func (p *Projection) CanResume(cursor string) bool {
 // to also evict rows of the live region up to the oldest resumable live
 // cursor; that may be repeated as the live chain grows. An archive window has
 // no live region and refuses "". Unfinished work of the current server
-// instance is never evicted. It returns the number of evicted occurrences.
+// instance is never evicted unless SyncIndex marked it possibly unrecorded.
+// It returns the number of evicted occurrences.
 //
 // Eviction depends on when it is requested, so after a raise the window is
 // no longer a pure function of the applied rows; it is still deterministic
@@ -179,11 +180,13 @@ func (p *Projection) evict(older func(*chainRanks) bool) int {
 	}
 	effectEvictable := func(ek EffectKey) bool {
 		f := p.effects[ek]
-		return !running(ek.ServerID, f.phases[:]) && allOlder(f.phases[:])
+		pinned := running(ek.ServerID, f.phases[:]) && !p.unrecordedEffects[ek]
+		return !pinned && allOlder(f.phases[:])
 	}
 	actionEvictable := func(rk RequestKey) bool {
 		a := p.actions[rk]
-		if running(rk.ServerID, a.phases[:]) || !allOlder(a.phases[:]) {
+		pinned := running(rk.ServerID, a.phases[:]) && !p.unrecordedRequests[rk]
+		if pinned || !allOlder(a.phases[:]) {
 			return false
 		}
 		for ek := range p.byOrigin[rk] {

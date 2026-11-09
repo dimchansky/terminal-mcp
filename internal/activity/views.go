@@ -106,15 +106,18 @@ type ActionView struct {
 	Attribution Attribution
 	Input       InputState
 	State       RequestState
-	Status      string
-	Outcome     string
-	Reason      string
-	Replayed    bool
-	Duration    Duration
-	Start       *PhaseView
-	Finish      *PhaseView
-	Rejected    *PhaseView
-	Effect      *EffectLink
+	// PossiblyUnrecorded: open, but the audit was degraded meanwhile, so the
+	// finish may never be recorded (see SyncIndex).
+	PossiblyUnrecorded bool
+	Status             string
+	Outcome            string
+	Reason             string
+	Replayed           bool
+	Duration           Duration
+	Start              *PhaseView
+	Finish             *PhaseView
+	Rejected           *PhaseView
+	Effect             *EffectLink
 	// Process is the managed process the call created or used. The creator
 	// is the terminal_start effect (and its request) that launched it, when
 	// loaded; a call from another conversation stays in its own lane.
@@ -132,10 +135,13 @@ type EffectView struct {
 	OriginConflict bool // Start and finish name different requests.
 	State          EffectState
 	Status         string // From operation_finish, when recorded.
-	Duration       Duration
-	Start          *PhaseView
-	Finish         *PhaseView
-	Order          Order
+	// PossiblyUnrecorded: in flight, but the audit was degraded meanwhile,
+	// so the finish may never be recorded (see SyncIndex).
+	PossiblyUnrecorded bool
+	Duration           Duration
+	Start              *PhaseView
+	Finish             *PhaseView
+	Order              Order
 }
 
 // DiagnosticView is a journal row that could not be correlated. Its original
@@ -227,7 +233,7 @@ func (p *Projection) Action(key RequestKey) (ActionView, bool) {
 	case hasFinish || hasRejected:
 		v.State = RequestFinished
 	case key.ServerID != "" && key.ServerID == p.currentServer:
-		v.State = RequestOpen
+		v.State, v.PossiblyUnrecorded = RequestOpen, p.unrecordedRequests[key]
 	default:
 		v.State = RequestUnknown
 	}
@@ -357,7 +363,7 @@ func (p *Projection) Effect(key EffectKey) (EffectView, bool) {
 		v.State, v.Status = EffectFinished, finish.Status
 		v.Duration = FinishDuration(finish, hasStart)
 	case key.ServerID != "" && key.ServerID == p.currentServer:
-		v.State = EffectInFlight
+		v.State, v.PossiblyUnrecorded = EffectInFlight, p.unrecordedEffects[key]
 	default:
 		v.State = EffectUnknown
 	}
