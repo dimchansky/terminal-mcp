@@ -83,6 +83,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "dashboard":
+			if err := runDashboard(os.Args[2:]); err != nil {
+				slog.Error("terminal-mcp dashboard failed", "error", err)
+				os.Exit(1)
+			}
+			return
 		case "_tunnel-check":
 			if err := validateTunnelCandidate(os.Args[2:]); err != nil {
 				slog.Error("tunnel candidate validation failed", "error", err)

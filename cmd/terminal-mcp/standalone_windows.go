@@ -344,6 +344,7 @@ func windowsControl(action string, args []string) error {
 			"status": "running", "pid": info.PID, "server_id": info.ServerID,
 			"draining": info.Draining, "drain_mode": info.DrainMode,
 			"active_operations": info.ActiveOperations, "active_sessions": info.ActiveSessions,
+			"viewer_sessions": info.ViewerSessions, "viewer_pending_codes": info.ViewerPendingCodes,
 			"file_root": info.FileRoot, "listen": info.Listen, "audit": info.Audit,
 			"tunnel":            info.Tunnel,
 			"executable":        info.Executable,

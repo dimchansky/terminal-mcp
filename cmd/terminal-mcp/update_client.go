@@ -79,7 +79,7 @@ func (c *updateClient) request(method, path string, payload any, result any) err
 	if len(data) > 1<<20 {
 		return fmt.Errorf("update response exceeds 1 MiB")
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return &updateHTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
 	}
 	if result != nil {
