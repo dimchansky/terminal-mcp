@@ -81,7 +81,8 @@ func (f *streamFixture) next(name string) event {
 			if ev.name == name {
 				return ev
 			}
-			if ev.name != EventHeartbeat && ev.name != EventActivity {
+			// A rebuild still running elsewhere is reported as rebuilding.
+			if ev.name != EventHeartbeat && ev.name != EventActivity && ev.name != EventRebuilding {
 				f.t.Fatalf("got %s %+v while waiting for %s", ev.name, ev.data, name)
 			}
 		case <-timeout:
