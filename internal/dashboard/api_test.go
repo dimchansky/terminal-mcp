@@ -439,7 +439,7 @@ func TestAPIStalledReaderCannotHoldUpStop(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 	if api.detailBusy() == 0 {
-		t.Fatal("the handler finished: the client buffers took the whole record")
+		t.Skip("the handler finished: this platform's socket buffers took the whole record")
 	}
 	start := time.Now()
 	api.registry.CloseAdmission(viewer.StopNormal)

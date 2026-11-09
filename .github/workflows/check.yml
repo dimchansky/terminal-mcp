@@ -43,6 +43,8 @@ jobs:
           $env:CGO_ENABLED = '1'
           go test -race -count=3 -timeout=300s ./internal/viewer/...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -race -count=1 -timeout=300s ./internal/dashboard
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -race -count=3 -timeout=300s -run '^Test(Viewer|TunnelCannotReachViewerRoutes|ShutdownFencesAViewer|ForceStopEndsViewersFirst|AbnormalServeExitFencesViewers|RuntimeReportsViewerCounts|Dashboard|BrowserCommands)' ./cmd/terminal-mcp
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify, test and build Windows

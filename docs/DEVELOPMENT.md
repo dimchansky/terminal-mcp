@@ -390,7 +390,7 @@ without first checking whether its worker is still running.
 terminal-mcp dashboard
 ```
 
-The command asks the running standalone server for a one-time code, prints the code and the local address in your terminal (on stderr when stdout is redirected), and opens `http://127.0.0.1:8090/dashboard/` (your saved listener). Paste the code into the page. The tab then stays signed in across reloads until one of these happens: the tab has been closed or unreachable for 30 minutes, 12 hours pass, a newer sign-in replaces it (more than 8 sessions), you sign out, or the server restarts. Only the login exists so far; the activity view comes later.
+The command asks the running standalone server for a one-time code, prints the code and the local address in your terminal (on stderr when stdout is redirected), and opens `http://127.0.0.1:8090/dashboard/` (your saved listener). Paste the code into the page. The tab then stays signed in across reloads until one of these happens: the tab has been closed or unreachable for 30 minutes, 12 hours pass, a newer sign-in replaces it (more than 8 sessions), you sign out, or the server restarts. The page itself only signs in so far; the history API behind it is specified in SPEC §10 (it needs the viewer token from a pairing code, not the MCP bearer) and the activity view comes later.
 
 - For a foreground `serve`, pass `--listen` and `--token-file` (or set `TERMINAL_MCP_TOKEN`).
 - `--no-open` prints without opening a browser; this is useful over SSH.
