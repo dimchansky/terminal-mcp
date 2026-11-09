@@ -20,7 +20,7 @@ func TestHTTPHandlerAuthenticationAndMCP(t *testing.T) {
 	t.Cleanup(manager.Close)
 	server := httptest.NewUnstartedServer(nil)
 	t.Cleanup(server.Close)
-	handler, err := newHTTPHandler(manager, mcpserver.New(manager), server.Listener.Addr().String(), testToken)
+	handler, err := newHTTPHandler(manager, mcpserver.New(manager), server.Listener.Addr().String(), testToken, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +90,11 @@ func TestStandaloneRuntimeEndpointAuthenticationAndLegacyIsolation(t *testing.T)
 	const address = "127.0.0.1:45678"
 	state := &updateServer{info: mcpserver.RuntimeInfo{ServerID: manager.ID()},
 		shutdown: func() {}}
-	standalone, err := newHTTPHandler(manager, mcpserver.New(manager), address, testToken, state)
+	standalone, err := newHTTPHandler(manager, mcpserver.New(manager), address, testToken, nil, state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := newHTTPHandler(manager, mcpserver.New(manager), address, testToken)
+	legacy, err := newHTTPHandler(manager, mcpserver.New(manager), address, testToken, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

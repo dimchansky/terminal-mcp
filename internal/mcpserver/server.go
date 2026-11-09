@@ -192,6 +192,9 @@ type RuntimeInfo struct {
 	DrainMode        string       `json:"drain_mode,omitempty"`
 	ActiveOperations int          `json:"active_operations"`
 	ActiveSessions   int          `json:"active_sessions"`
+	// Dashboard viewers: live sessions and unused pairing codes.
+	ViewerSessions     int `json:"viewer_sessions"`
+	ViewerPendingCodes int `json:"viewer_pending_codes"`
 }
 
 // Maintenance is token/Host/Origin-protected by the same outer HTTP guard as MCP.

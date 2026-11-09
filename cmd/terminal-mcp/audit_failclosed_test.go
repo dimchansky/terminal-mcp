@@ -102,7 +102,7 @@ func TestStandaloneRuntimeAuditHealthAndMaintenanceStillAccessible(t *testing.T)
 		recorder: recorder,
 		shutdown: func() { shutdownCalled = true },
 	}
-	handler, err := newHTTPHandler(manager, mcpserver.NewWithAudit(manager, recorder), address, testToken, state)
+	handler, err := newHTTPHandler(manager, mcpserver.NewWithAudit(manager, recorder), address, testToken, nil, state)
 	if err != nil {
 		t.Fatal(err)
 	}

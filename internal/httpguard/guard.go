@@ -66,6 +66,17 @@ func LoadToken(file string) (string, error) {
 	return token, nil
 }
 
+// allowedPath lists the exact bearer-protected paths. The two viewer admin
+// paths let the owner's CLI issue pairing codes and revoke viewer sessions;
+// they are not reachable through the embedded tunnel, which allows only /mcp.
+func allowedPath(path string) bool {
+	switch path {
+	case "/mcp", "/admin/maintenance", "/admin/runtime", "/admin/viewer-grant", "/admin/viewer-revoke":
+		return true
+	}
+	return false
+}
+
 func Wrap(next http.Handler, expectedHost, token string) (http.Handler, error) {
 	if err := ValidateAddress(expectedHost); err != nil {
 		return nil, err
@@ -82,7 +93,7 @@ func Wrap(next http.Handler, expectedHost, token string) (http.Handler, error) {
 			return
 		}
 		// Absent routes, including OAuth discovery, must be 404 rather than an auth challenge.
-		if (r.URL.Path != "/mcp" && r.URL.Path != "/admin/maintenance" && r.URL.Path != "/admin/runtime") || r.URL.RawQuery != "" {
+		if !allowedPath(r.URL.Path) || r.URL.RawQuery != "" {
 			http.NotFound(w, r)
 			return
 		}

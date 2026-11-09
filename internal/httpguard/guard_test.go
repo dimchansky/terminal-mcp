@@ -178,3 +178,40 @@ func TestMaintenanceUsesSameAuthentication(t *testing.T) {
 		t.Fatal("authorized maintenance rejected")
 	}
 }
+
+// The two viewer admin paths are exact, bearer-protected and refuse browser
+// requests like the other administrative paths.
+func TestViewerAdminPathsAreExactAndProtected(t *testing.T) {
+	token := strings.Repeat("v", 64)
+	h, err := Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }), "127.0.0.1:8090", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/admin/viewer-grant", "/admin/viewer-revoke"} {
+		for _, tt := range []struct {
+			name, path, auth, origin string
+			status                   int
+		}{
+			{"ok", path, "Bearer " + token, "", 204},
+			{"no bearer", path, "", "", 401},
+			{"origin", path, "Bearer " + token, "http://127.0.0.1:8090", 403},
+			{"trailing slash", path + "/", "Bearer " + token, "", 404},
+			{"suffix", path + "x", "Bearer " + token, "", 404},
+			{"query", path + "?all=1", "Bearer " + token, "", 404},
+		} {
+			r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8090"+tt.path, nil)
+			r.Host = "127.0.0.1:8090"
+			if tt.auth != "" {
+				r.Header.Set("Authorization", tt.auth)
+			}
+			if tt.origin != "" {
+				r.Header.Set("Origin", tt.origin)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tt.status {
+				t.Errorf("%s %s: %d, want %d", path, tt.name, w.Code, tt.status)
+			}
+		}
+	}
+}

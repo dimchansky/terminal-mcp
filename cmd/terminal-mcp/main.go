@@ -26,6 +26,7 @@ import (
 	"terminalmcp/internal/mcpserver"
 	"terminalmcp/internal/session"
 	"terminalmcp/internal/terminal"
+	"terminalmcp/internal/viewer"
 )
 
 type options struct {
@@ -191,8 +192,10 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 			return fmt.Errorf("embedded tunnel setup: %w", err)
 		}
 	}
+	// Read-only dashboard viewers. HTTP mode only; stdio has no viewer.
+	viewers := viewer.NewRegistry(viewer.Config{})
 	if len(args) == 0 || args[0] != "serve" {
-		return serveHTTPWithTunnel(ctx, manager, server, listener, token, tunnel)
+		return serveHTTPWithTunnel(ctx, manager, server, listener, token, tunnel, viewers)
 	}
 	// Only explicitly launched standalone servers can shut themselves down
 	// for an update. Existing launchd-managed instances remain unchanged.
@@ -205,14 +208,47 @@ func runWithContext(ctx context.Context, args []string, stdio mcp.Transport) err
 	info.TunnelKeyFromEnv = opts.tunnel && opts.tunnelKeyFile == ""
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	return serveHTTPWithTunnel(serveCtx, manager, server, listener, token, tunnel, &updateServer{
+	return serveHTTPWithTunnel(serveCtx, manager, server, listener, token, tunnel, viewers, &updateServer{
 		info: info, recorder: recorder, tunnel: tunnel, shutdown: cancel,
-		force: func() {
+		force: forceStop(viewers, func() {
 			files.AbortTransfers()
 			manager.AbortManagedSessions()
-			cancel()
-		},
+		}, cancel),
 	})
+}
+
+// forceStop ends dashboard viewers first, without a grace period, so a forced
+// stop never waits for them even if a mutation is wedged; then it aborts
+// managed work and starts shutdown.
+func forceStop(viewers *viewer.Registry, abort func(), cancel context.CancelFunc) func() {
+	return func() {
+		viewers.CloseAdmission(viewer.StopForce)
+		viewers.StopAll(0)
+		abort()
+		cancel()
+	}
+}
+
+// viewerStopGrace bounds how long a live viewer stream may take to write its
+// final server_stopping event during a normal stop or update.
+const viewerStopGrace = time.Second
+
+// testViewerRoutes lets tests register extra viewer routes (for example a
+// stream exercising the shutdown fence). It is nil in production; tests that
+// set it must not run in parallel.
+var testViewerRoutes func(*viewer.Handler)
+
+// newViewerHandler builds the dashboard viewer handler. Its route table is
+// also what the tunnel-exclusion tests enumerate.
+func newViewerHandler(host string, viewers *viewer.Registry) (*viewer.Handler, error) {
+	h, err := viewer.NewHandler(host, viewers)
+	if err != nil {
+		return nil, err
+	}
+	if testViewerRoutes != nil {
+		testViewerRoutes(h)
+	}
+	return h, nil
 }
 
 func recordServerStart(recorder *audit.Log, serverID string) error {
@@ -299,11 +335,18 @@ func standaloneInfo(args []string, serverID, listen, root string, envToken bool)
 	}, nil
 }
 
-// newHTTPHandler constructs only HTTP routing and the authentication guard.
+// newHTTPHandler constructs only HTTP routing and the authentication guards.
+// Dashboard viewer paths go to the viewer guard; everything else goes through
+// the unchanged MCP bearer guard. A nil registry selects a private one.
 // Tests can exercise this handler with httptest without starting a service.
-func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string, standalone ...*updateServer) (http.Handler, error) {
+func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token string, viewers *viewer.Registry, standalone ...*updateServer) (http.Handler, error) {
+	if viewers == nil {
+		viewers = viewer.NewRegistry(viewer.Config{})
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.HTTP(server))
+	mux.Handle(viewer.AdminGrantPath, viewer.AdminGrant(viewers))
+	mux.Handle(viewer.AdminRevokePath, viewer.AdminRevoke(viewers))
 	if len(standalone) != 0 && standalone[0] != nil {
 		state := standalone[0]
 		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager, state.shutdown, state.force))
@@ -318,13 +361,28 @@ func newHTTPHandler(manager *session.Manager, server *mcp.Server, host, token st
 			state, _ := manager.List(r.Context(), session.ListArgs{})
 			info.ActiveOperations = state.ActiveOperations
 			info.ActiveSessions = state.Counts.Running
+			info.ViewerSessions, info.ViewerPendingCodes = viewers.Counts()
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 		})
 	} else {
 		mux.Handle("/admin/maintenance", mcpserver.Maintenance(manager))
 	}
-	return httpguard.Wrap(mux, host, token)
+	guarded, err := httpguard.Wrap(mux, host, token)
+	if err != nil {
+		return nil, err
+	}
+	viewerHandler, err := newViewerHandler(host, viewers)
+	if err != nil {
+		return nil, err
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if viewer.Owns(r.URL.Path) {
+			viewerHandler.ServeHTTP(w, r)
+			return
+		}
+		guarded.ServeHTTP(w, r)
+	}), nil
 }
 
 // serveHTTP owns the listener and session manager. Normal cancellation first
@@ -338,14 +396,14 @@ func serveHTTP(ctx context.Context, manager *session.Manager, server *mcp.Server
 // positive timeout exercises forced HTTP drain for failure-path tests; a zero
 // timeout follows the normal unbounded graceful shutdown contract.
 func serveHTTPWithTimeout(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, standalone ...*updateServer) error {
-	return serveHTTPWithOptions(ctx, manager, server, listener, token, timeout, nil, standalone...)
+	return serveHTTPWithOptions(ctx, manager, server, listener, token, timeout, nil, nil, standalone...)
 }
 
-func serveHTTPWithTunnel(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, tunnel *tunnelRuntime, standalone ...*updateServer) error {
-	return serveHTTPWithOptions(ctx, manager, server, listener, token, 0, tunnel, standalone...)
+func serveHTTPWithTunnel(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, tunnel *tunnelRuntime, viewers *viewer.Registry, standalone ...*updateServer) error {
+	return serveHTTPWithOptions(ctx, manager, server, listener, token, 0, tunnel, viewers, standalone...)
 }
 
-func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, tunnel *tunnelRuntime, standalone ...*updateServer) error {
+func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server *mcp.Server, listener net.Listener, token string, timeout time.Duration, tunnel *tunnelRuntime, viewers *viewer.Registry, standalone ...*updateServer) error {
 	defer func() { _ = listener.Close() }()
 	defer manager.Close()
 	if tunnel != nil {
@@ -356,7 +414,16 @@ func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server 
 			}
 		}()
 	}
-	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token, standalone...)
+	if viewers == nil {
+		viewers = viewer.NewRegistry(viewer.Config{})
+	}
+	// Every exit fences viewers; the normal path below does it first, with
+	// its stop reason and grace, and a forced stop already did.
+	defer func() {
+		viewers.CloseAdmission(viewer.StopAbnormal)
+		viewers.StopAll(0)
+	}()
+	handler, err := newHTTPHandler(manager, server, listener.Addr().String(), token, viewers, standalone...)
 	if err != nil {
 		return err
 	}
@@ -403,6 +470,15 @@ func serveHTTPWithOptions(ctx context.Context, manager *session.Manager, server 
 				}
 			}
 		}
+		// Final viewer fence: refuse new viewer requests, give live streams a
+		// bounded grace for a final event, then end them, so no viewer can
+		// delay the unbounded HTTP shutdown that follows.
+		reason := viewer.StopNormal
+		if manager.DrainMode() == "update" {
+			reason = viewer.StopUpdate
+		}
+		viewers.CloseAdmission(reason)
+		viewers.StopAll(viewerStopGrace)
 		shutdownCtx := context.Background()
 		cancel := func() {}
 		if timeout > 0 {

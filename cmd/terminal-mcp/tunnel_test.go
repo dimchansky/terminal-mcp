@@ -138,7 +138,7 @@ func TestEmbeddedTunnelUsesActualMCPAuditAndHTTP(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, tunnelTestToken, runtime) }()
+	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, tunnelTestToken, runtime, nil) }()
 	defer func() {
 		cancel()
 		select {
@@ -283,7 +283,7 @@ func TestEmbeddedTunnelShutdownDeliversAcceptedResponse(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, tunnelTestToken, rt) }()
+	go func() { done <- serveHTTPWithTunnel(ctx, manager, server, listener, tunnelTestToken, rt, nil) }()
 	completed := false
 	defer func() {
 		cancel()

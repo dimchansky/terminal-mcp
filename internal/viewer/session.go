@@ -35,6 +35,10 @@ type Attacher interface {
 	//	release, err := sess.Attach(viewer.KindStream, st)
 	//	...
 	//	defer release()
+	//
+	// Any viewer response that can exceed a few KiB (history pages, full
+	// records, streams) must be written through an attached Stream, so a
+	// client that stopped reading cannot hold up server shutdown.
 	Attach(kind Kind, res Resource) (release func(), err error)
 }
 
