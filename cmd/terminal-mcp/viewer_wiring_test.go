@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"terminalmcp/internal/dashboard"
 	"terminalmcp/internal/mcpserver"
 	"terminalmcp/internal/session"
 	"terminalmcp/internal/viewer"
@@ -151,7 +152,11 @@ func TestTunnelCannotReachViewerRoutes(t *testing.T) {
 			}
 		}
 	}
-	if reached || len(paths) != len(h.Routes())+3 || len(h.Routes()) < 16 { // 7 viewer + 9 dashboard routes.
+	stream := false
+	for _, rt := range h.Routes() {
+		stream = stream || rt.Path == dashboard.PathStream
+	}
+	if reached || !stream || len(paths) != len(h.Routes())+3 || len(h.Routes()) != 17 { // 7 viewer + 10 dashboard routes.
 		t.Fatalf("reached=%v paths=%v", reached, paths)
 	}
 }
