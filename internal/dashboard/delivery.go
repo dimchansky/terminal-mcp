@@ -107,6 +107,7 @@ type Page struct {
 	Records    []Record      `json:"records"`
 	Next       *Continuation `json:"next,omitempty"`
 	Coverage   Coverage      `json:"coverage"`
+	ScanUpdates
 }
 
 // Lane is a grouping within the window's coverage. Times are the writer's
@@ -313,9 +314,13 @@ func coverageOf(c activity.CoverageView) Coverage {
 // are sent.
 func (mg *Manager) deliver(ctx context.Context, s snapshot, items []item, before *Continuation,
 	want func(activity.OccurrenceKey) bool) Page {
+	return mg.deliverFrom(ctx, s, items, before, want, responseBudget, 0, time.Now().Add(requestTime))
+}
+
+// deliverFrom is deliver with part of the budget and time already spent.
+func (mg *Manager) deliverFrom(ctx context.Context, s snapshot, items []item, before *Continuation,
+	want func(activity.OccurrenceKey) bool, budget, records int, deadline time.Time) Page {
 	page := Page{Generation: s.generation, Items: []Item{}, Records: []Record{}, Coverage: s.coverage}
-	deadline := time.Now().Add(requestTime)
-	budget, records := responseBudget, 0
 	for _, it := range items {
 		if before != nil && compareItems(it.Item, Item{Order: before.Order, Key: before.Key}) >= 0 {
 			continue
@@ -376,18 +381,8 @@ func (mg *Manager) readRecord(ctx context.Context, key activity.OccurrenceKey) R
 	return rec
 }
 
-// occurrenceID is the wire ID: the raw reader reference for rows that have
-// one; weak keys are spelled out and cannot be loaded.
-func occurrenceID(key activity.OccurrenceKey) string {
-	if key.Ref != "" {
-		return key.Ref
-	}
-	w := key.Weak
-	if w.Provisional != "" {
-		return fmt.Sprintf("p:%s:%d-%d", w.Provisional, w.Start, w.End)
-	}
-	return fmt.Sprintf("w:%s:%d:%d-%d", w.OlderRef, w.Between, w.Start, w.End)
-}
+// occurrenceID is the wire ID of an occurrence (see OccurrenceKey.String).
+func occurrenceID(key activity.OccurrenceKey) string { return key.String() }
 
 // Recent delivers the newest items across all lanes.
 func (mg *Manager) Recent(ctx context.Context, owner viewer.Attacher, id string, before *Continuation) (Page, error) {
@@ -417,13 +412,132 @@ func (mg *Manager) laneItems(ctx context.Context, m *managed, lane string, befor
 	if !ok {
 		return Page{}, ErrGenerationChanged
 	}
+	return mg.deliver(ctx, s, laneWithRestarts(s.items, key), before, nil), nil
+}
+
+// laneWithRestarts selects a lane's items plus the server starts within the
+// lane's order range, so restarts show inside its timeline.
+func laneWithRestarts(all []item, key string) []item {
+	var oldest, newest *OrderKey
+	for i := range all {
+		if all[i].laneKey != key {
+			continue
+		}
+		if newest == nil {
+			newest = &all[i].Order
+		}
+		oldest = &all[i].Order
+	}
 	var items []item
-	for _, it := range s.items {
-		if it.laneKey == key {
+	for _, it := range all {
+		inRange := oldest != nil && compareOrder(it.Order, *oldest) >= 0 && compareOrder(it.Order, *newest) <= 0
+		if it.laneKey == key || (it.Kind == ItemServerStart && inRange) {
 			items = append(items, it)
 		}
 	}
-	return mg.deliver(ctx, s, items, before, nil), nil
+	return items
+}
+
+// ScanUpdates reports what a history scan changed in items the client may
+// hold: Updated items (with their new lane; records in the answer's
+// records), Removed item keys (effects now delivered with their action,
+// replaced provisional rows) and the lanes whose membership or items
+// changed. When Updated does not fit the answer, UpdatedMore is set and the
+// client re-fetches AffectedLanes; Removed and AffectedLanes are complete.
+type ScanUpdates struct {
+	Updated       []Item   `json:"updated,omitempty"`
+	UpdatedMore   bool     `json:"updated_more,omitempty"`
+	Removed       []string `json:"removed,omitempty"`
+	AffectedLanes []string `json:"affected_lanes,omitempty"`
+}
+
+// tracked runs a history scan and reports its updates to loaded items. The
+// caller holds m.scanMu, so tracked scans of one window never interleave.
+func (mg *Manager) tracked(m *managed, scan func() error) (snapshot, ChangeSet, error) {
+	before := mg.collect(m)
+	m.win.Track()
+	err := scan()
+	return before, m.win.Untrack(), err
+}
+
+// updates delivers the scan's changes to items that existed before it, plus
+// actions that now own an effect delivered separately before, within the
+// budget left after the answer's own records.
+func (mg *Manager) updates(ctx context.Context, m *managed, before snapshot, cs ChangeSet, delivered []Item, spent []Record,
+	deadline time.Time) (ScanUpdates, []Record) {
+	var up ScanUpdates
+	after := mg.collect(m)
+	if after.generation != before.generation {
+		return up, nil // The client re-snapshots on the generation change.
+	}
+	existed := map[string]string{} // Item key → lane before the scan.
+	for _, it := range before.items {
+		existed[it.Key] = it.Lane
+	}
+	present := map[string]bool{}
+	for _, it := range after.items {
+		present[it.Key] = true
+	}
+	lanes := map[string]bool{}
+	removedEffects := map[string]bool{}
+	for _, it := range before.items {
+		if (it.Kind == ItemEffect || it.Kind == ItemDiagnostic) && !present[it.Key] {
+			up.Removed = append(up.Removed, it.Key)
+			lanes[it.Lane] = true
+			if it.Kind == ItemEffect {
+				removedEffects[it.Key] = true
+			}
+		}
+	}
+	inPage := map[string]bool{}
+	for _, it := range delivered {
+		inPage[it.Key] = true
+	}
+	var changed []item
+	for _, it := range after.items {
+		_, had := existed[it.Key]
+		var hit bool
+		switch it.Kind {
+		case ItemAction:
+			own := it.Effect != nil && (cs.Effects[it.Effect.Key] || removedEffects[effectKey(it.Effect.Key)])
+			hit = (had && (cs.Requests[it.Action.Key] || own)) || (it.Effect != nil && removedEffects[effectKey(it.Effect.Key)])
+		case ItemEffect:
+			hit = had && cs.Effects[it.Effect.Key]
+		case ItemDiagnostic:
+			if replaced, ok := cs.Occurrences[it.Diagnostic.Key]; ok {
+				_, held := existed["d:"+occurrenceID(replaced)]
+				hit = had || held // A row the client holds was resolved.
+			}
+		}
+		if !hit {
+			continue
+		}
+		lanes[it.Lane] = true
+		if old, ok := existed[it.Key]; ok {
+			lanes[old] = true
+		}
+		if !inPage[it.Key] { // Already delivered by the answer's own page.
+			changed = append(changed, it)
+		}
+	}
+	for l := range lanes {
+		up.AffectedLanes = append(up.AffectedLanes, l)
+	}
+	slices.Sort(up.AffectedLanes)
+	if len(changed) == 0 {
+		return up, nil
+	}
+	budget, n := responseBudget, len(spent)
+	for _, r := range spent {
+		budget -= len(r.DataB64)
+	}
+	if budget <= 0 || n >= maxRecords || !time.Now().Before(deadline) {
+		up.UpdatedMore = true // Nothing fits: the client re-fetches the affected lanes.
+		return up, nil
+	}
+	page := mg.deliverFrom(ctx, after, changed, nil, nil, budget, n, deadline)
+	up.Updated, up.UpdatedMore = page.Items, page.Next != nil
+	return up, page.Records
 }
 
 // endOfHistory reports whether a scan error only means the history chain
@@ -446,16 +560,25 @@ func (mg *Manager) scan(ctx context.Context, m *managed, pages int) error {
 // history in this window.
 func (mg *Manager) Earlier(ctx context.Context, owner viewer.Attacher, id, lane string, before *Continuation) (Page, error) {
 	var page Page
+	deadline := time.Now().Add(requestTime)
 	err := mg.run(ctx, owner, id, func(m *managed) error {
 		var err error
 		if page, err = mg.laneItems(ctx, m, lane, before); err != nil || len(page.Items) > 0 {
 			return err
 		}
-		if err := mg.scan(ctx, m, scanPages); err != nil {
+		m.scanMu.Lock()
+		defer m.scanMu.Unlock()
+		prior, cs, err := mg.tracked(m, func() error { return mg.scan(ctx, m, scanPages) })
+		if err != nil {
 			return err
 		}
-		page, err = mg.laneItems(ctx, m, lane, before)
-		return err
+		if page, err = mg.laneItems(ctx, m, lane, before); err != nil {
+			return err
+		}
+		var records []Record
+		page.ScanUpdates, records = mg.updates(ctx, m, prior, cs, page.Items, page.Records, deadline.Add(requestTime))
+		page.Records = append(page.Records, records...)
+		return nil
 	})
 	return page, err
 }
@@ -465,6 +588,8 @@ func (mg *Manager) Earlier(ctx context.Context, owner viewer.Attacher, id, lane 
 func (mg *Manager) Scan(ctx context.Context, owner viewer.Attacher, id string) (Coverage, error) {
 	var cov Coverage
 	err := mg.run(ctx, owner, id, func(m *managed) error {
+		m.scanMu.Lock() // Never inside another request's tracked scan.
+		defer m.scanMu.Unlock()
 		err := mg.scan(ctx, m, scanPages)
 		m.win.With(func(p *activity.Projection) { cov = coverageOf(p.Coverage()) })
 		return err
@@ -477,28 +602,34 @@ func (mg *Manager) Scan(ctx context.Context, owner viewer.Attacher, id string) (
 func (mg *Manager) Origins(ctx context.Context, owner viewer.Attacher, id string) (Coverage, error) {
 	var cov Coverage
 	err := mg.run(ctx, owner, id, func(m *managed) error {
-		deadline := time.Now().Add(requestTime)
+		m.scanMu.Lock()
+		defer m.scanMu.Unlock()
 		defer m.win.With(func(p *activity.Projection) { cov = coverageOf(p.Coverage()) })
-		for i := 0; i < scanPages && time.Now().Before(deadline); i++ {
-			pending := false
-			m.win.With(func(p *activity.Projection) {
-				for _, n := range p.Needs() {
-					pending = pending || !n.BeyondCoverage
-				}
-			})
-			if !pending {
-				return nil
-			}
-			if err := m.win.Scan(ctx, 1, deadline); err != nil {
-				if endOfHistory(err) {
-					return nil
-				}
-				return err
-			}
-		}
-		return nil
+		return mg.origins(ctx, m)
 	})
 	return cov, err
+}
+
+func (mg *Manager) origins(ctx context.Context, m *managed) error {
+	deadline := time.Now().Add(requestTime)
+	for i := 0; i < scanPages && time.Now().Before(deadline); i++ {
+		pending := false
+		m.win.With(func(p *activity.Projection) {
+			for _, n := range p.Needs() {
+				pending = pending || !n.BeyondCoverage
+			}
+		})
+		if !pending {
+			return nil
+		}
+		if err := m.win.Scan(ctx, 1, deadline); err != nil {
+			if endOfHistory(err) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // Lanes summarizes the lanes in the window's coverage, newest activity first.

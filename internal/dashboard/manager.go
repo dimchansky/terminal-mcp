@@ -97,12 +97,15 @@ type managed struct {
 	hints   *hints
 	release func()
 
-	mu          sync.Mutex
-	lanes       *laneIDs
-	catchUps    map[string]*catchUpState // By the cursor caught up from.
-	catchUpSeq  uint64
-	stream      *streamHold // The window's current stream, if any.
-	cached      *snapshot   // Views of the window state named by cachedKey.
+	mu         sync.Mutex
+	lanes      *laneIDs
+	catchUps   map[string]*catchUpState // By the cursor caught up from.
+	catchUpSeq uint64
+	stream     *streamHold // The window's current stream, if any.
+	// scanMu serializes tracked history scans of the window (taken before
+	// the window lock, never inside it).
+	scanMu      sync.Mutex
+	cached      *snapshot // Views of the window state named by cachedKey.
 	cachedKey   ViewKey
 	rebuilding  bool
 	closed      bool

@@ -89,6 +89,8 @@ type Window struct {
 	// changed is closed and replaced whenever the window may have changed
 	// (a version bump, an issued cursor, a close), to wake streams.
 	changed chan struct{}
+	// track collects what history scans change while a caller tracks them.
+	track *ChangeSet
 	// newest is the most recently issued live cursor and its live rank.
 	newest      string
 	newestRank  int64
@@ -312,14 +314,18 @@ func (w *Window) historyPage(ctx context.Context, from audit.Cursor) error {
 
 func (w *Window) resolve(rs []activity.Resolution) error {
 	for _, r := range rs {
-		if _, err := w.proj.Resolve(r); err != nil {
+		change, err := w.proj.Resolve(r)
+		if err != nil {
 			return fmt.Errorf("%w: %v", ErrRebuild, err)
 		}
+		change.Chain = activity.ChainHistory // Resolutions come only from history pages.
+		w.track.add(change)
 	}
 	return nil
 }
 
 func (w *Window) applied(key activity.OccurrenceKey, raw []byte, change activity.Change) {
+	w.track.add(change)
 	if w.onApply != nil && raw != nil && change.Kind != activity.ChangeRedelivery {
 		w.onApply(key, raw, change)
 	}
@@ -724,4 +730,57 @@ func (w *Window) Advance(ctx context.Context, generation uint64, since int64, ma
 	res.Changes = w.proj.ChangedSince(since)
 	res.Rank, res.Head, res.Coverage, res.Changed = w.liveRank, w.head, w.proj.Coverage(), w.changed
 	return res, nil
+}
+
+// ChangeSet is what history-chain applies changed in items that may already
+// be loaded: transitions, reattributions, older journal copies (which can
+// change an item's primary record, order, conflict mark and even lane),
+// resolutions, and new actions (which may absorb an effect delivered
+// separately until then).
+type ChangeSet struct {
+	Requests    map[activity.RequestKey]bool
+	Effects     map[activity.EffectKey]bool
+	Occurrences map[activity.OccurrenceKey]activity.OccurrenceKey // Resolved row → its provisional key.
+}
+
+func (c *ChangeSet) add(change activity.Change) {
+	if c == nil || change.Chain != activity.ChainHistory {
+		return
+	}
+	switch change.Kind {
+	case activity.ChangeTransition, activity.ChangeReattributed, activity.ChangeNewAction,
+		activity.ChangeDuplicate, activity.ChangeConflict:
+	case activity.ChangeResolved:
+		if change.Occurrence != nil && change.Replaced != nil {
+			c.Occurrences[*change.Occurrence] = *change.Replaced
+		}
+	default:
+		return
+	}
+	if change.Request != nil {
+		c.Requests[*change.Request] = true
+	}
+	if change.Effect != nil {
+		c.Effects[*change.Effect] = true
+	}
+}
+
+// Track starts collecting history-chain changes; Untrack returns them.
+func (w *Window) Track() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.track = &ChangeSet{Requests: map[activity.RequestKey]bool{}, Effects: map[activity.EffectKey]bool{},
+		Occurrences: map[activity.OccurrenceKey]activity.OccurrenceKey{}}
+}
+
+// Untrack stops collecting and returns the changes since Track.
+func (w *Window) Untrack() ChangeSet {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	t := w.track
+	w.track = nil
+	if t == nil {
+		return ChangeSet{}
+	}
+	return *t
 }

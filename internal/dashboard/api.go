@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"runtime"
 	"slices"
 	"strconv"
 	"time"
@@ -54,6 +55,7 @@ type NeedsInfo struct {
 type Envelope struct {
 	Window         string     `json:"window"`
 	Mode           Mode       `json:"mode"`
+	ServerOS       string     `json:"server_os"` // GOOS of the server: the journal's machine.
 	Generation     uint64     `json:"generation"`
 	State          State      `json:"state"`
 	LiveCursor     string     `json:"live_cursor,omitempty"`
@@ -72,6 +74,8 @@ type LanesPage struct {
 	Coverage   Coverage  `json:"coverage"`
 	Needs      NeedsInfo `json:"needs"`
 	Lanes      []Lane    `json:"lanes"`
+	Records    []Record  `json:"records"` // Of Updated.
+	ScanUpdates
 }
 
 // CatchUpPage is a catch-up answer with the window's live status.
@@ -126,7 +130,7 @@ func (mg *Manager) Snapshot(ctx context.Context, owner viewer.Attacher, id strin
 		return Envelope{}, err
 	}
 	gen, state, _, unseen := m.win.Info()
-	env := Envelope{Window: id, Mode: m.mode, Generation: gen, State: state, PossibleUnseen: unseen,
+	env := Envelope{Window: id, Mode: m.mode, ServerOS: runtime.GOOS, Generation: gen, State: state, PossibleUnseen: unseen,
 		Health: mg.health(), Lanes: []Lane{}, Recent: Page{Generation: gen, Items: []Item{}, Records: []Record{}}}
 	if state != StateOK {
 		return env, nil
@@ -142,29 +146,34 @@ func (mg *Manager) Snapshot(ctx context.Context, owner viewer.Attacher, id strin
 	return env, err
 }
 
-// Discover scans older history within the budget and returns the lanes.
+// Discover scans older history within the budget and returns the lanes,
+// with the scan's updates to loaded items.
 func (mg *Manager) Discover(ctx context.Context, owner viewer.Attacher, id string) (LanesPage, error) {
 	return mg.lanesAfter(ctx, owner, id, func(m *managed) error { return mg.scan(ctx, m, scanPages) })
 }
 
-// Backfill looks for missing origins and returns the lanes.
+// Backfill looks for missing origins and returns the lanes, with the scan's
+// updates to loaded items (for example effects now delivered with the action
+// that was found).
 func (mg *Manager) Backfill(ctx context.Context, owner viewer.Attacher, id string) (LanesPage, error) {
-	if _, err := mg.Origins(ctx, owner, id); err != nil {
-		return LanesPage{}, err
-	}
-	return mg.lanesAfter(ctx, owner, id, nil)
+	return mg.lanesAfter(ctx, owner, id, func(m *managed) error { return mg.origins(ctx, m) })
 }
 
-func (mg *Manager) lanesAfter(ctx context.Context, owner viewer.Attacher, id string, before func(*managed) error) (LanesPage, error) {
+func (mg *Manager) lanesAfter(ctx context.Context, owner viewer.Attacher, id string, scan func(*managed) error) (LanesPage, error) {
 	var out LanesPage
+	deadline := time.Now().Add(2 * requestTime) // The scan, then its updates.
 	err := mg.run(ctx, owner, id, func(m *managed) error {
-		if before != nil {
-			if err := before(m); err != nil {
-				return err
-			}
+		m.scanMu.Lock()
+		defer m.scanMu.Unlock()
+		prior, cs, err := mg.tracked(m, func() error { return scan(m) })
+		if err != nil {
+			return err
 		}
 		s := mg.collect(m)
-		out = LanesPage{Generation: s.generation, Coverage: s.coverage, Lanes: lanesOf(s.items)}
+		out = LanesPage{Generation: s.generation, Coverage: s.coverage, Lanes: lanesOf(s.items), Records: []Record{}}
+		var records []Record
+		out.ScanUpdates, records = mg.updates(ctx, m, prior, cs, nil, nil, deadline)
+		out.Records = append(out.Records, records...)
 		_, out.Needs = mg.liveStatus(m)
 		return nil
 	})
