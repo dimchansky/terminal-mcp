@@ -1161,3 +1161,153 @@ func TestPageUnreadAndAutoSwitch(t *testing.T) {
 		t.Fatalf("a download reports a process runtime: %s", raw)
 	}
 }
+
+// TestPageEndsOnStopAndNeedsANewCode (#10): a normal stop ends an open
+// page with server_stopping, also while record reads are queued, after
+// which it makes no request; a restarted server refuses the old viewer
+// token, so the page asks for a new code, which works.
+func TestPageEndsOnStopAndNeedsANewCode(t *testing.T) {
+	root := t.TempDir()
+	s := startLiveServerWith(t, liveOptions{fileRoot: root})
+	cs := s.mcpSession(t.Context())
+	sid := s.manager.ID()
+	for i := range 3 { // Records too large for any page: each waits for Load.
+		call(t, cs, "chat-a", "file_write", map[string]any{"server_id": sid, "operation_id": fmt.Sprintf("op-stop-%d", i),
+			"path": filepath.Join(root, fmt.Sprintf("s%d.txt", i)), "content": strings.Repeat("<", 620_000)})
+	}
+	d := startPageDriver(t, s)
+	d.signIn(s)
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	d.do(map[string]any{"cmd": "settle"}, nil)
+	// The owner clicks Load on all three; the reads are held, two in flight
+	// and one queued, when the server stops.
+	beforeLoads := d.requests().Counts["record"] // The page's own loads so far.
+	d.do(map[string]any{"cmd": "hold", "on": true, "path": "record"}, nil)
+	loads := 0
+	for _, c := range d.cards(chatIdentity("chat-a")) {
+		if slices.Contains(c.Actions, "load-record") {
+			for _, occ := range c.Occurrences {
+				d.do(map[string]any{"cmd": "load", "occurrence": occ}, nil)
+				loads++
+			}
+		}
+	}
+	if loads < 3 {
+		t.Fatalf("%d records to load, want 3", loads)
+	}
+	var ld struct{ Loading int }
+	d.do(map[string]any{"cmd": "status"}, &ld)
+	if ld.Loading < 3 {
+		t.Fatalf("%d record reads queued, want 3", ld.Loading)
+	}
+
+	s.cancel() // A normal stop, as SIGTERM or `stop` do.
+	select {
+	case <-s.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("serve did not return")
+	}
+	var end struct {
+		Ended string `json:"ended"`
+	}
+	d.do(map[string]any{"cmd": "wait", "connection": "ended"}, &end)
+	if end.Ended != "server_stopping" {
+		t.Fatalf("the page ended with %q, want server_stopping", end.Ended)
+	}
+	var st struct {
+		Text struct{ Connection string } `json:"text"`
+	}
+	d.do(map[string]any{"cmd": "status"}, &st)
+	if st.Text.Connection != "Server stopped" {
+		t.Fatalf("the page shows %q", st.Text.Connection)
+	}
+	// The held reads are released: the stopped page sends none of them.
+	after := d.requests().Counts
+	d.do(map[string]any{"cmd": "hold", "on": false, "path": "record"}, nil)
+	var stopped struct {
+		Loading int
+		Stopped bool
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for d.do(map[string]any{"cmd": "status"}, &stopped); stopped.Loading > 0; d.do(map[string]any{"cmd": "status"}, &stopped) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d record reads never ended", stopped.Loading)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // The client is stopped; this only guards against a regression.
+	if again := d.requests().Counts; !stopped.Stopped || after["record"] != beforeLoads || !maps.Equal(after, again) {
+		t.Fatalf("requests after the stop: %v, then %v (stopped %v)", after, again, stopped.Stopped)
+	}
+
+	// A restarted server has new sessions: the old token is refused and
+	// the page ends with unauthorized (it asks for a new code).
+	restarted := startLiveServerWith(t, liveOptions{})
+	d.do(map[string]any{"cmd": "rebase", "url": "http://" + restarted.address}, nil)
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "ended"}, &end)
+	if end.Ended != "unauthorized" {
+		t.Fatalf("the old token on a restarted server: %q", end.Ended)
+	}
+	// A new code works.
+	d.signIn(restarted)
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+}
+
+// TestPageBaseline (#10, opt-in: TERMINAL_MCP_BASELINE=1) measures, for
+// docs/RELEASE_READINESS.md, the first screen over 50,000 recorded rows
+// and MCP call latency with and without an open dashboard. A baseline on
+// one machine, not a guarantee.
+func TestPageBaseline(t *testing.T) {
+	if os.Getenv("TERMINAL_MCP_BASELINE") != "1" {
+		t.Skip("set TERMINAL_MCP_BASELINE=1 to measure the baseline")
+	}
+	s := startLiveServerWith(t, liveOptions{fileRoot: t.TempDir()})
+	for c := range 50 {
+		s.writeOld(fmt.Sprintf("chat-%02d", c), 500) // 50,000 rows in all.
+	}
+	cs := s.mcpSession(t.Context())
+	latency := func(label string) {
+		t.Helper()
+		var d []time.Duration
+		for range 300 {
+			start := time.Now()
+			if res := call(t, cs, "chat-bench", "terminal_list", map[string]any{}); res.IsError {
+				t.Fatal(toolText(res))
+			}
+			d = append(d, time.Since(start))
+		}
+		slices.Sort(d)
+		t.Logf("tools/call terminal_list %s: median %v, p95 %v", label, d[len(d)/2], d[len(d)*95/100])
+	}
+	for range 100 { // Warm up: connections, caches and the audit file.
+		call(t, cs, "chat-bench", "terminal_list", map[string]any{})
+	}
+	latency("without a dashboard")
+
+	d := startPageDriver(t, s)
+	d.signIn(s)
+	start := time.Now()
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	d.do(map[string]any{"cmd": "settle"}, nil)
+	t.Logf("first screen over 50,000 rows: %v, requests %v", time.Since(start), d.requests().Counts)
+	start = time.Now()
+	scans := 0
+	for {
+		var disc struct {
+			Coverage struct {
+				End string `json:"end"`
+			}
+		}
+		d.do(map[string]any{"cmd": "discover"}, &disc)
+		scans++
+		if disc.Coverage.End != "open" {
+			break
+		}
+	}
+	t.Logf("discovering all 50 chats: %v in %d requests, %d lanes", time.Since(start), scans, len(d.lanes()))
+	latency("with an open dashboard (live window and stream)")
+}

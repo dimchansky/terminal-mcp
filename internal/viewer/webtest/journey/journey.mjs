@@ -13,7 +13,7 @@ import { attentionFor } from "../../static/attention.js";
 import { timeline, entry, entryKey } from "../../static/cards.js";
 import { describeStatus } from "../../static/status.js";
 
-const base = process.argv[2];
+let base = process.argv[2]; // The rebase command points the page at a restarted server.
 if (!base) { process.stderr.write("usage: node journey.mjs <base URL>\n"); process.exit(2); }
 
 // The page's requests are same-origin browser requests; Node's fetch sends
@@ -23,12 +23,13 @@ if (!base) { process.stderr.write("usage: node journey.mjs <base URL>\n"); proce
 const counts = new Map(); // API path → requests sent.
 const recordReads = new Map(); // Occurrence ID → record requests sent.
 let streamCut = new AbortController(); // Aborted by the cut command.
-let streamHold = null; // While set, a new stream waits for it (the hold command).
+const holds = new Map(); // API path → {promise, release}: new requests wait (the hold command).
 async function pageFetch(url, init = {}) {
   const path = url.replace("/dashboard/api/", "");
-  if (path === "stream" && streamHold) {
+  const held = holds.get(path);
+  if (held) {
     const aborted = new Promise((r) => { if (init.signal) { init.signal.addEventListener("abort", r, { once: true }); } });
-    await Promise.race([streamHold.promise, aborted]);
+    await Promise.race([held.promise, aborted]);
   }
   if (init.signal && init.signal.aborted) { throw new DOMException("aborted", "AbortError"); }
   counts.set(path, (counts.get(path) || 0) + 1);
@@ -248,7 +249,8 @@ const commands = {
   async item({ key }) { return { ok: true, item: client.store.items.get(key) || null }; },
   async requests() { return { ok: true, counts: Object.fromEntries(counts), records: Object.fromEntries(recordReads) }; },
   async reset() { counts.clear(); recordReads.clear(); return { ok: true }; },
-  async status() { return { ok: true, status: client.status, text: describeStatus(client.status), window: client.windowId, generation: client.store.generation, storage: Object.fromEntries(storage), ended }; },
+  async status() { return { ok: true, status: client.status, text: describeStatus(client.status), window: client.windowId, generation: client.store.generation,
+      loading: client.loading.size, stopped: client.stopped, storage: Object.fromEntries(storage), ended }; },
   // cut ends the open stream and answers once the page noticed it.
   async cut() {
     streamCut.abort();
@@ -256,12 +258,16 @@ const commands = {
     await until(() => client.status.connection !== "live", "the page to notice the cut");
     return { ok: true, connection: client.status.connection };
   },
-  // hold makes new streams wait (on: true) until released (on: false).
-  async hold({ on }) {
-    if (on && !streamHold) { let release; const promise = new Promise((r) => { release = r; }); streamHold = { promise, release }; }
-    if (!on && streamHold) { streamHold.release(); streamHold = null; }
+  // hold makes new requests of a path (default: stream) wait (on: true)
+  // until released (on: false); an aborted waiting request is never sent.
+  async hold({ on, path = "stream" }) {
+    if (on && !holds.has(path)) { let release; const promise = new Promise((r) => { release = r; }); holds.set(path, { promise, release }); }
+    if (!on && holds.has(path)) { holds.get(path).release(); holds.delete(path); }
     return { ok: true };
   },
+  // load is the page's Load control: it queues a record read and answers
+  // at once.
+  async load({ occurrence }) { client.loadRecord(occurrence); return { ok: true, loading: client.loading.size }; },
   // cursor answers the live cursor; rewind sets an earlier one and catches
   // up from it, so the page receives rows it already applied again.
   async cursor() { return { ok: true, cursor: client.cursor }; },
@@ -278,6 +284,10 @@ const commands = {
     if (opts.resume) { resume(); }
     return { ok: true, switches: [...switches], pending: attention.pending, current };
   },
+  // rebase points the page at a restarted server: it stands for the same
+  // page origin reaching a server with new sessions (a real page cannot
+  // move to another port).
+  async rebase({ url }) { base = url; return { ok: true }; },
   async stop() { if (client) { client.stop(); } return { ok: true }; },
 };
 
