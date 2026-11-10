@@ -223,7 +223,9 @@ function deferred() {
   const box = $("timeline");
   const sel = window.getSelection();
   const selecting = sel && !sel.isCollapsed && box.contains(sel.anchorNode);
-  const reading = box.querySelector("details[open], .group-head[aria-expanded=\"true\"]") !== null;
+  // An open block counts only when it shows: not inside a closed Details.
+  const reading = [...box.querySelectorAll("details[open]")].some((d) => !(d.parentElement && d.parentElement.closest("details:not([open])"))) ||
+    box.querySelector(".group-head[aria-expanded=\"true\"]") !== null;
   const active = document.activeElement;
   const working = active !== box && box.contains(active); // A focused card control, not the box itself.
   return !view.follow || selecting || reading || working || !!view.archive;
@@ -392,7 +394,7 @@ function entrySig(e, ctx) {
   const store = source();
   // The view is part of the signature: live and archive entries never share an element.
   return (view.archive ? "a" + view.archive.id : "l") + "|" + JSON.stringify(items) + "|" + items.map((it) => recordSig(it, store)).join(";") + "|" +
-    items.map((it) => view.open.has(it.key + ":originals")).join("") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
+    items.map((it) => ["originals", "details", "meta"].map((k) => view.open.has(it.key + ":" + k)).join(",")).join(";") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
     // A command's card shows what later calls saw of its process.
     JSON.stringify(items.map((it) => (it.action && it.action.tool === "terminal_start" && ctx.processes && ctx.processes.get(processKey(it))) || null));
 }
@@ -676,7 +678,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("timeline").addEventListener("toggle", (e) => {
     const d = e.target;
     if (!(d instanceof HTMLDetailsElement)) { return; }
-    if (d.classList.contains("originals")) {
+    if (d.classList.contains("originals") || d.classList.contains("more") || d.classList.contains("meta")) {
       if (d.open) { view.open.add(d.dataset.key); view.follow = false; } else { view.open.delete(d.dataset.key); }
       view.renderNonce++;
       render();

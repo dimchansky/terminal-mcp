@@ -11,6 +11,7 @@ import { lineDiff } from "./diff.js";
 import { isPolling } from "./classes.js";
 import { refOccurrence } from "./model.js";
 import { outcome, verb, headDuration, timing } from "./outcome.js";
+import { fieldClass, knownTool, hasChildren } from "./fields.js";
 
 // parsed caches parsed records by their bytes (records are immutable).
 const parsed = new WeakMap();
@@ -51,6 +52,35 @@ function otherFields(args, used, title = "Other supplied fields") {
   if (rest.length === 0) { return null; }
   return h("div", { class: "other" }, h("div", { class: "label" }, title),
     h("dl", { class: "obj" }, rest.map((e) => [h("dt", {}, text(e.key)), h("dd", {}, value(e.value))])));
+}
+
+// schemaValue renders a field's value and marks any key inside it that the
+// tool's schema does not define (file.x, files[].x), at any depth.
+function schemaValue(tool, path, node) {
+  if (!node || !hasChildren(tool, path)) { return value(node); }
+  if (node.kind === "array") {
+    if (node.items.length === 0) { return value(node); }
+    return h("ol", { class: "arr" }, node.items.map((it) => h("li", {}, schemaValue(tool, path + "[]", it))));
+  }
+  if (node.kind === "object" && node.entries.length) {
+    return h("dl", { class: "obj" }, node.entries.map((e) => {
+      const p = path + "." + e.key;
+      const unknown = fieldClass(tool, p) === "";
+      return [h("dt", unknown ? { class: "undefined-key", title: "Not in this server version's schema" } : {}, text(e.key), unknown ? " (not in schema)" : ""),
+        h("dd", {}, schemaValue(tool, p, e.value))];
+    }));
+  }
+  return value(node);
+}
+
+// nestedFields shows the other keys of a nested item (an edit, an input):
+// schema fields under the title, others marked as not in the schema.
+function nestedFields(tool, path, node, shown, title) {
+  if (!node || node.kind !== "object") { return null; }
+  const rest = node.entries.filter((e) => !shown.includes(e.key));
+  const known = rest.filter((e) => fieldClass(tool, path + "." + e.key) !== "");
+  const unknown = rest.filter((e) => fieldClass(tool, path + "." + e.key) === "");
+  return [known.length ? fieldList(known, title) : null, unknown.length ? fieldList(unknown, "Not in this server version's schema", "undefined-fields") : null];
 }
 
 function line(label, node) {
@@ -120,7 +150,7 @@ const INPUT = {
       else if (key !== null) { main = "key"; shown = [h("span", { class: "label" }, "key "), h("kbd", {}, text(key))]; }
       else if (b !== null) { main = "bytes_base64"; shown = [h("span", { class: "label" }, "bytes (base64) "), h("code", {}, text(b)), decodedBytes(b)]; }
       else { return h("li", {}, value(it)); }
-      return h("li", {}, shown, otherFields(it, [main], "Other fields of this input"));
+      return h("li", {}, shown, nestedFields("terminal_write", "input[]", it, [main], "Other fields of this input"));
     });
     return [h("div", {}, line("Session", field(args, "session_id")), h("ul", { class: "inputs" }, items)), ["input", "session_id"]];
   },
@@ -128,7 +158,7 @@ const INPUT = {
   file_edit(args) {
     const edits = field(args, "edits");
     if (!edits || edits.kind !== "array") { return [null, []]; }
-    const out = [line("File", field(args, "path")), line("Expected version", field(args, "expected_version"))];
+    const out = [line("File", field(args, "path"))];
     edits.items.forEach((e, i) => {
       const o = str(field(e, "old_text"));
       const n = str(field(e, "new_text"));
@@ -145,18 +175,17 @@ const INPUT = {
           out.push(h("div", { class: "note" }, d.newEndsWithNewline ? "Adds a final newline." : "Removes the final newline."));
         }
       }
-      const extra = otherFields(e, ["old_text", "new_text"], "Other fields of this replacement");
-      if (extra) { out.push(extra); }
+      out.push(nestedFields("file_edit", "edits[]", e, ["old_text", "new_text"], "Other fields of this replacement"));
     });
     out.push(h("div", { class: "note" }, "The requested change, not the file's result; no file line numbers are recorded."));
-    return [h("div", { class: "edit" }, out), ["edits", "path", "expected_version"]];
+    return [h("div", { class: "edit" }, out), ["edits", "path"]];
   },
 
   file_write(args) {
     const content = field(args, "content");
     if (!content || content.kind !== "string") { return [null, []]; }
-    return [h("div", {}, line("File", field(args, "path")), line("Expected version", field(args, "expected_version")),
-      h("pre", { class: "content" }, h("code", {}, text(content.value, true)))), ["content", "path", "expected_version"]];
+    return [h("div", {}, line("File", field(args, "path")),
+      h("pre", { class: "content" }, h("code", {}, text(content.value, true)))), ["content", "path"]];
   },
 };
 
@@ -190,42 +219,75 @@ function controls(id, rs) {
   return h("div", { class: "loading" }, "Loading the record…");
 }
 
-// inputView renders the model's input from the start record.
+// inputView renders what the model asked for: [the visible view, the
+// protocol fields for Details (or null)].
 function inputView(item, ctx) {
   const a = item.action;
   if (a.input === "not_recorded") {
-    return h("div", { class: "not-recorded" }, "Input not recorded · tool not executed");
+    return [h("div", { class: "not-recorded" }, "Input not recorded · tool not executed"), null];
   }
-  if (!a.start) { return h("div", { class: "note" }, "The start of this call is outside the loaded history."); }
+  if (!a.start) { return [h("div", { class: "note" }, "The start of this call is outside the loaded history."), null]; }
   const rs = recordState(ctx, a.start.primary);
   if (rs.state !== "loaded") {
-    return h("div", {}, item.summary ? h("div", { class: "summary" }, h("span", { class: "label" }, "Summary (may be incomplete): "), text(item.summary.text),
-      item.summary.truncated ? "…" : "") : null, controls(a.start.primary, rs));
+    return [h("div", {}, item.summary ? h("div", { class: "summary" }, h("span", { class: "label" }, "Summary (may be incomplete): "), text(item.summary.text),
+      item.summary.truncated ? "…" : "") : null, controls(a.start.primary, rs)), null];
   }
   const p = rs.parsed;
   const legacy = a.input === "legacy" || a.legacy ? h("div", { class: "warning" }, "Legacy record: the input may be incomplete.") : null;
   if (p.issues.length > 0) {
-    return h("div", { class: "lossy" }, legacy, h("div", { class: "warning" }, "Shown as recorded text: ", text(p.issues.join("; ")), "."),
-      h("pre", { class: "raw" }, h("code", {}, text(p.text, true, !p.validUTF8))));
+    return [h("div", { class: "lossy" }, legacy, h("div", { class: "warning" }, "Shown as recorded text: ", text(p.issues.join("; ")), "."),
+      h("pre", { class: "raw" }, h("code", {}, text(p.text, true, !p.validUTF8)))), null];
   }
   const args = field(p.value, "args");
   const out = [legacy];
   if (Object.hasOwn(NOT_RECORDED_OUTPUT, a.tool)) { out.push(h("div", { class: "note" }, NOT_RECORDED_OUTPUT[a.tool])); }
   const render = Object.hasOwn(INPUT, a.tool) ? INPUT[a.tool] : null;
   let used = [];
+  let rendered = !render;
   if (render && args) {
     const [view, u] = render(args, ctx);
-    if (view) { out.push(view); used = u; }
+    if (view) { out.push(view); used = u; rendered = true; }
   }
+  let protocol = null;
   if (args && args.kind === "object") {
-    const rest = otherFields(args, used, used.length ? "Other supplied fields" : "Supplied fields");
-    if (rest) { out.push(rest); }
+    const rest = args.entries.filter((e) => !used.includes(e.key));
+    // Everything stays visible when the split could mislead: a rejected or
+    // failed call (the bad value may be a protocol field), input a
+    // renderer could not show, or a tool this page does not know.
+    const failed = ["rejected", "failed", "error"].includes(a.status) || a.outcome === "failed";
+    const split = rendered && knownTool(a.tool) && !a.rejected && !failed;
+    const cls = (e) => (split ? fieldClass(a.tool, e.key) : "main");
+    const zeroLimit = (e) => split && a.tool === "terminal_start" && e.key === "max_runtime_ms" && e.value.kind === "number" && e.value.value === 0;
+    const main = rest.filter((e) => cls(e) === "main" && !zeroLimit(e));
+    const undefinedFields = rest.filter((e) => cls(e) === "");
+    const folded = rest.filter((e) => cls(e) === "protocol" || (cls(e) === "main" && zeroLimit(e)));
+    if (main.length) { out.push(fieldList(main, used.length ? "Also supplied" : "Supplied fields", "other", knownTool(a.tool) ? a.tool : "")); }
+    if (undefinedFields.length) { out.push(fieldList(undefinedFields, "Not in this server version's schema", "undefined-fields")); }
+    if (folded.length) { protocol = fieldList(folded, "Retry identity, waits and limits"); }
   } else if (args) {
     out.push(h("div", { class: "label" }, "Supplied arguments"), value(args));
   } else {
     out.push(h("div", { class: "note" }, "No arguments were recorded."));
   }
-  return h("div", { class: "input" }, out);
+  return [h("div", { class: "input" }, out), protocol];
+}
+
+// fieldList lists fields; with a tool, keys inside them that its schema
+// does not define are marked.
+function fieldList(entries, title, cls = "other", tool = "") {
+  return h("div", { class: cls }, h("div", { class: "label" }, title),
+    h("dl", { class: "obj" }, entries.map((e) => [h("dt", {}, text(e.key)), h("dd", {}, tool ? schemaValue(tool, e.key, e.value) : value(e.value))])));
+}
+
+// moreDetails is the card's one Details section: what steers the call,
+// timing, the full recorded result, call metadata and the original
+// records. Built eagerly (except the records' text), so nothing in it is
+// lost from the card.
+function moreDetails(item, ctx, parts) {
+  const key = item.key + ":details";
+  const attrs = { class: "more", "data-key": key };
+  if (ctx.open && ctx.open.has(key)) { attrs.open = true; }
+  return h("details", attrs, h("summary", {}, "Details"), parts);
 }
 
 function callMeta(item, ctx) {
@@ -234,7 +296,10 @@ function callMeta(item, ctx) {
   const rs = recordState(ctx, a.start.primary);
   if (rs.state !== "loaded" || !rs.parsed.value || rs.parsed.issues.length) { return null; } // Lossy: see the raw record.
   const rows = ["call_meta", "input_responses", "request_state"].map((k) => line(k, field(rs.parsed.value, k))).filter(Boolean);
-  return rows.length ? h("details", { class: "meta" }, h("summary", {}, "Call metadata (client-claimed)"), rows) : null;
+  const key = item.key + ":meta";
+  const attrs = { class: "meta", "data-key": key };
+  if (ctx.open && ctx.open.has(key)) { attrs.open = true; }
+  return rows.length ? h("details", attrs, h("summary", {}, "Call metadata (client-claimed)"), rows) : null;
 }
 
 function duration(d) {
@@ -476,11 +541,16 @@ function actionHeader(item, ctx, f) {
   if (o.detail) { out.push(h("div", { class: o.kind === "failed" || o.kind === "not_run" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true))); }
   const ess = essentials(item, f);
   if (ess) { out.push(ess); }
-  // Timing in words, and the statuses as recorded.
-  const recordedStatus = [a.status ? "request " + a.status : "", a.outcome ? "outcome " + a.outcome : "", e && e.status ? "action " + e.status : ""].filter(Boolean).join(", ");
-  const t = [timing(item), recordedStatus ? "Recorded status: " + recordedStatus + "." : ""].filter(Boolean).join(" ");
-  if (t) { out.push(h("div", { class: "timing note" }, text(t))); }
   return out;
+}
+
+// timingLine spells out every recorded duration and status, for Details.
+function timingLine(item) {
+  const a = item.action;
+  const e = item.effect;
+  const recordedStatus = [a && a.status ? "request " + a.status : "", a && a.outcome ? "outcome " + a.outcome : "", e && e.status ? "action " + e.status : ""].filter(Boolean).join(", ");
+  const t = [timing(item), recordedStatus ? "Recorded status: " + recordedStatus + "." : ""].filter(Boolean).join(" ");
+  return t ? h("div", { class: "timing note" }, text(t)) : null;
 }
 
 // chipClass colours an outcome: a command that exited non-zero or by a
@@ -511,10 +581,11 @@ export function card(item, ctx) {
         " operation ", text(e.key.operation_id)),
       o.detail ? h("div", { class: o.kind === "failed" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true)) : null,
       h("div", { class: "note" }, "The request that admitted this effect is outside the loaded history."),
-      receipt(item, c), originals(item, c));
+      moreDetails(item, c, [timingLine(item), receipt(item, c), originals(item, c)]));
   }
-  return h("div", { class: "card", "data-key": item.key }, actionHeader(item, c, factsOf(item, c)), inputView(item, c), callMeta(item, c),
-    receipt(item, c), originals(item, c));
+  const [input, protocol] = inputView(item, c);
+  return h("div", { class: "card", "data-key": item.key }, actionHeader(item, c, factsOf(item, c)), input,
+    moreDetails(item, c, [protocol, timingLine(item), callMeta(item, c), receipt(item, c), originals(item, c)]));
 }
 
 function localTimeOf(item, ctx) {

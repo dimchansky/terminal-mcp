@@ -591,15 +591,16 @@ Behind the viewer guard, the dashboard reads the audit journal through **project
 The page at `/dashboard/` is a set of plain ES modules embedded in the binary. There is no build step and nothing comes from a third party. The strict CSP above applies, with no inline script or style and no `eval`.
 
 - **Rendering.** All audit text reaches the DOM as text nodes, through an allowlist of tags and attributes. Control, bidirectional and invisible characters are shown as visible escapes. JSON is read losslessly. When duplicate keys, inexact numbers, lone surrogates, invalid UTF-8 or a byte order mark would make the typed view lossy, or the record does not parse, the card shows the recorded text with the reason.
+- **Card header.** One line says what happened: a present-tense verb (Run command, Create or Replace file, Read files …), one outcome (Done, Failed, Partly done, Running, Not run, Repeat of an earlier call, Outcome unknown, Canceled or Timed out for a read the model stopped waiting for; for a command, Started with the last exit or state seen by any call of its process, and when; for a poll, Checked: what it saw), the local time and one duration. The outcome's detail (an error in full, why a call did not run, counts) and the results that matter (a written file's version and size, a download's saved path, files read) follow below it; failed actions show no result values. Warnings (ambiguous copies, possibly unrecorded finish, pending identity, unusable metadata) stay in the header.
 - **Cards.** The main content of a card is what the model asked for, in readable form:
   - `terminal_start` is shown as a command line in POSIX display notation, with `env` overrides first. That notation is labelled as display only, not proof that a shell ran. A Copy button is offered only when the line has no hidden characters, uses valid shell names for `env`, and parses back to the same `argv` and `env`. On Windows servers the exact tokens are listed, followed by `env`.
   - `terminal_write` shows its input with escapes.
   - `file_edit` shows a red/green diff for each replacement, without invented line numbers, or Before and After blocks when a line diff is not possible.
   - `file_write` shows its full content.
-  - Every other supplied field is listed, including unknown ones.
-  - Each card also offers the original audit JSONL with Copy and any effect receipt.
+  - Every other field that is the substance of the call stays visible. Fields that only steer it (retry identity, waits and limits, as classified per tool in `fields.js` and checked against the tool schemas) fold into the card's one **Details** section. A field the tool's schema does not define, at any depth, stays visible and is marked "not in this server version's schema". A rejected or failed call, input a card cannot render, and an unknown tool show every field inline.
+  - **Details** also holds the timing and recorded statuses in words, the call metadata, the full recorded result and receipt, and the original audit JSONL with Copy. Its content is built with the card, so nothing in it is left out of the page.
   - A large record shows its size and a **Load complete original** control.
-  - Request duration and effect duration are shown separately. A `file_read` body and process output are not in the audit, and the card says so.
+  - Request duration and effect duration are given separately in Details. A `file_read` body and process output are not in the audit, and the card says so.
   - Repeated polls collapse into one group.
 - **Lanes.** Conversations are listed as *client-claimed*, never as verified.
   - Each one has a deterministic identicon derived from a SHA-256 digest of its namespaced conversation key, plus a text label.
@@ -615,7 +616,7 @@ The page at `/dashboard/` is a set of plain ES modules embedded in the binary. T
   - When on, it moves the selection only to a claimed conversation that starts a new live call of a known non-polling tool.
   - Finishes, polls, history, unattributed or pending-origin lanes and unknown tools never trigger it.
   - Any selection holds focus for 5 seconds; candidates during the hold are dropped.
-  - While the owner reads, the switch waits and the current view shows a note. Reading means scrolled away from the tail, selecting text, an open block or expanded group, a focused card control, or the archive view. The switch happens once none of these applies and the hold has passed. Only the newest waiting chat is kept; a manual selection or turning auto-switch off drops it.
+  - While the owner reads, the switch waits and the current view shows a note. Reading means scrolled away from the tail, selecting text, a visible open block or expanded group, a focused card control, or the archive view. The switch happens once none of these applies and the hold has passed. Only the newest waiting chat is kept; a manual selection or turning auto-switch off drops it.
 - **Scrolling.** The timeline follows the tail only while the owner is at the bottom. Scrolling away stops following, and Jump to latest returns to the tail.
 - **History.** The page offers Earlier in this conversation and Discover older conversations. When coverage says `use_archive`, Open older history shows a separate archive window with its own selection, until the owner goes back to the live view.
 - **Browser storage.**

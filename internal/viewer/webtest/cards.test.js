@@ -61,7 +61,7 @@ test("file_write shows the whole content; unknown fields are listed", () => {
   const { it, ctx } = item("file_write", { path: "m.go", content, mystery: { nested: [1, 2] } });
   const v = card(it, ctx);
   assert.equal(textOf(find(v, "content")[0]), content);
-  assert.match(textOf(find(v, "other")[0]), /mystery/);
+  assert.match(textOf(find(v, "undefined-fields")[0]), /mystery/);
 });
 
 test("lossy, legacy and rejected records are labelled honestly", () => {
@@ -106,7 +106,7 @@ function leaves(o, out = []) {
   return out;
 }
 
-test("every supplied value is visible in the card body", () => {
+test("every supplied value is in the card; protocol fields fold into Details", () => {
   const cases = {
     terminal_start: { argv: ["go", "test"], env: { A: "1" }, cwd: "/w", operation_id: "OP-1", wait_ms: 500, extra: { evil: "NESTED" } },
     terminal_write: { session_id: "S1", operation_id: "OP-2", input: [{ text: "hi", key: "ENTER", extra: "XTRA" }, { bytes_base64: "aGk=" }] },
@@ -116,11 +116,30 @@ test("every supplied value is visible in the card body", () => {
   };
   for (const [tool, args] of Object.entries(cases)) {
     const { it, ctx } = item(tool, args);
-    const body = textOf(find(card(it, ctx), "input")[0]);
+    const v = card(it, ctx);
+    const all = textOf(v);
     for (const leaf of leaves(args)) {
-      assert.ok(body.includes(leaf), tool + " hides " + JSON.stringify(leaf));
+      assert.ok(all.includes(leaf), tool + " hides " + JSON.stringify(leaf));
     }
   }
+  // Protocol fields are in Details; the substance and anything the schema
+  // does not define stay in the body.
+  const { it, ctx } = item("terminal_start", cases.terminal_start);
+  const v = card(it, ctx);
+  const body = textOf(find(v, "input")[0]);
+  const more = textOf(find(v, "more")[0]);
+  assert.ok(body.includes("NESTED") && body.includes("Not in this server version's schema"), "undefined fields stay visible");
+  assert.ok(!body.includes("OP-1") && more.includes("OP-1") && more.includes("500"), "operation_id and wait_ms are in Details");
+  const w = item("file_write", cases.file_write);
+  assert.ok(textOf(find(card(w.it, w.ctx), "input")[0]).includes("0644"), "file_write has no mode field: it stays visible");
+});
+
+test("a rejected call keeps every field in the body", () => {
+  const { it, ctx } = item("terminal_start", { argv: "ls -la", operation_id: "OP-R", wait_ms: "soon" });
+  it.action.status = "rejected";
+  it.action.reason = "schema_validation";
+  const body = textOf(find(card(it, ctx), "input")[0]);
+  assert.ok(body.includes("OP-R") && body.includes("soon") && body.includes("ls -la"));
 });
 
 test("rejections with a start show their reason; finish diagnostics are shown", () => {
@@ -224,4 +243,31 @@ test("a command that exited non-zero is a warning, not a success; recorded statu
   assert.match(textOf(chip), /^Started, exited 1/);
   assert.match(chip.attrs.class, /warn/);
   assert.match(textOf(v), /Recorded status: request applied, action applied\./);
+});
+
+test("keys the schema does not define are marked at any depth", () => {
+  const r = item("file_receive", { path: "/x", file: { download_url: "http://h/f", file_id: "f", sneaky: "S" }, operation_id: "o", server_id: "s" });
+  r.it.action.status = "running";
+  let body = find(card(r.it, r.ctx), "input")[0];
+  assert.match(textOf(find(body, "undefined-key")[0]), /^sneaky \(not in schema\)$/);
+  const e = item("file_edit", { path: "/a", edits: [{ old_text: "a", new_text: "b", zzz: "Z" }], operation_id: "o", server_id: "s" });
+  body = find(card(e.it, e.ctx), "input")[0];
+  assert.match(textOf(find(body, "undefined-fields")[0]), /Not in this server version's schema\s*zzz\s*Z/);
+  const w = item("terminal_write", { session_id: "S", input: [{ text: "hi", key: "ENTER", zz: 1 }], operation_id: "o", server_id: "s" });
+  body = find(card(w.it, w.ctx), "input")[0];
+  assert.match(textOf(find(body, "other")[0]), /Other fields of this input\s*key\s*ENTER/, "a schema field stays under the plain label");
+  assert.match(textOf(find(body, "undefined-fields")[0]), /zz/);
+  const s = item("terminal_start", { argv: ["a"], env: { ANY_NAME: "1" }, operation_id: "o", server_id: "s" });
+  assert.equal(find(card(s.it, s.ctx), "undefined-key").length, 0, "env keys are values, not fields");
+});
+
+test("a zero runtime limit folds only when fields are split", () => {
+  const ok = item("terminal_start", { argv: ["a"], env: {}, max_runtime_ms: 0, operation_id: "o", server_id: "s" });
+  assert.ok(!textOf(find(card(ok.it, ok.ctx), "input")[0]).includes("max_runtime_ms"));
+  assert.ok(textOf(find(card(ok.it, ok.ctx), "more")[0]).includes("max_runtime_ms"));
+  const limited = item("terminal_start", { argv: ["a"], env: {}, max_runtime_ms: 5000, operation_id: "o", server_id: "s" });
+  assert.ok(textOf(find(card(limited.it, limited.ctx), "input")[0]).includes("5000"));
+  const bad = item("terminal_start", { argv: ["a"], env: {}, max_runtime_ms: 0, operation_id: "o", server_id: "s" });
+  bad.it.action.status = "rejected";
+  assert.ok(textOf(find(card(bad.it, bad.ctx), "input")[0]).includes("max_runtime_ms"), "a rejected call keeps everything inline");
 });

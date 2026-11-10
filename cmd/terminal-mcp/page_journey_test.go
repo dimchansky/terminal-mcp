@@ -169,6 +169,7 @@ type journeyCard struct {
 	Tool        string   `json:"tool"`
 	Size        int      `json:"size"`
 	Text        string   `json:"text"`
+	Head        string   `json:"head"` // The text without the folded Details.
 	Actions     []string `json:"actions"`
 	Occurrences []string `json:"occurrences"`
 }
@@ -506,6 +507,9 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 	bad := byOp(a, op("bad-argv"))
 	expect(bad, "Run command Not run", "the arguments did not match the tool's schema", "Supplied fields\nserver_id", "argv\nls -la\n", "schema_validation")
 	reject(bad, "The action took", "Started")
+	if !strings.Contains(bad.Head, sid) || !strings.Contains(bad.Head, op("bad-argv")) {
+		t.Errorf("a rejected call folded its protocol fields:\n%s", bad.Head)
+	}
 	checkRecords(bad, "")
 	// Terminal input with visible escapes for ANSI, bidi and control bytes.
 	write := byOp(a, op("write"))
@@ -522,6 +526,15 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 	expect(edit, "Requested replacement 1 of 2", "  \ttimeout := 10 * time.Second\n- \t_ = timeout\n+ \tlog.Print(timeout)",
 		"Requested replacement 2 of 2", "+ // main runs.", "+ \tlog.Print(\"start\")", "no file line numbers are recorded")
 	checkRecords(edit, op("edit"))
+	// At a glance: the command, not the call's retry identity or waits.
+	for _, c := range []journeyCard{start, file, one, edit} {
+		if strings.Contains(c.Head, sid) || strings.Contains(c.Head, "op-forensic-") || strings.Contains(c.Head, "wait_ms") {
+			t.Errorf("%s card shows protocol fields at a glance:\n%s", c.Tool, c.Head)
+		}
+		if !strings.Contains(c.Text, sid) || !strings.Contains(c.Text, "op-forensic-") {
+			t.Errorf("%s card lost its protocol fields from Details:\n%s", c.Tool, c.Text)
+		}
+	}
 	// file_read: the request only; the file's contents are not in the audit.
 	var read journeyCard
 	for _, c := range a {

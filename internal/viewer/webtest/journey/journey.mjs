@@ -60,12 +60,14 @@ const requested = new Set(); // First pages requested, as the page's view.reques
 let autoSwitch = false;
 let deferred = false;
 
-// textOf flattens a view tree to its visible text, in order.
-function textOf(node) {
+// textOf flattens a view tree to its text, in order; with firstView, the
+// card's folded Details section is left out (what shows at a glance).
+function textOf(node, firstView = false) {
   if (node === null || node === undefined || node === false) { return ""; }
   if (typeof node === "string" || typeof node === "number") { return String(node); }
-  if (Array.isArray(node)) { return node.map(textOf).join(""); }
-  const inner = (node.children || []).map(textOf).join("");
+  if (Array.isArray(node)) { return node.map((n) => textOf(n, firstView)).join(""); }
+  if (firstView && node.attrs && /(^| )more( |$)/.test(node.attrs.class || "")) { return ""; }
+  const inner = (node.children || []).map((n) => textOf(n, firstView)).join("");
   return /^(div|p|li|pre|dt|dd|tr|h\d|summary|details|ol|ul|dl|table)$/.test(node.tag) ? inner + "\n" : inner;
 }
 
@@ -127,7 +129,7 @@ function renderCards(store, lane) {
     const tree = entry(e, ctx);
     const first = e.item || e.items[0];
     const its = e.item ? [e.item] : e.items;
-    return { key: entryKey(e), tool: first.action ? first.action.tool : first.kind, size: its.length, text: textOf(tree), actions: actionsOf(tree),
+    return { key: entryKey(e), tool: first.action ? first.action.tool : first.kind, size: its.length, text: textOf(tree), head: textOf(tree, true), actions: actionsOf(tree),
       occurrences: its.flatMap((it) => occurrencesOf(it)) };
   });
 }

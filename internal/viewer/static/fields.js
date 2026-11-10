@@ -7,7 +7,9 @@
 //
 // Deliberate cases: file_receive_result's operation_id is main (it names
 // the download being checked); terminal_start's max_runtime_ms is main,
-// and the card shows a supplied zero (no limit) in Details instead.
+// and the card shows a supplied zero (no limit) in Details instead;
+// expected_version is protocol, and its presence shows in the verb
+// (Create or Replace file).
 //
 // The block between the markers is strict JSON: a Go test in
 // internal/mcpserver compares it with the tools' input schemas, so every
@@ -56,6 +58,15 @@ export function fieldClass(tool, path) {
   if (f.main.includes(path)) { return "main"; }
   if (f.protocol.includes(path)) { return "protocol"; }
   return "";
+}
+
+// hasChildren reports whether the schema defines fields inside a path (an
+// object such as file, or array items such as edits[]); maps such as env
+// do not, so their keys are values, not fields.
+export function hasChildren(tool, path) {
+  if (!Object.hasOwn(FIELDS, tool)) { return false; }
+  const f = FIELDS[tool];
+  return [...f.main, ...f.protocol].some((p) => p.startsWith(path + ".") || p.startsWith(path + "[]"));
 }
 
 // knownTool reports whether a tool's fields are classified.
