@@ -71,7 +71,7 @@ test("lossy, legacy and rejected records are labelled honestly", () => {
   assert.match(textOf(card(it, ctx)), /Legacy record: the input may be incomplete/);
   ({ it, ctx } = item("file_write", {}));
   it.action.input = "not_recorded"; it.action.reason = "audit_record_too_large"; delete it.action.start;
-  assert.match(textOf(card(it, ctx)), /Input not recorded · tool not executed[\s\S]*audit_record_too_large/);
+  assert.match(textOf(card(it, ctx)), /Not run [\s\S]*the input was too large to record in the audit[\s\S]*Input not recorded · tool not executed/);
 });
 
 test("a large record offers loading it in full; hostile text stays inert", () => {
@@ -129,8 +129,8 @@ test("rejections with a start show their reason; finish diagnostics are shown", 
   it.action.reason = "schema_validation";
   ctx.records.set("ref-rej", { bytes: enc(JSON.stringify({ phase: "request_rejected", status: "rejected", reason: "schema_validation", error: "invalid tool arguments" }) + "\n") });
   const v = textOf(card(it, ctx));
-  assert.match(v, /rejected · not executed/);
-  assert.match(v, /Rejected, not executed\. Reason: schema_validation/);
+  assert.match(v, /^Read files Not run /);
+  assert.match(v, /the arguments did not match the tool's schema/);
   assert.match(v, /Recorded rejection[\s\S]*invalid tool arguments/);
   const f = item("file_search", { pattern: "x" });
   f.it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"] };
@@ -162,4 +162,66 @@ test("timeline entry keys are unique when polls of one target alternate with oth
     mk(4, "terminal_write", { session_id: "S" }), mk(5, "terminal_read", { session_id: "S" }), mk(6, "terminal_read", { session_id: "S" })];
   const keys = timeline(items, { records }).map(entryKey);
   assert.equal(new Set(keys).size, keys.length, keys.join());
+});
+
+test("a command's card shows the exit a later call saw, with when", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["make", "check"], env: {} });
+  it.action.status = "applied";
+  it.action.process = { server_id: "s", session_id: "sess-1" };
+  it.effect = { tool: "terminal_start", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 15 } };
+  it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"], time: "2026-11-10T10:00:01Z" };
+  ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "applied", process: { state: "running" } }) + "\n") });
+  let head = textOf(card(it, { ...ctx, processes: undefined }));
+  assert.match(head, /^Run command Started, running \(seen /, "only what the launch saw, with its time");
+  // A later read of the same process recorded its exit.
+  const read = { kind: "action", key: "a:s/r2", lane: "L", order: { live: true, rank: 2 },
+    action: { key: { server_id: "s", request_id: "r2" }, tool: "terminal_read", input: "recorded", state: "finished", status: "ok",
+      duration: { state: "measured", milliseconds: 2 }, process: { server_id: "s", session_id: "sess-1" },
+      finish: { primary: "ref-read", occurrences: ["ref-read"], time: "2026-11-10T10:05:00Z" } } };
+  ctx.records.set("ref-read", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", process: { state: "exited", exit: { code: 2 } } }) + "\n") });
+  const entries = timeline([it, read], ctx);
+  head = textOf(entry(entries[0], ctx));
+  assert.match(head, /^Run command Started, exited 2 \(seen /);
+  assert.match(textOf(entry(entries[1], ctx)), /^Read output Checked: exited 2 /);
+  assert.match(head, /started in 15 ms/);
+});
+
+test("results that matter are inline: version and size of a written file", () => {
+  const { it, ctx } = item("file_write", { path: "/a", content: "x", expected_version: "sha256:old" });
+  it.action.status = "applied";
+  it.effect = { tool: "file_write", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 4 },
+    finish: { primary: "ref-op", occurrences: ["ref-op"] } };
+  ctx.records.set("ref-op", { bytes: enc(JSON.stringify({ phase: "operation_finish", status: "applied",
+    receipt: { operation_id: "o", status: "applied", data: { path: "/a", version: "sha256:new", bytes: 1 } } }) + "\n") });
+  const v = textOf(card(it, ctx));
+  assert.match(v, /^Replace file Done /);
+  assert.match(v, /version sha256:new · 1 byte/);
+});
+
+test("a failed action shows no result values; an empty expected_version creates", () => {
+  const { it, ctx } = item("file_receive", { path: "/x", file: { download_url: "http://h/f", file_id: "f" } });
+  it.action.status = "running";
+  it.effect = { tool: "file_receive", state: "finished", status: "failed", duration: { state: "measured", milliseconds: 4 },
+    finish: { primary: "ref-op", occurrences: ["ref-op"] } };
+  ctx.records.set("ref-op", { bytes: enc(JSON.stringify({ phase: "operation_finish", status: "failed", error: "HTTP 404",
+    receipt: { operation_id: "o", status: "failed", error: "HTTP 404", data: { path: "/x", bytes: 0 } } }) + "\n") });
+  const v = textOf(card(it, ctx));
+  assert.match(v, /^Download file Failed /);
+  assert.match(v, /HTTP 404/);
+  assert.doesNotMatch(v, /Saved to|0 bytes/);
+  const w = item("file_write", { path: "/a", content: "x", expected_version: "" });
+  assert.match(textOf(card(w.it, w.ctx)), /^Create file /);
+});
+
+test("a command that exited non-zero is a warning, not a success; recorded statuses stay visible", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["false"], env: {} });
+  it.action.status = "applied";
+  it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"], time: "2026-11-10T10:00:01Z" };
+  it.effect = { tool: "terminal_start", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 3 } };
+  ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "applied", process: { state: "exited", exit: { code: 1 } } }) + "\n") });
+  const v = card(it, ctx);
+  const chip = find(v, "outcome-chip")[0];
+  assert.match(textOf(chip), /^Started, exited 1/);
+  assert.match(chip.attrs.class, /warn/);
+  assert.match(textOf(v), /Recorded status: request applied, action applied\./);
 });

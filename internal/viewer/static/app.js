@@ -6,7 +6,7 @@
 
 import { Client, checkSession, signIn, renewSession, signOut } from "./net.js";
 import { h, materialize } from "./view.js";
-import { entry, entryKey, timeline, text, localTime } from "./cards.js";
+import { entry, entryKey, timeline, text, localTime, processKey } from "./cards.js";
 import { attentionFor } from "./attention.js";
 import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
@@ -387,12 +387,14 @@ function recordSig(item, store) {
   }).join(",");
 }
 
-function entrySig(e) {
+function entrySig(e, ctx) {
   const items = e.item ? [e.item] : e.items;
   const store = source();
   // The view is part of the signature: live and archive entries never share an element.
   return (view.archive ? "a" + view.archive.id : "l") + "|" + JSON.stringify(items) + "|" + items.map((it) => recordSig(it, store)).join(";") + "|" +
-    items.map((it) => view.open.has(it.key + ":originals")).join("") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS;
+    items.map((it) => view.open.has(it.key + ":originals")).join("") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
+    // A command's card shows what later calls saw of its process.
+    JSON.stringify(items.map((it) => (it.action && it.action.tool === "terminal_start" && ctx.processes && ctx.processes.get(processKey(it))) || null));
 }
 
 function renderTimeline() {
@@ -453,7 +455,7 @@ function renderTimeline() {
   const seen = new Set();
   for (const e of timeline(items, ctx)) {
     const key = entryKey(e);
-    const sig = entrySig(e);
+    const sig = entrySig(e, ctx);
     let el = current.get(key);
     if (!el || view.entries.get(key) !== sig) {
       if (el) { view.observer.unobserve(el); view.visible.delete(el); }

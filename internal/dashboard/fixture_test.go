@@ -160,9 +160,31 @@ func (f *fixture) chat(chat, tool string, args map[string]any, finished bool) st
 	}
 	if finished {
 		if op != "" {
-			f.write(audit.Event{RequestID: id, OperationID: op, Tool: tool, Phase: "operation_finish", Status: "ok", DurationMS: 12})
+			// As the server records them: the receipt's status, on both.
+			receipt := map[string]any{"operation_id": op, "status": "applied"}
+			switch tool {
+			case "file_write", "file_edit":
+				receipt["data"] = map[string]any{"path": args["path"], "version": "sha256:" + strings.Repeat("ab", 32), "bytes": 42}
+			case "terminal_start":
+				receipt["data"] = map[string]any{"session_id": "sess-" + id}
+			}
+			f.write(audit.Event{RequestID: id, OperationID: op, Tool: tool, Phase: "operation_finish", Status: "applied", DurationMS: 12, Receipt: receipt})
 		}
-		f.write(audit.Event{RequestID: id, OperationID: op, Tool: tool, Phase: "request_finish", Status: "ok", DurationMS: 340})
+		status := "ok"
+		switch {
+		case tool == "file_receive":
+			status = "running" // A download's request returns while it runs.
+		case tool == "file_receive_result":
+			status = "completed"
+		case op != "":
+			status = "applied"
+		}
+		finish := audit.Event{RequestID: id, OperationID: op, Tool: tool, Phase: "request_finish", Status: status, DurationMS: 340}
+		if tool == "terminal_start" { // A launch: the process was running when the call returned.
+			finish.SessionID = "sess-" + id
+			finish.Process = map[string]any{"state": "running", "output_done": false, "closed": false, "return_reason": "output"}
+		}
+		f.write(finish)
 	}
 	return id
 }
@@ -194,7 +216,7 @@ func (f *fixture) history() {
 	replay := fmt.Sprintf("req-%04d", f.n)
 	f.write(audit.Event{RequestID: replay, Tool: "file_write", Phase: "request_start", OperationID: written,
 		Args: map[string]any{"operation_id": written, "path": "README.md", "content": "replayed"}, CallMeta: meta("alpha")})
-	f.write(audit.Event{RequestID: replay, Tool: "file_write", Phase: "request_finish", OperationID: written, Status: "ok", Replayed: true})
+	f.write(audit.Event{RequestID: replay, Tool: "file_write", Phase: "request_finish", OperationID: written, Status: "applied", Replayed: true})
 	// A large record (about 3 MiB), deferred in pages.
 	f.chat("beta", "file_write", map[string]any{"path": "big.txt", "content": strings.Repeat("0123456789abcdef\n", 3<<20/17)}, true)
 }
@@ -227,12 +249,12 @@ func (f *fixture) live(ctx context.Context, issue func()) {
 				// The request answers at once; the download (its effect) runs on.
 				pending = f.chat(chat, "file_receive", map[string]any{"server_id": f.server, "file": map[string]any{"download_url": "http://127.0.0.1:9/slow.bin"}, "path": "slow.bin"}, false)
 				pendingOp = f.lastOp
-				f.write(audit.Event{RequestID: pending, OperationID: pendingOp, Tool: "file_receive", Phase: "request_finish", Status: "ok", DurationMS: 2000})
+				f.write(audit.Event{RequestID: pending, OperationID: pendingOp, Tool: "file_receive", Phase: "request_finish", Status: "running", DurationMS: 2000})
 			case 3:
 				f.chat(chat, "file_edit", map[string]any{"path": "live.go", "edits": []map[string]string{{"old_text": fmt.Sprint("v", i-1), "new_text": fmt.Sprint("v", i)}}}, true)
 			case 4:
 				if pending != "" {
-					f.write(audit.Event{RequestID: pending, OperationID: pendingOp, Tool: "file_receive", Phase: "operation_finish", Status: "ok", DurationMS: 9000})
+					f.write(audit.Event{RequestID: pending, OperationID: pendingOp, Tool: "file_receive", Phase: "operation_finish", Status: "applied", DurationMS: 9000})
 					pending = ""
 				}
 			case 5:

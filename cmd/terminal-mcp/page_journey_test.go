@@ -504,8 +504,8 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 
 	// Schema-rejected input stays visible field by field and never ran.
 	bad := byOp(a, op("bad-argv"))
-	expect(bad, "rejected", "Supplied fields\nserver_id", "argv\nls -la\n", "schema_validation")
-	reject(bad, "effect")
+	expect(bad, "Run command Not run", "the arguments did not match the tool's schema", "Supplied fields\nserver_id", "argv\nls -la\n", "schema_validation")
+	reject(bad, "The action took", "Started")
 	checkRecords(bad, "")
 	// Terminal input with visible escapes for ANSI, bidi and control bytes.
 	write := byOp(a, op("write"))
@@ -513,7 +513,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 	checkRecords(write, "")
 	// file_write content in full; every requested edit as a red/green pair.
 	file := byOp(a, op("file"))
-	expect(file, "File "+mainGo, original, "effect applied")
+	expect(file, "Create file Done", "File "+mainGo, original, "The action took")
 	checkRecords(file, op("file"))
 	one := byOp(a, op("edit1"))
 	expect(one, "Requested replacement 1 of 1", "- 5 * time.Second\n+ 10 * time.Second")
@@ -550,8 +550,8 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		t.Fatalf("chat-b cards: %+v", b)
 	}
 	safe(b)
-	expect(b[0], "replay of operation "+op("file")+" (no second effect)", "File "+mainGo, "openai/session\nchat-b")
-	reject(b[0], "effect applied", "openai/session\nchat-a")
+	expect(b[0], "Repeat of an earlier call, not run again", "of operation "+op("file"), "the original was done", "File "+mainGo, "openai/session\nchat-b")
+	reject(b[0], "The action took", "openai/session\nchat-a")
 	if requestOf(b[0]) == requestOf(file) {
 		t.Fatal("the replay card shows the original request")
 	}
@@ -580,7 +580,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 	// The oversized input: rejected before any effect, saying so and why,
 	// in the chat that sent it (the rejection keeps the call metadata).
 	rejected := byOp(c, "op-huge")
-	expect(rejected, "Input not recorded · tool not executed", "audit_record_too_large", "audit event exceeds maximum file size")
+	expect(rejected, "Not run", "the input was too large to record in the audit", "Input not recorded · tool not executed", "audit event exceeds maximum file size")
 	if hasAction(rejected, "load-record") {
 		t.Error("an unrecorded input offers a record to load")
 	}

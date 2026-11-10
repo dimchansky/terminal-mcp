@@ -9,6 +9,7 @@ test("every recorded status and outcome maps to one plain result", () => {
   const rows = [
     // [what, item, facts, kind, label]
     ["rejected", { action: act("file_write", { rejected: { time: "t" }, reason: "audit_record_too_large", status: "rejected" }) }, {}, "not_run", "Not run"],
+    ["input not recorded", { action: act("file_write", { input: "not_recorded", reason: "audit_record_too_large", status: "" }) }, {}, "not_run", "Not run"],
     ["schema rejection", { action: act("terminal_start", { status: "rejected", reason: "schema_validation" }) }, {}, "not_run", "Not run"],
     ["replay of an applied write", { action: act("file_write", { replayed: true, status: "applied" }) }, {}, "repeat", "Repeat of an earlier call, not run again"],
     ["write applied", { action: act("file_write", { status: "applied" }), effect: eff() }, {}, "done", "Done"],
@@ -112,4 +113,13 @@ test("one header duration, the breakdown in words", () => {
   assert.equal(headDuration({ action: act("terminal_list", { duration: { state: "sub_millisecond" } }) }).text, "under 1 ms");
   assert.equal(headDuration({ action: act("file_write"), effect: eff({ duration: { state: "unknown" } }) }).text, "49 ms", "an unknown effect time falls back to the request");
   assert.equal(durationText({ state: "unknown" }), "");
+});
+
+test("an unknown status is not guessed at; a cut search keeps its count", () => {
+  const o = outcome({ action: act("terminal_list", { status: "brand_new" }) });
+  assert.deepEqual([o.kind, o.label, o.detail], ["unknown", "Outcome unknown", "status brand_new"]);
+  assert.equal(outcome({ action: act("file_search", { outcome: "partial" }) }, { truncated: true, reason: "limit", search_matches: 12 }).detail,
+    "12 matches, results cut: the result limit was reached");
+  const err = outcome({ action: act("file_write", { status: "error" }), effect: eff() }, { error: "connection reset" });
+  assert.deepEqual([err.label, err.detail], ["Done", "the request reported: connection reset"]);
 });

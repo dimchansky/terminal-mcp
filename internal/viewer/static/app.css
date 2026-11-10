@@ -40,6 +40,17 @@ body { margin: 0; }
 .badge.state-open, .badge.effect-in_flight { color: #1a6fd1; border-color: #1a6fd1; }
 .badge.status-error, .badge.status-rejected { color: #b00020; border-color: #b00020; }
 .dur, .outcome { color: var(--muted); }
+.verb { font-weight: 600; }
+.outcome-chip { border-radius: 4px; padding: 0 0.4rem; font-size: 0.8rem; border: 1px solid currentColor; }
+.outcome-chip.ok { color: #2e9e55; }
+.outcome-chip.bad { color: #b00020; }
+.outcome-chip.warn { color: var(--warn); }
+.outcome-chip.live { color: #1a6fd1; }
+.outcome-chip.neutral { color: var(--muted); }
+.outcome-detail { margin: 0.2rem 0; white-space: pre-wrap; }
+.outcome-detail.bad { color: #b00020; }
+.essentials { margin: 0.2rem 0; color: var(--muted); }
+.timing { margin: 0.1rem 0; }
 .marker { text-align: center; color: var(--muted); font-size: 0.8rem; border-top: 1px dashed var(--line); margin: 0.75rem 0; padding-top: 0.25rem; }
 pre { margin: 0.25rem 0; padding: 0.5rem; background: #8881; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 pre.inline { display: inline-block; padding: 0 0.3rem; margin: 0; }

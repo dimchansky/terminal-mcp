@@ -10,6 +10,7 @@ import { commandLine, interpreterScript } from "./shell.js";
 import { lineDiff } from "./diff.js";
 import { isPolling } from "./classes.js";
 import { refOccurrence } from "./model.js";
+import { outcome, verb, headDuration, timing } from "./outcome.js";
 
 // parsed caches parsed records by their bytes (records are immutable).
 const parsed = new WeakMap();
@@ -193,11 +194,8 @@ function controls(id, rs) {
 function inputView(item, ctx) {
   const a = item.action;
   if (a.input === "not_recorded") {
-    return h("div", { class: "not-recorded" }, "Input not recorded · tool not executed",
-      a.reason ? h("div", {}, "Reason: ", text(a.reason)) : null);
+    return h("div", { class: "not-recorded" }, "Input not recorded · tool not executed");
   }
-  // Other reasons (for example why a search stopped) are in the recorded result.
-  const reason = a.reason && a.rejected ? h("div", { class: "warning" }, "Rejected, not executed. Reason: ", text(a.reason)) : null;
   if (!a.start) { return h("div", { class: "note" }, "The start of this call is outside the loaded history."); }
   const rs = recordState(ctx, a.start.primary);
   if (rs.state !== "loaded") {
@@ -207,12 +205,11 @@ function inputView(item, ctx) {
   const p = rs.parsed;
   const legacy = a.input === "legacy" || a.legacy ? h("div", { class: "warning" }, "Legacy record: the input may be incomplete.") : null;
   if (p.issues.length > 0) {
-    return h("div", { class: "lossy" }, legacy, reason, h("div", { class: "warning" }, "Shown as recorded text: ", text(p.issues.join("; ")), "."),
+    return h("div", { class: "lossy" }, legacy, h("div", { class: "warning" }, "Shown as recorded text: ", text(p.issues.join("; ")), "."),
       h("pre", { class: "raw" }, h("code", {}, text(p.text, true, !p.validUTF8))));
   }
   const args = field(p.value, "args");
-  const out = [reason];
-  out.push(legacy);
+  const out = [legacy];
   if (Object.hasOwn(NOT_RECORDED_OUTPUT, a.tool)) { out.push(h("div", { class: "note" }, NOT_RECORDED_OUTPUT[a.tool])); }
   const render = Object.hasOwn(INPUT, a.tool) ? INPUT[a.tool] : null;
   let used = [];
@@ -349,37 +346,148 @@ function diffLine(s) {
 // stateBadge names a request or effect state.
 function badge(cls, label) { return h("span", { class: "badge " + cls }, label); }
 
-function actionHeader(item) {
+// plain turns a parsed JSON node into a JS value (numbers that are not
+// exact stay text); only for reading recorded facts, never for display.
+function plain(node) {
+  if (!node) { return undefined; }
+  switch (node.kind) {
+    case "object": { const o = Object.create(null); for (const e of node.entries) { if (!Object.hasOwn(o, e.key)) { o[e.key] = plain(e.value); } } return o; }
+    case "array": return node.items.map(plain);
+    case "string": return node.value;
+    case "number": return node.unsafe ? node.text : node.value;
+    case "bool": return node.value;
+    default: return null;
+  }
+}
+
+// recorded answers the plain value of a loaded, lossless record, or null.
+function recorded(ctx, phase) {
+  if (!phase) { return null; }
+  const rs = recordState(ctx, phase.primary);
+  return rs.state === "loaded" && rs.parsed.value && !rs.parsed.issues.length ? plain(rs.parsed.value) : null;
+}
+
+// processKey names a terminal process across the calls that touch it.
+export function processKey(item) {
+  const p = item.action && item.action.process;
+  return p ? p.server_id + "\u0000" + p.session_id : "";
+}
+
+// processSeen collects, per process, the newest observation recorded by
+// any loaded call of the timeline: {state, exit, time}. A command's card
+// shows it, so its signature depends on it (see app.js entrySig).
+export function processSeen(items, ctx) {
+  const out = new Map();
+  for (const item of items) {
+    const key = processKey(item);
+    if (!key || !item.action.finish) { continue; }
+    const fin = recorded(ctx, item.action.finish);
+    if (!fin || !fin.process || typeof fin.process !== "object") { continue; }
+    const time = item.action.finish.time || "";
+    const prev = out.get(key);
+    if (!prev || time >= prev.time) { out.set(key, { state: fin.process.state, exit: fin.process.exit, time }); }
+  }
+  return out;
+}
+
+// facts gathers what the outcome model reads from the records.
+function factsOf(item, ctx) {
+  const a = item.action;
+  const fin = a ? recorded(ctx, a.finish) : null;
+  const op = item.effect ? recorded(ctx, item.effect.finish) : null;
+  const receipt = op && op.receipt && typeof op.receipt === "object" ? op.receipt : null;
+  // Result values only of an applied action: a failed receipt may name an
+  // intended path or version that does not exist.
+  const applied = receipt && (receipt.status === "applied" || receipt.status === "partial");
+  const data = applied && receipt.data && typeof receipt.data === "object" ? receipt.data : null;
+  const f = {};
+  if (fin) {
+    for (const k of ["error", "process", "files_total", "files_failed", "truncated", "search_matches", "reason"]) {
+      if (fin[k] !== undefined) { f[k] = fin[k]; }
+    }
+  }
+  if (!f.error && op && typeof op.error === "string") { f.error = op.error; }
+  if (data && typeof data.bytes_written === "number") { f.bytes_written = data.bytes_written; }
+  if (a && a.tool === "terminal_start") {
+    const seen = ctx.processes && ctx.processes.get(processKey(item));
+    if (seen) {
+      f.process = { state: seen.state, exit: seen.exit };
+      f.seen = localTimeText(seen.time);
+    } else if (f.process && a.finish) {
+      f.seen = localTimeText(a.finish.time);
+    }
+  }
+  f.data = data;
+  return f;
+}
+
+function localTimeText(t) {
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
+}
+
+// essentials shows the few result values that matter, inline.
+function essentials(item, f) {
+  const a = item.action;
+  const d = f.data;
+  const parts = [];
+  if (d && typeof d.path === "string" && a && a.tool === "file_receive") { parts.push(["Saved to ", h("code", {}, text(d.path))]); }
+  if (d && typeof d.version === "string") { parts.push(["version ", h("code", {}, text(d.version))]); }
+  if (d && typeof d.bytes === "number") { parts.push(d.bytes.toLocaleString("en-US") + (d.bytes === 1 ? " byte" : " bytes")); }
+  if (a && a.tool === "file_read" && typeof f.files_total === "number") {
+    parts.push(f.files_total + (f.files_total === 1 ? " file" : " files") + (f.files_failed ? ", " + f.files_failed + " failed" : "") + (f.truncated === true ? ", cut to the size limit" : ""));
+  }
+  return parts.length ? h("div", { class: "essentials" }, parts.flatMap((x, i) => (i ? [" · ", x] : [x]))) : null;
+}
+
+const KIND_CLASS = { done: "ok", started: "ok", checked: "neutral", failed: "bad", not_run: "bad", partial: "warn", stopped: "warn", unknown: "warn", running: "live", repeat: "neutral" };
+
+function actionHeader(item, ctx, f) {
   const a = item.action;
   const e = item.effect;
   const time = (a.start || a.rejected || a.finish || {}).time;
-  const parts = [h("strong", { class: "tool" }, text(a.tool || "unknown tool")), " ", localTime(time)];
-  parts.push(" ", a.rejected ? badge("status-rejected", "rejected · not executed")
-    : badge("state-" + a.state, a.state === "open" ? "running" : a.state === "unknown" ? "outcome unknown" : "finished"));
-  if (a.status) { parts.push(" ", badge("status-" + a.status, a.status)); }
-  if (a.outcome) { parts.push(" ", h("span", { class: "outcome" }, text(a.outcome))); }
-  if (a.finish) { parts.push(" ", h("span", { class: "dur", title: "MCP request time, including waiting and auditing" }, "request " + duration(a.duration))); }
-  if (e) {
-    parts.push(" ", badge("effect-" + e.state, e.state === "in_flight" ? "effect running" : e.state === "unknown" ? "effect outcome unknown" : "effect finished"));
-    if (e.status) { parts.push(" ", badge("status-" + e.status, "effect " + e.status)); }
-    if (e.finish) {
-      parts.push(" ", h("span", { class: "dur", title: a.tool === "terminal_start" ? "Process launch, not the program's runtime" : "Admitted mutation" },
-        (a.tool === "terminal_start" ? "launch " : "effect ") + duration(e.duration)));
-    }
-  }
+  const start = recorded(ctx, a.start);
+  const args = start && start.args && typeof start.args === "object" ? start.args : null;
+  const o = outcome(item, f);
+  const dur = headDuration(item, localTimeText);
+  // The server treats an empty expected_version as "create".
+  const replaces = !!args && typeof args.expected_version === "string" && args.expected_version !== "";
+  const parts = [h("strong", { class: "verb", title: a.tool || "" }, text(verb(a.tool, { inputRecorded: !!args && !a.legacy, hasExpectedVersion: replaces }))),
+    " ", h("span", { class: "outcome-chip " + chipClass(o) }, text(o.label)),
+    " ", localTime(time)];
+  if (dur.text) { parts.push(" ", h("span", { class: "dur", title: dur.title }, text(dur.text))); }
   if (a.replayed) {
-    parts.push(" ", h("span", { class: "badge replay" }, "replay of operation ", text(a.effect ? a.effect.effect.operation_id : "?"),
-      a.effect && !a.effect.loaded ? " (its effect is outside the loaded history)" : " (no second effect)"));
+    parts.push(" ", h("span", { class: "badge replay" }, "of operation ", text(a.effect ? a.effect.effect.operation_id : "?"),
+      a.effect && !a.effect.loaded ? " (its effect is outside the loaded history)" : ""));
   }
-  if (a.process_creator) { parts.push(" ", h("span", { class: "note" }, "process started by request ", text(a.process_creator.request_id))); }
+  const creator = a.process_creator;
+  if (creator && !(creator.server_id === a.key.server_id && creator.request_id === a.key.request_id)) {
+    parts.push(" ", h("span", { class: "note" }, "process started by request ", text(creator.request_id)));
+  }
   if (a.possibly_unrecorded || (e && e.possibly_unrecorded)) { parts.push(" ", badge("warn", "finish may be unrecorded (audit was degraded)")); }
   const phases = [a.start, a.finish, a.rejected, e && e.start, e && e.finish].filter(Boolean);
   if (phases.some((p) => p.conflict) || (e && e.origin_conflict)) { parts.push(" ", badge("warn", "Ambiguous: journal copies differ")); }
   if (phases.some((p) => p.more > 0)) { parts.push(" ", badge("warn", "more journal copies than shown")); }
   if (phases.some((p) => (p.occurrences || [p.primary]).some((id) => id.startsWith("p:")))) { parts.push(" ", badge("warn", "pending row identity")); }
   if (a.identity && a.identity.metadataInvalid) { parts.push(" ", badge("warn", "unusable client metadata")); }
-  if (a.effect && a.effect.kind === "observe") { parts.push(" ", h("span", { class: "note" }, "observes operation ", text(a.effect.effect.operation_id))); }
-  return h("div", { class: "card-head" }, parts);
+  if (a.effect && a.effect.kind === "observe") { parts.push(" ", h("span", { class: "note" }, "checks operation ", text(a.effect.effect.operation_id))); }
+  const out = [h("div", { class: "card-head" }, parts)];
+  // The outcome's detail: an error in full, counts, or why it did not run.
+  if (o.detail) { out.push(h("div", { class: o.kind === "failed" || o.kind === "not_run" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true))); }
+  const ess = essentials(item, f);
+  if (ess) { out.push(ess); }
+  // Timing in words, and the statuses as recorded.
+  const recordedStatus = [a.status ? "request " + a.status : "", a.outcome ? "outcome " + a.outcome : "", e && e.status ? "action " + e.status : ""].filter(Boolean).join(", ");
+  const t = [timing(item), recordedStatus ? "Recorded status: " + recordedStatus + "." : ""].filter(Boolean).join(" ");
+  if (t) { out.push(h("div", { class: "timing note" }, text(t))); }
+  return out;
+}
+
+// chipClass colours an outcome: a command that exited non-zero or by a
+// signal is a warning, not a success.
+function chipClass(o) {
+  if (o.warn) { return "warn"; }
+  return KIND_CLASS[o.kind] || "neutral";
 }
 
 // card renders one timeline item.
@@ -396,14 +504,16 @@ export function card(item, ctx) {
   }
   if (item.kind === "effect" && !item.action) {
     const e = item.effect;
+    const o = outcome(item, factsOf(item, c));
     return h("div", { class: "card effect-only", "data-key": item.key },
-      h("div", { class: "card-head" }, h("strong", { class: "tool" }, text(e.tool)), " ", localTime((e.start || e.finish || {}).time), " ",
-        badge("effect-" + e.state, e.state === "in_flight" ? "effect running" : e.state), e.status ? [" ", badge("status-" + e.status, e.status)] : null,
+      h("div", { class: "card-head" }, h("strong", { class: "verb", title: e.tool || "" }, text(verb(e.tool))), " ",
+        h("span", { class: "outcome-chip " + chipClass(o) }, text(o.label)), " ", localTime((e.start || e.finish || {}).time),
         " operation ", text(e.key.operation_id)),
+      o.detail ? h("div", { class: o.kind === "failed" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true)) : null,
       h("div", { class: "note" }, "The request that admitted this effect is outside the loaded history."),
       receipt(item, c), originals(item, c));
   }
-  return h("div", { class: "card", "data-key": item.key }, actionHeader(item), inputView(item, c), callMeta(item, c),
+  return h("div", { class: "card", "data-key": item.key }, actionHeader(item, c, factsOf(item, c)), inputView(item, c), callMeta(item, c),
     receipt(item, c), originals(item, c));
 }
 
@@ -432,6 +542,7 @@ export function pollTarget(item, ctx) {
 // timeline groups a lane's items (oldest first): consecutive polls of the
 // same target become one group.
 export function timeline(items, ctx) {
+  ctx.processes = processSeen(items, ctx);
   const out = [];
   for (const item of items) {
     const target = pollTarget(item, ctx);

@@ -86,7 +86,7 @@ export function outcome(item, facts = {}) {
   const err = typeof facts.error === "string" && facts.error ? facts.error : "";
 
   // 1. Not run.
-  if (a.rejected || status === "rejected") { return { kind: "not_run", label: "Not run", detail: reasonText(a.reason) || err }; }
+  if (a.rejected || status === "rejected" || a.input === "not_recorded") { return { kind: "not_run", label: "Not run", detail: reasonText(a.reason) || err }; }
   // 2. A replay returns an earlier result and never runs again.
   if (a.replayed) {
     const was = { applied: "the original was done", completed: "the original download completed", failed: "the original failed",
@@ -102,9 +102,11 @@ export function outcome(item, facts = {}) {
     const suffix = e.possibly_unrecorded ? UNRECORDED : "";
     if (e.state === "finished") {
       const stopped = status === "canceled" || status === "deadline" ? " (the model stopped waiting)" : "";
-      if (a.tool === "terminal_start" && e.status === "applied") { return started(facts, stopped + suffix); }
+      if (a.tool === "terminal_start" && (e.status === "applied" || e.status === "ok")) { return started(facts, stopped + suffix); }
       switch (e.status) {
-        case "applied": return { kind: "done", label: "Done" + stopped + suffix, detail: "" };
+        case "applied": case "completed": case "ok":
+          // A request error with an applied effect: the effect happened.
+          return { kind: "done", label: "Done" + stopped + suffix, detail: status === "error" && err ? "the request reported: " + err : "" };
         case "failed": return { kind: "failed", label: "Failed" + suffix, detail: err };
         case "partial": return { kind: "partial", label: "Partly done" + suffix, detail: partialDetail(a, facts) };
         default: return { kind: "unknown", label: "Outcome unknown" + suffix, detail: "" };
@@ -119,7 +121,8 @@ export function outcome(item, facts = {}) {
   }
   // 5. Partly done.
   if (a.tool === "file_search" && (a.outcome === "partial" || facts.truncated === true)) {
-    return { kind: "done", label: "Done", detail: "results cut" + (facts.reason ? ": " + reasonText(facts.reason) : "") };
+    const count = typeof facts.search_matches === "number" ? plural(facts.search_matches, "match", "matches") + ", " : "";
+    return { kind: "done", label: "Done", detail: count + "results cut" + (facts.reason ? ": " + reasonText(facts.reason) : "") };
   }
   if (status === "partial" || a.outcome === "partial") { return { kind: "partial", label: "Partly done", detail: partialDetail(a, facts) }; }
   // 6. Running. A finished call that saw a running download, without its
@@ -138,7 +141,11 @@ export function outcome(item, facts = {}) {
   if (a.state === "unknown" || status === "unknown" || a.outcome === "unknown" || a.possibly_unrecorded) {
     return { kind: "unknown", label: "Outcome unknown", detail: "" };
   }
-  // 8. Done.
+  // 8. Done, for the statuses that mean it; any other recorded status is
+  // not guessed at.
+  if (status && !["ok", "applied", "completed"].includes(status)) {
+    return { kind: "unknown", label: "Outcome unknown", detail: "status " + status };
+  }
   return { kind: "done", label: "Done", detail: a.tool === "file_search" && typeof facts.search_matches === "number" ? plural(facts.search_matches, "match", "matches") : "" };
 }
 
@@ -146,8 +153,10 @@ export function outcome(item, facts = {}) {
 // never a live "still running".
 function started(facts, suffix) {
   const seen = facts.seen ? " (seen " + facts.seen + ")" : "";
-  const exit = exitText(facts.exit || (facts.process && facts.process.exit));
-  if (exit) { return { kind: "started", label: "Started, " + exit + seen + suffix, detail: "" }; }
+  const ex = facts.exit || (facts.process && facts.process.exit);
+  const exit = exitText(ex);
+  // warn: the program ended other than with exit code 0.
+  if (exit) { return { kind: "started", label: "Started, " + exit + seen + suffix, detail: "", warn: !(ex && ex.code === 0) && exit !== "exited" }; }
   const state = facts.process && typeof facts.process.state === "string" ? facts.process.state : "";
   if (state === "running" && seen) { return { kind: "started", label: "Started, running" + seen + suffix, detail: "" }; }
   if (state === "exited") { return { kind: "started", label: "Started, exited" + seen + suffix, detail: "" }; }
