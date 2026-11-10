@@ -97,6 +97,7 @@ export class Client {
     this.nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
     this.channel = null;
     this.keep = () => false; // The page says which records are in use.
+    this.archiveKeep = () => false; // The same for the archive window.
     this.held = new Set(); // Window IDs this tab has held (for duplicate-tab probes).
   }
 
@@ -553,7 +554,52 @@ export class Client {
     this.remember(ARCHIVE_KEY, this.archiveId);
     const store = new Store();
     store.snapshot(r.data);
+    this.loadArchiveRecords(store);
     return { ok: true, id: this.archiveId, store, envelope: r.data };
+  }
+
+  // archivePage loads a lane page or an earlier page of the archive window
+  // into its store, and loads the records it needs.
+  async archivePage(store, path, laneId, before) {
+    const id = this.archiveId;
+    const body = before ? { window: id, lane_id: laneId, before } : { window: id, lane_id: laneId };
+    const r = await this.page(path, body);
+    if (r.ok && id === this.archiveId) {
+      store.apply(r.data, { history: true });
+      this.loadArchiveRecords(store);
+      this.cb.onChange([], { archive: true });
+    }
+    return r;
+  }
+
+  // loadArchiveRecords loads the archive store's records like the live ones.
+  loadArchiveRecords(store) {
+    for (const occ of store.pendingRecords()) { this.loadArchiveRecord(store, occ); }
+  }
+
+  // loadArchiveRecord loads one record of the archive window into its store.
+  loadArchiveRecord(store, occ) {
+    const id = this.archiveId;
+    const tag = "archive\u0000" + occ;
+    if (this.loading.has(tag)) { return; }
+    this.loading.add(tag);
+    this.records.run(async () => {
+      for (let attempt = 0; attempt < 5 && !this.stopped && id === this.archiveId; attempt++) {
+        const r = await this.request("record", { window: id, occurrence_id: occ }, { bytes: true });
+        if (id !== this.archiveId || this.stopped) { return; }
+        if (r.ok) {
+          store.loaded(occ, r.data);
+          store.release(this.archiveKeep);
+        } else if (r.status === 429) {
+          await this.sleep((r.retryAfter || 1) * 1000);
+          continue;
+        } else {
+          store.putRecord({ occurrence: occ, unavailable: true, retryable: r.status === 0 || r.status >= 500, problem: r.code });
+        }
+        this.cb.onChange([], { archive: true });
+        return;
+      }
+    }).finally(() => this.loading.delete(tag));
   }
 
   async closeArchive() {

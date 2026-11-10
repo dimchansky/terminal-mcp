@@ -6,7 +6,8 @@
 
 import { Client } from "./net.js";
 import { h, materialize } from "./view.js";
-import { entry, entryKey, timeline, text, localTime } from "./cards.js";
+import { entry, entryKey, timeline, text, localTime, pollTarget } from "./cards.js";
+import { Attention } from "./attention.js";
 import { reconcile } from "./reconcile.js";
 import { icon, conversationKey, shortLabels } from "./identicon.js";
 import { laneIdentity, orderCompare } from "./model.js";
@@ -165,6 +166,15 @@ const view = {
   loadError: "",
   renewNote: "",
   controls: null, // The history controls element, updated in place.
+  attention: null,
+  autoSwitch: loadPreference(),
+  aliases: loadAliases(), // SHA-256 hex of a conversation key → owner alias.
+  archive: null, // {store, id} of an open archive window.
+  observer: null, // IntersectionObserver marking entries seen.
+  visible: new Set(), // Entry elements in view.
+  itemsOf: new WeakMap(), // Entry element → its items.
+  follow: true, // Following the live tail while the owner is at the bottom.
+  programmatic: null, // scrollTop set by the page itself (its scroll event is ignored).
   scheduled: false,
 };
 
@@ -182,21 +192,84 @@ function resetView() {
   view.laneOrder = [];
   view.loading = view.loadError = view.renewNote = "";
   view.controls = null;
+  view.archive = null;
+  view.visible.clear();
+  if (view.observer) { view.observer.disconnect(); view.observer = null; }
   for (const id of ["lane-list", "timeline", "lane-title", "connection", "health", "notice"]) { $(id).replaceChildren(); }
 }
 
+const AUTO_KEY = "terminal-mcp-dashboard-auto-switch";
+const ALIAS_KEY = "terminal-mcp-dashboard-aliases";
+
+// Two non-secret per-browser preferences are kept: auto-switch, and owner
+// aliases keyed by a SHA-256 of the conversation key (never the ID).
+function loadPreference() { try { return localStorage.getItem(AUTO_KEY) === "1"; } catch (e) { return false; } }
+function loadAliases() { try { return new Map(Object.entries(JSON.parse(localStorage.getItem(ALIAS_KEY) || "{}"))); } catch (e) { return new Map(); } }
+function saveAliases() { try { localStorage.setItem(ALIAS_KEY, JSON.stringify(Object.fromEntries(view.aliases))); } catch (e) { /* kept for this page only */ } }
+
+function hex(digest) { return [...digest].map((b) => b.toString(16).padStart(2, "0")).join(""); }
+
+function aliasOf(lane) {
+  const d = lane.kind === "conversation" ? view.digests.get(laneIdentity(lane)) : null;
+  return d ? view.aliases.get(hex(d)) || "" : "";
+}
+
+// onChange feeds attention and follows an automatic switch.
+function attentionContext() {
+  return { autoSwitch: view.autoSwitch, current: view.selected, deferred: deferred(),
+    laneKind: (identity) => (client.store.laneByIdentity(identity) || {}).kind };
+}
+
+function onChange(changes, info) {
+  if (info.archive) { schedule(); return; }
+  // Unread is keyed by lane identity: a new snapshot (or a record that
+  // reveals a poll target) only moves entries to their current lane.
+  if (info.snapshot || info.record) { view.attention.refresh(client.store.items); }
+  const target = view.attention.observe(changes, info, attentionContext());
+  if (target) { selectLane(target, true); }
+  schedule();
+}
+
+// tryResume performs a deferred switch once the owner stops reading.
+function tryResume() {
+  if (!view.attention || !view.attention.pending) { return; }
+  const target = view.attention.resume(attentionContext());
+  view.renderNonce++;
+  if (target) { selectLane(target, true); } else { schedule(); }
+}
+
+// deferred: the owner is reading, so auto-switch waits.
+function deferred() {
+  const box = $("timeline");
+  const sel = window.getSelection();
+  const selecting = sel && !sel.isCollapsed && box.contains(sel.anchorNode);
+  const reading = box.querySelector("details[open], .group-head[aria-expanded=\"true\"]") !== null;
+  const active = document.activeElement;
+  const working = active !== box && box.contains(active); // A focused card control, not the box itself.
+  return !view.follow || selecting || reading || working || !!view.archive;
+}
+
 function startView() {
+  view.attention = new Attention({
+    laneOf: (item) => laneIdentity(client.store.lanes.get(item.lane)) || item.lane,
+    unitOf: (item) => { const t = pollTarget(item, { records: client.store.records }); return t ? "poll\u0000" + t : item.key; },
+  });
+  view.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      // Seen means really shown: half of the card, or half of the view for a tall one.
+      const shown = e.intersectionRatio >= 0.5 || (e.rootBounds && e.intersectionRect.height >= e.rootBounds.height / 2);
+      if (shown) { view.visible.add(e.target); } else { view.visible.delete(e.target); }
+    }
+    markSeen();
+  }, { root: $("timeline"), threshold: [0, 0.25, 0.5, 0.75, 1] });
   client = new Client(current, {
-    onChange: () => schedule(),
+    onChange,
     onStatus: () => schedule(),
     onSessionEnded: (code) => failed(code),
   }, { storage: safeStorage() });
-  let kept = null;
-  let keptAt = -1;
-  client.keep = (id) => {
-    if (keptAt !== client.store.version) { kept = keptRecords(); keptAt = client.store.version; }
-    return kept.has(id);
-  };
+  // Each store keeps the records of its own selected lane.
+  client.keep = keeper(() => client.store, () => view.selected);
+  client.archiveKeep = keeper(() => view.archive && view.archive.store, () => view.archive && view.archive.selected);
   client.start();
 }
 
@@ -210,8 +283,11 @@ function schedule() {
   requestAnimationFrame(() => { view.scheduled = false; render(); });
 }
 
+// source is the store on screen: the archive window's while it is open.
+function source() { return view.archive ? view.archive.store : client.store; }
+
 function lanesInOrder() {
-  const lanes = [...client.store.lanes.values()];
+  const lanes = [...source().lanes.values()];
   if (view.pointerInLanes && view.laneOrder.length) {
     // Never reorder under the pointer: keep the order last shown.
     const at = new Map(view.laneOrder.map((id, i) => [id, i]));
@@ -224,19 +300,49 @@ function lanesInOrder() {
   return lanes;
 }
 
+// selectedLane is the lane shown; the archive view keeps its own selection,
+// so the live one is intact after going back.
 function selectedLane() {
   if (!client) { return null; }
   const lanes = lanesInOrder();
-  let lane = view.selected ? client.store.laneByIdentity(view.selected) : null;
-  if (!lane && lanes.length) { lane = lanes.find((l) => l.kind === "conversation") || lanes[0]; view.selected = laneIdentity(lane); }
+  const slot = view.archive || view;
+  let lane = slot.selected ? source().laneByIdentity(slot.selected) : null;
+  if (!lane && lanes.length) { lane = lanes.find((l) => l.kind === "conversation") || lanes[0]; slot.selected = laneIdentity(lane); }
   return lane;
 }
 
-function keptRecords() {
+// markSeen marks what is in view as seen, only while the tab is visible.
+function markSeen() {
+  if (document.visibilityState !== "visible" || !view.attention || view.archive) { return; }
+  let any = false;
+  for (const el of view.visible) {
+    if (!el.isConnected) { view.visible.delete(el); continue; }
+    const items = view.itemsOf.get(el);
+    if (items && view.attention.seen(items)) { any = true; }
+  }
+  if (any) { view.lanesSignature = ""; schedule(); }
+}
+
+// keeper answers whether a record of a store is in use: it belongs to the
+// lane selected in that store. The set is cached per version and selection.
+function keeper(storeOf, selectedOf) {
+  let kept = new Set();
+  let at = "";
+  return (id) => {
+    const store = storeOf();
+    if (!store) { return false; }
+    const sel = selectedOf() || "";
+    const now = store.version + "\u0000" + sel;
+    if (at !== now) { kept = keptRecords(store, sel); at = now; }
+    return kept.has(id);
+  };
+}
+
+function keptRecords(store, identity) {
   const out = new Set();
-  const lane = selectedLane();
+  const lane = identity ? store.laneByIdentity(identity) : null;
   if (!lane) { return out; }
-  for (const item of [...client.store.laneItems(lane.id), ...client.store.restartsIn(lane.id)]) {
+  for (const item of [...store.laneItems(lane.id), ...store.restartsIn(lane.id)]) {
     for (const id of occurrencesOf(item)) { out.add(id); }
   }
   return out;
@@ -284,7 +390,8 @@ function renderLanes() {
   const sel = selectedLane();
   // Replace the list only when it changed: replacing it under the pointer
   // would lose a click between press and release.
-  const signature = JSON.stringify([lanes, laneIdentity(sel), [...view.digests.values()].filter(Boolean).length]);
+  const counts = lanes.map((l) => view.attention.count(laneIdentity(l)));
+  const signature = JSON.stringify([lanes, laneIdentity(sel), [...view.digests.values()].filter(Boolean).length, counts, [...view.aliases]]);
   if (signature === view.lanesSignature) { return; }
   view.lanesSignature = signature;
   const conv = lanes.filter((l) => l.kind === "conversation");
@@ -300,12 +407,14 @@ function renderLanes() {
   const focused = document.activeElement && document.activeElement.parentElement === list ? document.activeElement.dataset.lane : null;
   const existing = new Map([...list.children].map((li) => [li.dataset.lane, li]));
   const fresh = lanes.map((l) => {
-    const name = l.kind === "conversation" ? laneName(l) : LANE_NAMES[l.kind] || l.kind;
+    const name = l.kind === "conversation" ? (aliasOf(l) || laneName(l)) : LANE_NAMES[l.kind] || l.kind;
+    const unread = view.attention.count(laneIdentity(l));
     const node = h("li", { role: "option", tabindex: l === sel ? 0 : -1, "aria-selected": l === sel, "data-lane": laneIdentity(l) },
     icon(l.kind === "conversation" ? digestFor(l) : null),
     h("span", { class: "lane-name" }, text(name)),
-    h("span", {}, l.kind === "conversation" ? h("span", { class: "claimed" }, "client-claimed") : null),
-    h("span", { class: "lane-sub" }, l.items + " item(s)", l.client_names && l.client_names.length ? [" · ", text(l.client_names.join(", "))] : null,
+    h("span", {}, unread ? h("span", { class: "unread" }, unread + " new") : null,
+      l.kind === "conversation" ? h("span", { class: "claimed" }, " client-claimed") : null),
+    h("span", { class: "lane-sub" }, aliasOf(l) ? [text(laneName(l)), " · "] : null, l.items + " item(s)", l.client_names && l.client_names.length ? [" · ", text(l.client_names.join(", "))] : null,
       l.last_time ? [" · ", localTime(l.last_time)] : null));
     const li = materialize(document, node);
     // Keep the element of a lane and change only its content, so a click
@@ -333,9 +442,9 @@ function coverageText(c) {
 }
 
 // recordSig summarizes the state of an item's records for its signature.
-function recordSig(item) {
+function recordSig(item, store) {
   return occurrencesOf(item).map((id) => {
-    const r = client.store.records.get(id);
+    const r = store.records.get(id);
     if (!r) { return "-"; }
     return r.bytes ? "b" + r.bytes.length : r.released ? "r" : r.unavailable ? "u" + r.retryable : r.deferred ? "d" + r.size : "?";
   }).join(",");
@@ -343,14 +452,18 @@ function recordSig(item) {
 
 function entrySig(e) {
   const items = e.item ? [e.item] : e.items;
-  return JSON.stringify(items) + "|" + items.map(recordSig).join(";") + "|" +
+  const store = source();
+  // The view is part of the signature: live and archive entries never share an element.
+  return (view.archive ? "a" + view.archive.id : "l") + "|" + JSON.stringify(items) + "|" + items.map((it) => recordSig(it, store)).join(";") + "|" +
     items.map((it) => view.open.has(it.key + ":originals")).join("") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS;
 }
 
 function renderTimeline() {
   const lane = selectedLane();
   const box = $("timeline");
-  const signature = [client.store.version, laneIdentity(lane), view.renderNonce, view.loading, view.loadError].join("|");
+  const src = view.archive ? view.archive.store : client.store;
+  const signature = [src.version, laneIdentity(lane), view.renderNonce, view.loading, view.loadError, !!view.archive,
+    lane ? aliasOf(lane) : "", lane ? !!view.digests.get(laneIdentity(lane)) : false, !!view.attention.pending].join("|");
   if (signature === view.timelineSignature) { return; }
   view.timelineSignature = signature;
   if (!lane) {
@@ -358,16 +471,23 @@ function renderTimeline() {
     box.replaceChildren();
     return;
   }
-  const store = client.store;
-  const items = [...store.laneItems(lane.id), ...store.restartsIn(lane.id)].sort((a, b) => orderCompare(a.order, b.order));
+  const store = src;
+  const shown = lane;
+  const items = [...store.laneItems(shown.id), ...store.restartsIn(shown.id)].sort((a, b) => orderCompare(a.order, b.order));
   const ctx = { records: store.records, serverOS: client.status.serverOS, expanded: view.expanded, open: view.open };
+  const alias = aliasOf(lane);
   $("lane-title").replaceChildren(materialize(document, h("div", {},
-    lane.kind === "conversation" ? [h("strong", {}, text(lane.conversationId || "")), " ", h("span", { class: "claimed" }, "client-claimed via ", text(lane.identitySource || ""))]
+    lane.kind === "conversation" ? [alias ? [h("strong", {}, text(alias)), " · "] : null, h("strong", {}, text(lane.conversationId || "")), " ",
+      h("span", { class: "claimed" }, "client-claimed via ", text(lane.identitySource || "")), " ",
+      view.digests.get(laneIdentity(lane)) ? h("button", { type: "button", "data-action": "rename" }, alias ? "Rename or remove alias" : "Set alias") : null]
       : h("strong", {}, LANE_NAMES[lane.kind] || lane.kind),
+    view.archive ? h("div", { class: "warning" }, "Older history (archive view, separate from the live view). ",
+      h("button", { type: "button", "data-action": "close-archive" }, "Back to the live view")) : null,
+    view.attention.pending ? h("div", { class: "note" }, "New activity in another chat; auto-switch waits while you read.") : null,
     h("div", { class: "note" }, "The audit records what was asked for and the outcome, not file contents read or process output."))));
 
   // Keep the reader's place: remember the first visible entry and its offset.
-  const atTail = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  const atTail = view.follow;
   let anchor = null;
   let anchorOffset = 0;
   for (const el of box.children) {
@@ -378,9 +498,11 @@ function renderTimeline() {
   const focusKey = !focused ? null : focused.dataset.action ? focused.dataset.action + "\u0000" + (focused.dataset.key || "")
     : focused.tagName === "SUMMARY" && focused.parentElement.dataset.key ? "summary\u0000" + focused.parentElement.dataset.key : null;
 
-  const controlsView = materialize(document, h("div", { class: "history-controls" },
+  const archiveButton = !view.archive && store.coverage && store.coverage.use_archive
+    ? h("button", { type: "button", "data-action": "open-archive" }, "Open older history") : null;
+  const controlsView = materialize(document, h("div", { class: "history-controls" }, archiveButton,
     h("button", { type: "button", "data-action": "earlier", disabled: !!view.loading }, view.loading === "earlier" ? "Loading…" : "Earlier in this conversation"),
-    lane.kind === "origin_not_loaded" ? h("button", { type: "button", "data-action": "origins", disabled: !!view.loading }, "Look for origins") : null,
+    lane.kind === "origin_not_loaded" && !view.archive ? h("button", { type: "button", "data-action": "origins", disabled: !!view.loading }, "Look for origins") : null,
     view.loadError ? h("span", { class: "warning" }, "Could not load: ", text(view.loadError)) : null,
     h("span", {}, coverageText(store.coverage))));
   if (!view.controls) { view.controls = controlsView; } else { view.controls.replaceChildren(...controlsView.childNodes); }
@@ -397,15 +519,21 @@ function renderTimeline() {
     const sig = entrySig(e);
     let el = current.get(key);
     if (!el || view.entries.get(key) !== sig) {
+      if (el) { view.observer.unobserve(el); view.visible.delete(el); }
       el = materialize(document, entry(e, ctx));
       el.dataset.entry = key;
       view.entries.set(key, sig);
+      view.observer.observe(el);
     }
+    view.itemsOf.set(el, e.item ? [e.item] : e.items);
     seen.add(key);
     nodes.push(el);
   }
   for (const key of [...view.entries.keys()]) { if (!seen.has(key)) { view.entries.delete(key); } }
+  const kept = new Set(nodes);
+  for (const el of current.values()) { if (!kept.has(el)) { view.observer.unobserve(el); view.visible.delete(el); } }
   reconcile(box, nodes);
+  markSeen();
 
   if (focused && document.activeElement !== focused && focusKey) {
     const again = [...box.querySelectorAll("[data-action], details[data-key] > summary")].find((x) =>
@@ -415,15 +543,15 @@ function renderTimeline() {
   const requested = lane.id + "\u0000" + store.epoch();
   if (store.laneItems(lane.id).length < lane.items && !view.requested.has(requested)) {
     view.requested.add(requested);
-    client.laneItems(lane.id);
+    if (view.archive) { client.archivePage(store, "lane-items", lane.id); } else { client.laneItems(lane.id); }
   }
   // Place the view in the same frame (reading layout forces it).
   if (atTail) {
-    box.scrollTop = box.scrollHeight;
+    toTail();
   } else if (anchor && anchor.isConnected) {
-    box.scrollTop += (anchor.getBoundingClientRect().top - box.getBoundingClientRect().top) - anchorOffset;
+    scrollTo(box.scrollTop + (anchor.getBoundingClientRect().top - box.getBoundingClientRect().top) - anchorOffset);
   }
-  $("jump").hidden = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  $("jump").hidden = view.follow;
 }
 
 function itemByKey(key) { return client.store.items.get(key); }
@@ -434,19 +562,19 @@ async function onTimelineClick(ev) {
   const key = button.dataset.key;
   const lane = selectedLane();
   switch (button.dataset.action) {
-    case "load-record": client.loadRecord(key); break;
+    case "load-record": if (view.archive) { client.loadArchiveRecord(view.archive.store, key); } else { client.loadRecord(key); } break;
     case "copy-record":
     case "copy-record-base64": {
-      const rec = client.store.records.get(key);
-      if (!rec || !rec.bytes) { client.loadRecord(key); break; } // Not in memory: load it first.
+      const rec = source().records.get(key);
+      if (!rec || !rec.bytes) { if (view.archive) { client.loadArchiveRecord(view.archive.store, key); } else { client.loadRecord(key); } break; }
       // decode keeps a byte order mark, so the copy is the exact record text.
       copy(button, button.dataset.action === "copy-record" ? decode(rec.bytes).text : base64(rec.bytes));
       break;
     }
     case "copy-command": {
-      const item = itemByKey(key);
-      const rec = client.store.records.get(item.action.start.primary);
-      if (!rec || !rec.bytes) { client.loadRecord(item.action.start.primary); break; }
+      const item = source().items.get(key);
+      const rec = source().records.get(item.action.start.primary);
+      if (!rec || !rec.bytes) { if (view.archive) { client.loadArchiveRecord(view.archive.store, item.action.start.primary); } else { client.loadRecord(item.action.start.primary); } break; }
       const args = field(parseRecord(rec.bytes).value, "args");
       const argv = field(args, "argv").items.map((i) => i.value);
       const envNode = field(args, "env");
@@ -456,9 +584,10 @@ async function onTimelineClick(ev) {
       break;
     }
     case "toggle-group":
-      if (view.expanded.has(key)) { view.expanded.delete(key); } else { view.expanded.add(key); }
+      if (view.expanded.has(key)) { view.expanded.delete(key); } else { view.expanded.add(key); view.follow = false; }
       view.renderNonce++;
       render();
+      tryResume();
       break;
     case "earlier":
     case "origins": {
@@ -467,13 +596,56 @@ async function onTimelineClick(ev) {
       view.loadError = "";
       render();
       const asked = client;
-      const oldest = client.store.laneItems(lane.id)[0];
-      const r = button.dataset.action === "earlier"
-        ? await client.earlier(lane.id, oldest ? { order: oldest.order, key: oldest.key } : undefined)
-        : await client.origins();
+      let r;
+      if (view.archive) {
+        const store = view.archive.store;
+        const oldest = store.laneItems(lane.id)[0];
+        r = await client.archivePage(store, "earlier", lane.id, oldest ? { order: oldest.order, key: oldest.key } : undefined);
+      } else {
+        const oldest = client.store.laneItems(lane.id)[0];
+        r = button.dataset.action === "earlier"
+          ? await client.earlier(lane.id, oldest ? { order: oldest.order, key: oldest.key } : undefined)
+          : await client.origins();
+      }
       if (client !== asked) { break; } // Signed out meanwhile.
       view.loading = "";
       view.loadError = r && !r.ok ? r.code : "";
+      render();
+      break;
+    }
+    case "open-archive": {
+      if (view.loading) { break; }
+      view.loading = "archive";
+      render();
+      const asked = client;
+      const r = await client.openArchive();
+      if (client !== asked) { break; }
+      view.loading = "";
+      if (r.ok) { view.archive = { store: r.store, id: r.id, selected: view.selected }; } else { view.loadError = r.code; }
+      view.lanesSignature = "";
+      view.renderNonce++;
+      render();
+      break;
+    }
+    case "close-archive":
+      view.archive = null;
+      await client.closeArchive();
+      view.lanesSignature = "";
+      view.renderNonce++;
+      render();
+      toTail(); // The live view opens at its tail, following it.
+      tryResume();
+      break;
+    case "rename": {
+      const d = view.digests.get(laneIdentity(lane));
+      if (!d) { break; }
+      // The alias stays in this browser, keyed by a hash of the conversation key.
+      const next = window.prompt("Alias for this chat (empty removes it):", view.aliases.get(hex(d)) || "");
+      if (next === null) { break; }
+      if (next.trim()) { view.aliases.set(hex(d), next.trim().slice(0, 80)); } else { view.aliases.delete(hex(d)); }
+      saveAliases();
+      view.lanesSignature = "";
+      view.renderNonce++;
       render();
       break;
     }
@@ -498,11 +670,47 @@ async function copy(button, s) {
   setTimeout(() => { if (button.isConnected) { button.textContent = label; } }, 1500);
 }
 
-function selectLane(identity) {
-  view.selected = identity;
+// selectLane selects a lane; an automatic switch never moves keyboard focus.
+function selectLane(identity, auto = false) {
+  if (view.archive) {
+    view.archive.selected = identity; // The live selection and a deferred switch stay as they are.
+  } else {
+    view.selected = identity;
+    view.attention.selected();
+  }
+  view.follow = true;
+  if (!auto) { view.lanesSignature = ""; }
   render();
+  toTail();
+}
+
+// toTail shows the newest entries and keeps following them; card sizes are
+// estimated until shown, so the position is corrected once more after layout.
+function toTail() {
   const box = $("timeline");
-  box.scrollTop = box.scrollHeight;
+  view.follow = true;
+  scrollTo(box.scrollHeight);
+  requestAnimationFrame(() => { if (view.follow) { scrollTo(box.scrollHeight); } });
+}
+
+// scrollTo moves the timeline; the scroll event it causes is not the
+// owner's and must not change following.
+function scrollTo(top) {
+  const box = $("timeline");
+  const before = box.scrollTop;
+  box.scrollTop = top;
+  if (box.scrollTop !== before) { view.programmatic = box.scrollTop; }
+}
+
+// onScroll follows the tail exactly while the owner is at the bottom.
+function onScroll() {
+  const box = $("timeline");
+  if (view.programmatic !== null && Math.abs(box.scrollTop - view.programmatic) < 2) { view.programmatic = null; return; }
+  view.programmatic = null;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  view.follow = atBottom;
+  $("jump").hidden = view.follow;
+  if (atBottom) { tryResume(); }
 }
 
 function onLaneKey(ev) {
@@ -525,20 +733,39 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("retry").addEventListener("click", renew);
   $("again").addEventListener("click", () => { $("login-error").textContent = ""; show("login"); });
   $("timeline").addEventListener("click", onTimelineClick);
+  $("lane-title").addEventListener("click", onTimelineClick); // Alias and archive controls.
+  // Leaving a card control may end reading; focus moves after focusout.
+  $("timeline").addEventListener("focusout", () => setTimeout(tryResume, 0));
   $("timeline").addEventListener("toggle", (e) => {
     const d = e.target;
-    if (!(d instanceof HTMLDetailsElement) || !d.classList.contains("originals")) { return; }
-    if (d.open) { view.open.add(d.dataset.key); } else { view.open.delete(d.dataset.key); }
-    view.renderNonce++;
-    render();
+    if (!(d instanceof HTMLDetailsElement)) { return; }
+    if (d.classList.contains("originals")) {
+      if (d.open) { view.open.add(d.dataset.key); view.follow = false; } else { view.open.delete(d.dataset.key); }
+      view.renderNonce++;
+      render();
+    }
+    if (!d.open) {
+      // Closing a block at the tail follows it again.
+      const box = $("timeline");
+      if (box.scrollHeight - box.scrollTop - box.clientHeight < 40) { view.follow = true; }
+      tryResume();
+    }
   }, true);
   $("lane-list").addEventListener("pointerenter", () => { view.pointerInLanes = true; });
   $("lane-list").addEventListener("pointerleave", () => { view.pointerInLanes = false; schedule(); });
-  $("timeline").addEventListener("scroll", () => { const b = $("timeline"); $("jump").hidden = b.scrollHeight - b.scrollTop - b.clientHeight < 40; });
-  $("jump").addEventListener("click", () => { const b = $("timeline"); b.scrollTop = b.scrollHeight; });
+  $("timeline").addEventListener("scroll", onScroll);
+  $("jump").addEventListener("click", () => { toTail(); tryResume(); });
+  document.addEventListener("selectionchange", () => { const s = window.getSelection(); if (s && s.isCollapsed) { tryResume(); } });
   $("lane-list").addEventListener("click", (e) => { const li = e.target.closest("li[data-lane]"); if (li) { selectLane(li.dataset.lane); } });
   $("lane-list").addEventListener("keydown", onLaneKey);
   $("discover").addEventListener("click", () => client && client.discover());
+  $("auto-switch").checked = view.autoSwitch;
+  $("auto-switch").addEventListener("change", (e) => {
+    view.autoSwitch = e.target.checked;
+    if (!view.autoSwitch && view.attention) { view.attention.pending = null; view.renderNonce++; schedule(); }
+    try { localStorage.setItem(AUTO_KEY, view.autoSwitch ? "1" : "0"); } catch (err) { /* this page only */ }
+  });
+  document.addEventListener("visibilitychange", () => { markSeen(); });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && renewTimer !== null) { renew(); }
   });

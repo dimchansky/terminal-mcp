@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,13 @@ func TestManualDashboardFixture(t *testing.T) {
 	writeRawFixtureRows(t, path)
 	f := &fixture{t: t, path: path, server: "srv-fixture-1"}
 	f.open()
+	// A small per-window capacity (in occurrences, at least one history
+	// page) with older rows than it holds closes the history chain, so the
+	// archive view can be checked by hand.
+	capacity, _ := strconv.Atoi(os.Getenv("TERMINAL_MCP_DASHBOARD_FIXTURE_CAPACITY"))
+	for i := 0; i < capacity; i++ {
+		f.chat("omega", "file_read", map[string]any{"path": fmt.Sprintf("old-%d.txt", i)}, true)
+	}
 	f.history()
 	f.restart("srv-fixture-2")
 	f.chat("alpha", "terminal_start", map[string]any{"argv": []string{"make", "check"}, "cwd": "/src/project"}, true)
@@ -63,7 +71,7 @@ func TestManualDashboardFixture(t *testing.T) {
 	}
 	f0, err := reader.FrontierCursor(context.Background())
 	index := NewIndex(reader, f.server, f0, err == nil, f.log.Status)
-	Register(h, NewManager(reader, ManagerConfig{ServerID: f.server, Index: index, Status: f.log.Status}))
+	Register(h, NewManager(reader, ManagerConfig{ServerID: f.server, Capacity: capacity, Index: index, Status: f.log.Status}))
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
