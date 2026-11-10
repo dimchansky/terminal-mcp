@@ -63,7 +63,6 @@ test("app.js boots with a stored token and renders without undefined names", asy
     }
   };
 
-  const saved = {};
   const globals = {
     document: doc, window: anything("window"), sessionStorage: storage, localStorage: storage, fetch: fetchFn,
     requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
@@ -71,7 +70,10 @@ test("app.js boots with a stored token and renders without undefined names", asy
     BroadcastChannel: undefined,
     setInterval: () => 0, clearInterval: () => {},
   };
-  for (const [k, v] of Object.entries(globals)) { saved[k] = Object.getOwnPropertyDescriptor(globalThis, k); Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true }); }
+  // The fakes stay installed: the page's client keeps running on its
+  // never-ending stream after the test (each test file has its own
+  // process), and must not meet a missing global then.
+  for (const [k, v] of Object.entries(globals)) { Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true }); }
   try {
     await import("../static/app.js");
     for (const fn of listeners.get("DOMContentLoaded") || []) { await fn(); }
@@ -81,10 +83,6 @@ test("app.js boots with a stored token and renders without undefined names", asy
     await new Promise((r) => setTimeout(r, 20));
     while (frames.length) { frames.shift()(performance.now()); }
   } finally {
-    // The page's client keeps waiting on its never-ending stream; it holds
-    // no timers, so the test still ends. After a failure, Node may also
-    // report its later activity against the restored globals.
-    for (const [k, d] of Object.entries(saved)) { if (d) { Object.defineProperty(globalThis, k, d); } else { delete globalThis[k]; } }
     process.off("unhandledRejection", onError);
     process.off("uncaughtException", onError);
   }
