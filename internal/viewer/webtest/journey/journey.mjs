@@ -8,7 +8,7 @@
 
 import { createInterface } from "node:readline";
 import { Client, signIn } from "../../static/net.js";
-import { laneIdentity, firstPageKey, laneTimeline, orderLanes, defaultLane, keeper } from "../../static/model.js";
+import { laneIdentity, firstPageKey, laneTimeline, orderLanes, defaultLane, keeper, occurrencesOf } from "../../static/model.js";
 import { attentionFor } from "../../static/attention.js";
 import { timeline, entry, entryKey } from "../../static/cards.js";
 import { describeStatus } from "../../static/status.js";
@@ -165,7 +165,9 @@ const commands = {
     const out = timeline(items, ctx).map((e) => {
       const tree = entry(e, ctx);
       const first = e.item || e.items[0];
-      return { key: entryKey(e), tool: first.action ? first.action.tool : first.kind, size: e.item ? 1 : e.items.length, text: textOf(tree), actions: actionsOf(tree) };
+      const items = e.item ? [e.item] : e.items;
+      return { key: entryKey(e), tool: first.action ? first.action.tool : first.kind, size: items.length, text: textOf(tree), actions: actionsOf(tree),
+        occurrences: items.flatMap((it) => occurrencesOf(it)) };
     });
     if (seen) { attention.seen(items); }
     return { ok: true, cards: out };

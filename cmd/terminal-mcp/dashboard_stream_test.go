@@ -33,6 +33,7 @@ type liveServer struct {
 	address  string
 	manager  *session.Manager
 	recorder *audit.Log
+	journal  string // The audit file.
 	viewers  *viewer.Registry
 	listener net.Listener
 	cancel   context.CancelFunc
@@ -102,10 +103,11 @@ func startLiveServerWith(t *testing.T, opts liveOptions) *liveServer {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(fm.Close) // After serve returns; Windows cannot remove an open root.
 		files = append(files, fm)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &liveServer{t: t, address: listener.Addr().String(), manager: manager, recorder: recorder, viewers: viewers,
+	s := &liveServer{t: t, address: listener.Addr().String(), manager: manager, recorder: recorder, journal: filepath.Join(dir, "audit.jsonl"), viewers: viewers,
 		listener: listener, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		s.err = serveHTTPWithOptions(ctx, manager, mcpserver.NewWithAudit(manager, recorder, files...), listener, viewerTestToken, 0, nil, rt)
