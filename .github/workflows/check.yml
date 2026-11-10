@@ -9,6 +9,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      TERMINAL_MCP_REQUIRE_NODE: "1" # The page journey tests must run, not skip.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -26,6 +28,8 @@ jobs:
   windows:
     name: Windows native
     runs-on: windows-latest
+    env:
+      TERMINAL_MCP_REQUIRE_NODE: "1" # The page journey tests must run, not skip.
     steps:
       - uses: actions/checkout@v6
         with:

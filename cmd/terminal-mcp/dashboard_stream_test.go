@@ -20,6 +20,7 @@ import (
 	"terminalmcp/internal/activity"
 	"terminalmcp/internal/audit"
 	"terminalmcp/internal/dashboard"
+	"terminalmcp/internal/filesystem"
 	"terminalmcp/internal/mcpserver"
 	"terminalmcp/internal/session"
 	"terminalmcp/internal/viewer"
@@ -51,9 +52,16 @@ func (l smallBuffers) Accept() (net.Conn, error) {
 	return c, err
 }
 
-func startLiveServer(t *testing.T) *liveServer { return startLiveServerWith(t, false) }
+// liveOptions vary the live server for a test.
+type liveOptions struct {
+	small    bool   // Tiny send buffers (see smallBuffers).
+	fileRoot string // Registers the file tools rooted here.
+	capacity int    // Per-window dashboard capacity; 0 is the production default (newViewerRuntime).
+}
 
-func startLiveServerWith(t *testing.T, small bool) *liveServer {
+func startLiveServer(t *testing.T) *liveServer { return startLiveServerWith(t, liveOptions{}) }
+
+func startLiveServerWith(t *testing.T, opts liveOptions) *liveServer {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "logs")
 	if err := audit.PrepareDirectory(dir); err != nil {
@@ -72,16 +80,35 @@ func startLiveServerWith(t *testing.T, small bool) *liveServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if small {
+	if opts.small {
 		listener = smallBuffers{listener}
 	}
 	viewers := viewer.NewRegistry(viewer.Config{})
 	rt := newViewerRuntime(context.Background(), viewers, recorder, manager.ID())
+	if opts.capacity > 0 {
+		// The same wiring as newViewerRuntime, with a smaller capacity.
+		reader, err := audit.NewReader(recorder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f0, err := reader.FrontierCursor(context.Background())
+		index := dashboard.NewIndex(reader, manager.ID(), f0, err == nil, recorder.Status)
+		rt.dashboard = dashboard.NewManager(reader, dashboard.ManagerConfig{ServerID: manager.ID(), Capacity: opts.capacity,
+			Index: index, Status: recorder.Status})
+	}
+	var files []*filesystem.Manager
+	if opts.fileRoot != "" {
+		fm, err := filesystem.New(manager, opts.fileRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, fm)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &liveServer{t: t, address: listener.Addr().String(), manager: manager, recorder: recorder, viewers: viewers,
 		listener: listener, cancel: cancel, done: make(chan struct{})}
 	go func() {
-		s.err = serveHTTPWithOptions(ctx, manager, mcpserver.NewWithAudit(manager, recorder), listener, viewerTestToken, 0, nil, rt)
+		s.err = serveHTTPWithOptions(ctx, manager, mcpserver.NewWithAudit(manager, recorder, files...), listener, viewerTestToken, 0, nil, rt)
 		close(s.done)
 	}()
 	t.Cleanup(func() {
@@ -422,7 +449,7 @@ func TestLongDashboardStream(t *testing.T) {
 // events, so a non-reading client rarely blocks a write at all; when it
 // does, the per-write deadline cuts it: see TestAPIStalledStreamIsCutOff.)
 func TestDashboardStreamSlowConsumer(t *testing.T) {
-	s := startLiveServerWith(t, true)
+	s := startLiveServerWith(t, liveOptions{small: true})
 	tokenA := s.login()
 	var envA dashboard.Envelope
 	s.post(dashboard.PathWindow, tokenA, map[string]any{}, &envA)

@@ -248,3 +248,51 @@ export function firstPageKey(store, lane, requested) {
   const key = lane.id + "\u0000" + store.epoch();
   return store.laneItems(lane.id).length < lane.items && !requested.has(key) ? key : null;
 }
+
+// laneTimeline is a lane's items and the server restarts within it,
+// oldest first: what the page shows for the lane.
+export function laneTimeline(store, laneId) {
+  return [...store.laneItems(laneId), ...store.restartsIn(laneId)].sort((a, b) => orderCompare(a.order, b.order));
+}
+
+// LANE_ORDER ranks lane kinds in the lane list: chats first.
+export const LANE_ORDER = { conversation: 0, unattributed: 1, invalid_metadata: 2, origin_not_loaded: 3, journal: 4 };
+
+// orderLanes sorts lanes for the list: by kind, newest activity first,
+// then by identity.
+export function orderLanes(lanes) {
+  const time = (l) => Date.parse(l.last_time || "") || 0;
+  return [...lanes].sort((a, b) => ((LANE_ORDER[a.kind] ?? 9) - (LANE_ORDER[b.kind] ?? 9)) || (time(b) - time(a)) ||
+    (laneIdentity(a) < laneIdentity(b) ? -1 : laneIdentity(a) > laneIdentity(b) ? 1 : 0));
+}
+
+// defaultLane is the lane shown when none is selected: the first chat of
+// the ordered list, or its first lane.
+export function defaultLane(ordered) {
+  return ordered.find((l) => l.kind === "conversation") || ordered[0] || null;
+}
+
+// keeper answers whether a record of a store is in use: it belongs to the
+// lane selected in that store. The set is cached per version and selection.
+export function keeper(storeOf, selectedOf) {
+  let kept = new Set();
+  let at = "";
+  return (id) => {
+    const store = storeOf();
+    if (!store) { return false; }
+    const sel = selectedOf() || "";
+    const now = store.version + "\u0000" + sel;
+    if (at !== now) { kept = keptRecords(store, sel); at = now; }
+    return kept.has(id);
+  };
+}
+
+function keptRecords(store, identity) {
+  const out = new Set();
+  const lane = identity ? store.laneByIdentity(identity) : null;
+  if (!lane) { return out; }
+  for (const item of laneTimeline(store, lane.id)) {
+    for (const id of occurrencesOf(item)) { out.add(id); }
+  }
+  return out;
+}

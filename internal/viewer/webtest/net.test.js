@@ -418,3 +418,26 @@ test("the first page of a lane is requested once per store epoch", async () => {
   assert.ok(firstPageKey(store, store.lanes.get("L1"), requested), "again after a new snapshot");
   assert.equal(firstPageKey(store, { ...store.lanes.get("L1"), items: 1 }, new Set()), null, "nothing missing");
 });
+
+test("lanes order by kind and recency; the default is the newest chat; keep follows the selection", async () => {
+  const { orderLanes, defaultLane, keeper } = await import("../static/model.js");
+  const lanes = [
+    { id: "u", kind: "unattributed", last_time: "2026-11-10T12:00:00Z" },
+    { ...lane("L1", "chat-old"), last_time: "2026-11-10T10:00:00Z" },
+    { ...lane("L2", "chat-new"), last_time: "2026-11-10T11:00:00Z" },
+    { id: "j", kind: "journal" },
+  ];
+  assert.deepEqual(orderLanes(lanes).map((l) => l.id), ["L2", "L1", "u", "j"]);
+  assert.equal(defaultLane(orderLanes(lanes)).id, "L2");
+  assert.equal(defaultLane(orderLanes([lanes[0], lanes[3]])).id, "u", "no chat: the first lane");
+  assert.equal(defaultLane([]), null);
+
+  const store = new Store();
+  store.snapshot(envelope(1, [action("r1", "L1", -1), action("r2", "L2", -2)], [lane("L1", "chat-old"), lane("L2", "chat-new")]));
+  let selected = laneIdentity(lane("L1", "chat-old"));
+  const keep = keeper(() => store, () => selected);
+  assert.equal(keep("ref-r1"), true);
+  assert.equal(keep("ref-r2"), false);
+  selected = laneIdentity(lane("L2", "chat-new"));
+  assert.equal(keep("ref-r2"), true, "a new selection is seen without a store change");
+});

@@ -12,7 +12,7 @@ import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
 import { icon, conversationKey, shortLabels } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
-import { laneIdentity, orderCompare, firstPageKey, occurrencesOf } from "./model.js";
+import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper } from "./model.js";
 import { commandLine } from "./shell.js";
 
 const KEY = "terminal-mcp-viewer-token";
@@ -159,7 +159,6 @@ const view = {
   scheduled: false,
 };
 
-const LANE_ORDER = { conversation: 0, unattributed: 1, invalid_metadata: 2, origin_not_loaded: 3, journal: 4 };
 const LANE_NAMES = { unattributed: "Unattributed", invalid_metadata: "Invalid metadata", origin_not_loaded: "Pending origin", journal: "Journal" };
 
 // resetView forgets everything shown, including recorded text in the DOM.
@@ -271,11 +270,9 @@ function lanesInOrder() {
     const at = new Map(view.laneOrder.map((id, i) => [id, i]));
     return lanes.sort((a, b) => (at.get(laneIdentity(a)) ?? 1e9) - (at.get(laneIdentity(b)) ?? 1e9));
   }
-  const time = (l) => Date.parse(l.last_time || "") || 0;
-  lanes.sort((a, b) => (LANE_ORDER[a.kind] - LANE_ORDER[b.kind]) || (time(b) - time(a)) ||
-    (laneIdentity(a) < laneIdentity(b) ? -1 : laneIdentity(a) > laneIdentity(b) ? 1 : 0));
-  view.laneOrder = lanes.map(laneIdentity);
-  return lanes;
+  const ordered = orderLanes(lanes);
+  view.laneOrder = ordered.map(laneIdentity);
+  return ordered;
 }
 
 // selectedLane is the lane shown; the archive view keeps its own selection,
@@ -285,7 +282,7 @@ function selectedLane() {
   const lanes = lanesInOrder();
   const slot = view.archive || view;
   let lane = slot.selected ? source().laneByIdentity(slot.selected) : null;
-  if (!lane && lanes.length) { lane = lanes.find((l) => l.kind === "conversation") || lanes[0]; slot.selected = laneIdentity(lane); }
+  if (!lane && lanes.length) { lane = defaultLane(lanes); slot.selected = laneIdentity(lane); }
   return lane;
 }
 
@@ -299,31 +296,6 @@ function markSeen() {
     if (items && view.attention.seen(items)) { any = true; }
   }
   if (any) { view.lanesSignature = ""; schedule(); }
-}
-
-// keeper answers whether a record of a store is in use: it belongs to the
-// lane selected in that store. The set is cached per version and selection.
-function keeper(storeOf, selectedOf) {
-  let kept = new Set();
-  let at = "";
-  return (id) => {
-    const store = storeOf();
-    if (!store) { return false; }
-    const sel = selectedOf() || "";
-    const now = store.version + "\u0000" + sel;
-    if (at !== now) { kept = keptRecords(store, sel); at = now; }
-    return kept.has(id);
-  };
-}
-
-function keptRecords(store, identity) {
-  const out = new Set();
-  const lane = identity ? store.laneByIdentity(identity) : null;
-  if (!lane) { return out; }
-  for (const item of [...store.laneItems(lane.id), ...store.restartsIn(lane.id)]) {
-    for (const id of occurrencesOf(item)) { out.add(id); }
-  }
-  return out;
 }
 
 function digestFor(lane) {
@@ -438,7 +410,7 @@ function renderTimeline() {
   }
   const store = src;
   const shown = lane;
-  const items = [...store.laneItems(shown.id), ...store.restartsIn(shown.id)].sort((a, b) => orderCompare(a.order, b.order));
+  const items = laneTimeline(store, shown.id);
   const ctx = { records: store.records, serverOS: client.status.serverOS, expanded: view.expanded, open: view.open };
   const alias = aliasOf(lane);
   $("lane-title").replaceChildren(materialize(document, h("div", {},
