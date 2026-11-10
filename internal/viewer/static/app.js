@@ -8,6 +8,7 @@ import { Client } from "./net.js";
 import { h, materialize } from "./view.js";
 import { entry, entryKey, timeline, text, localTime, pollTarget } from "./cards.js";
 import { Attention } from "./attention.js";
+import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
 import { icon, conversationKey, shortLabels } from "./identicon.js";
 import { laneIdentity, orderCompare } from "./model.js";
@@ -365,24 +366,11 @@ function render() {
   renderTimeline();
 }
 
-const CONNECTION = {
-  connecting: "Connecting…", live: "Live", reconnecting: "Reconnecting…", rebuilding: "Rebuilding the view…",
-  offline: "Offline", audit_closed: "Audit unavailable: no live activity", stopped: "Server stopped",
-};
-
 function renderStatus() {
-  const s = client.status;
-  $("connection").textContent = CONNECTION[s.connection] || s.connection;
-  const health = s.health && s.health.state && s.health.state !== "ok" ? "Audit " + s.health.state : "";
-  const index = s.index && s.index.status && s.index.status !== "ready" ? "In-flight index " + s.index.status.replace("_", " ") : "";
-  const outside = s.index && s.index.in_flight_outside && s.index.in_flight_outside.length
-    ? s.index.in_flight_outside.length + " running effect(s) outside the loaded history" : "";
-  $("health").textContent = [health, index, outside].filter(Boolean).join(" · ");
-  const notes = [];
-  if (s.possibleUnseen) { notes.push("Some activity may have been missed while the view was rebuilt."); }
-  if (s.floorChanged) { notes.push("Older activity was unloaded to stay within memory; use Earlier to see it again."); }
-  if (view.renewNote) { notes.push(view.renewNote); }
-  $("notice").textContent = notes.join(" ");
+  const t = describeStatus(client.status, [view.renewNote]);
+  $("connection").textContent = t.connection;
+  $("health").textContent = t.health;
+  $("notice").textContent = t.notice;
 }
 
 function renderLanes() {
@@ -503,7 +491,7 @@ function renderTimeline() {
   const controlsView = materialize(document, h("div", { class: "history-controls" }, archiveButton,
     h("button", { type: "button", "data-action": "earlier", disabled: !!view.loading }, view.loading === "earlier" ? "Loading…" : "Earlier in this conversation"),
     lane.kind === "origin_not_loaded" && !view.archive ? h("button", { type: "button", "data-action": "origins", disabled: !!view.loading }, "Look for origins") : null,
-    view.loadError ? h("span", { class: "warning" }, "Could not load: ", text(view.loadError)) : null,
+    view.loadError ? h("span", { class: "warning" }, "Could not load: ", text(loadErrorText(view.loadError))) : null,
     h("span", {}, coverageText(store.coverage))));
   if (!view.controls) { view.controls = controlsView; } else { view.controls.replaceChildren(...controlsView.childNodes); }
   const controls = view.controls;

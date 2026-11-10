@@ -262,7 +262,7 @@ export class Client {
       }
       if (SESSION_ENDED.has(r.code)) { return false; }
       if (r.code === "window_limit" && this.archiveId) { await this.closeArchive(); continue; }
-      this.setStatus({ connection: "offline", reason: r.code });
+      this.setStatus({ connection: "offline", reason: r.code, reasonStatus: r.status });
       await this.sleep(r.retryAfter ? r.retryAfter * 1000 : this.backoff(n));
     }
     return false;
@@ -278,7 +278,7 @@ export class Client {
       if (SESSION_ENDED.has(r.code)) { return "stop"; }
       if (r.code === "window_gone" || (r.status === 409 && TERMINAL_STATES.has(r.code))) { return "reopen"; }
       if (r.code === "disabled") { this.auditUnavailable(); return "stop"; }
-      this.setStatus({ connection: r.code === "rebuilding" ? "rebuilding" : "reconnecting", reason: r.code });
+      this.setStatus({ connection: r.code === "rebuilding" ? "rebuilding" : "reconnecting", reason: r.code, reasonStatus: r.status });
       await this.sleep(r.retryAfter ? r.retryAfter * 1000 : this.backoff(n));
     }
     return "stop";
@@ -291,7 +291,7 @@ export class Client {
   applySnapshot(env) {
     const { remap, changes, generationChanged } = this.store.snapshot(env);
     this.cursor = env.live_cursor;
-    this.setStatus({ state: env.state, possibleUnseen: env.possible_unseen, health: env.health, index: env.index,
+    this.setStatus({ reason: "", reasonStatus: 0, state: env.state, possibleUnseen: env.possible_unseen, health: env.health, index: env.index,
       needs: env.needs, coverage: env.coverage, serverOS: env.server_os });
     this.cb.onChange(changes, { snapshot: true, remap, generationChanged });
     this.loadRecords();
@@ -302,6 +302,7 @@ export class Client {
   // loop runs the stream and reconnects until a final state.
   async loop() {
     let failures = 0;
+    let reopens = 0; // Consecutive reopens without a ready stream.
     let changed = 0; // Consecutive generation changes without a ready stream.
     while (!this.stopped) {
       const end = await this.streamOnce();
@@ -312,12 +313,16 @@ export class Client {
       switch (end.type) {
         case "ready":
           failures = 0;
+          reopens = 0;
           break;
         case "resync":
           next = await this.resnapshot();
           break;
         case "window_gone":
-        case "window_state":
+          next = "reopen";
+          break;
+        case "window_state": // A terminal window state: say which, then open another window.
+          this.setStatus({ connection: "offline", reason: (end.data && end.data.state) || "failed", reasonStatus: 409 });
           next = "reopen";
           break;
         case "audit_closed":
@@ -329,7 +334,11 @@ export class Client {
           return;
         case "start_error":
           if (end.code === "generation_changed") { next = await this.resnapshot(); }
-          else if (end.code === "window_gone" || (end.status === 409 && TERMINAL_STATES.has(end.code))) { next = "reopen"; }
+          else if (end.code === "window_gone") { next = "reopen"; }
+          else if (end.status === 409 && TERMINAL_STATES.has(end.code)) {
+            this.setStatus({ connection: "offline", reason: end.code, reasonStatus: 409 });
+            next = "reopen";
+          }
           else if (end.code === "disabled") { this.auditUnavailable(); return; }
           else if (SESSION_ENDED.has(end.code)) { return; }
           break;
@@ -338,13 +347,18 @@ export class Client {
       }
       if (next === "stop") { return; }
       if (next === "reopen") {
-        if (!await this.open()) { return; }
+        // A window that keeps ending (capacity, failed) must not spin:
+        // the second reopen in a row waits with a growing backoff.
+        if (reopens > 0) { await this.sleep(this.backoff(reopens - 1)); }
+        reopens++;
+        if (this.stopped || !await this.open()) { return; }
         failures = 0;
         continue;
       }
       if (next === "ok") { failures = 0; continue; }
       // Ended without a final event (network, an error event): back off.
-      this.setStatus({ connection: "reconnecting" });
+      this.setStatus({ connection: "reconnecting", reason: end.type === "start_error" ? end.code : end.type === "network" ? "network" : "",
+        reasonStatus: end.status || 0 });
       await this.sleep(end.retryAfter ? end.retryAfter * 1000 : this.backoff(failures));
       failures++;
     }
@@ -559,17 +573,40 @@ export class Client {
   }
 
   // archivePage loads a lane page or an earlier page of the archive window
-  // into its store, and loads the records it needs.
+  // into its store, and loads the records it needs. Like scanAnswer for the
+  // live window, it fetches the newest page of each affected lane again when
+  // a scan's updates did not fit. When the archive window was rebuilt (409
+  // generation_changed, or an answer of another generation), it takes a new
+  // snapshot of the archive window and answers archive_reloaded: lane IDs
+  // changed, so the request itself must be made again.
   async archivePage(store, path, laneId, before) {
     const id = this.archiveId;
+    const rebuilt = (r) => (!r.ok && r.code === "generation_changed") || (r.ok && store.apply(r.data, { history: true }).stale);
     const body = before ? { window: id, lane_id: laneId, before } : { window: id, lane_id: laneId };
     const r = await this.page(path, body);
-    if (r.ok && id === this.archiveId) {
-      store.apply(r.data, { history: true });
-      this.loadArchiveRecords(store);
-      this.cb.onChange([], { archive: true });
+    if (id !== this.archiveId) { return r; }
+    let reload = rebuilt(r);
+    if (!reload && !r.ok) { return r; }
+    if (!reload && r.data.updated_more) {
+      for (const lane of r.data.affected_lanes || []) {
+        const page = await this.page("lane-items", { window: id, lane_id: lane });
+        if (id !== this.archiveId) { return page; }
+        if (rebuilt(page)) { reload = true; break; }
+        if (!page.ok) { return page; }
+      }
     }
-    return r;
+    if (reload) {
+      const snap = await this.page("window", { window: id });
+      if (id !== this.archiveId) { return snap; }
+      if (!snap.ok) { return snap; }
+      // A rebuilt archive window that ended (capacity, failed) has no lanes:
+      // keep what is shown and say why.
+      if (snap.data.state !== "ok") { return { ok: false, code: "archive_" + snap.data.state, status: 409, retryAfter: 0 }; }
+      store.snapshot(snap.data);
+    }
+    this.loadArchiveRecords(store);
+    this.cb.onChange([], { archive: true });
+    return reload ? { ok: false, code: "archive_reloaded", status: 0, retryAfter: 0 } : r;
   }
 
   // loadArchiveRecords loads the archive store's records like the live ones.

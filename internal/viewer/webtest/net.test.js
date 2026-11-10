@@ -310,3 +310,76 @@ test("queue and SSE parser", async () => {
   feed(":1}\n\nevent: b\ndata: 2\r\n\r\n");
   assert.deepEqual(got, [["a", { x: 1 }], ["b", 2]]);
 });
+
+test("archive scans apply updates that did not fit and reload a rebuilt archive window", async () => {
+  let archiveGen = 1;
+  let rebuilt = false;
+  const server = fakeServer({
+    window: (b) => {
+      if (b.mode === "live") { return json(200, envelope(1, [], [], "c0", "w1")); }
+      return json(200, envelope(archiveGen, [action("o1", "A1", -1)], [lane("A1", "chat-old")], "", "arch"));
+    },
+    earlier: () => (rebuilt ? json(409, { error: "generation_changed" })
+      : json(200, { generation: archiveGen, items: [], lanes: [lane("A2", "chat-older")], updated_more: true, affected_lanes: ["A1", "A2"] })),
+    "lane-items": (b) => json(200, { generation: archiveGen, items: [action("x-" + b.lane_id, b.lane_id, -2)], lanes: [lane(b.lane_id, "chat-" + b.lane_id)] }),
+  });
+  const c = new Client("tok", {}, { ...fast, fetch: server.fetch });
+  c.start();
+  await server.nextStream(1);
+  const { store } = await c.openArchive();
+  assert.equal((await c.archivePage(store, "earlier", "A1")).ok, true);
+  const refetched = server.calls.filter((x) => x.path === "lane-items").map((x) => [x.body.window, x.body.lane_id]);
+  assert.deepEqual(refetched, [["arch", "A1"], ["arch", "A2"]]);
+  assert.ok(store.items.has("a:s/x-A2"));
+
+  // The server rebuilt the archive window: lane IDs of the old generation
+  // answer 409 generation_changed.
+  archiveGen = 2;
+  rebuilt = true;
+  const r = await c.archivePage(store, "earlier", "A1");
+  assert.equal(r.code, "archive_reloaded");
+  assert.ok(server.calls.some((x) => x.path === "window" && x.body.window === "arch"), "a new snapshot of the archive window");
+  assert.equal(store.generation, 2);
+
+  // Closing the archive while a page is in flight leaves its store alone.
+  rebuilt = false;
+  const pending = c.archivePage(store, "earlier", "A1");
+  await c.closeArchive();
+  const before = store.version;
+  await pending;
+  assert.equal(store.version, before, "a page answered after closing is not applied");
+  c.stop();
+});
+
+test("a terminal window state reopens with a growing delay and says why", async () => {
+  const sleeps = [];
+  let opened = 0;
+  const server = fakeServer({ window: () => json(200, envelope(1, [], [], "c0", "w" + ++opened)) });
+  const c = new Client("tok", {}, { ...fast, fetch: server.fetch, sleep: async (ms) => { sleeps.push(ms); await new Promise((r) => setTimeout(r, 1)); } });
+  c.start();
+  for (let n = 1; n <= 3; n++) {
+    const s = await server.nextStream(n);
+    s.send("window_state", { state: "capacity" });
+  }
+  await server.nextStream(4);
+  assert.equal(c.status.reason, "", "a new snapshot clears the reason");
+  assert.deepEqual(sleeps.slice(0, 2), [5, 5], "the second and third reopen wait");
+  c.stop();
+});
+
+test("a reconnect shows its own reason, not an earlier one", async () => {
+  let opened = 0;
+  const statuses = [];
+  const server = fakeServer({
+    window: () => (opened++ === 0 ? json(409, { error: "window_limit" }) : json(200, envelope(1, [], [], "c0", "w1"))),
+    stream: () => json(503, { error: "timeout" }, { "Retry-After": "1" }),
+  });
+  const c = new Client("tok", { onStatus: (s) => statuses.push({ ...s }) }, { ...fast, fetch: server.fetch, sleep: async () => { await new Promise((r) => setTimeout(r, 1)); } });
+  c.start();
+  await waitFor(() => statuses.some((s) => s.connection === "reconnecting"), "reconnecting");
+  const offline = statuses.find((s) => s.connection === "offline");
+  assert.deepEqual([offline.reason, offline.reasonStatus], ["window_limit", 409]);
+  const rec = statuses.find((s) => s.connection === "reconnecting");
+  assert.deepEqual([rec.reason, rec.reasonStatus], ["timeout", 503]);
+  c.stop();
+});
