@@ -390,7 +390,7 @@ without first checking whether its worker is still running.
 terminal-mcp dashboard
 ```
 
-The command asks the running standalone server for a one-time code, prints the code and the local address in your terminal (on stderr when stdout is redirected), and opens `http://127.0.0.1:8090/dashboard/` (your saved listener). Paste the code into the page. The tab then stays signed in across reloads until one of these happens: the tab has been closed or unreachable for 30 minutes, 12 hours pass, a newer sign-in replaces it (more than 8 sessions), you sign out, or the server restarts. The page itself only signs in so far; the history API and live stream behind it are specified in SPEC §10 (they need the viewer token from a pairing code, not the MCP bearer) and the activity view comes later.
+The command asks the running standalone server for a one-time code, prints the code and the local address in your terminal (on stderr when stdout is redirected), and opens `http://127.0.0.1:8090/dashboard/` (your saved listener). Paste the code into the page. The tab then stays signed in across reloads until one of these happens: the tab has been closed or unreachable for 30 minutes, 12 hours pass, a newer sign-in replaces it (more than 8 sessions), you sign out, or the server restarts. The page lists the observed conversations, marked client-claimed, and shows each one's actions as readable cards, with live updates. A conversation with new activity shows "N new". **Auto-switch chats** (off by default) follows new work in another chat, but waits while you scroll, select text or have a block open. Scroll up to read; **Jump to latest** returns to the tail. Use **Earlier in this conversation**, **Discover older conversations** and, when older rows were evicted from the live window, **Open older history** for the past. The page contract is in SPEC §10 (the API needs the viewer token from a pairing code, not the MCP bearer).
 
 - For a foreground `serve`, pass `--listen` and `--token-file` (or set `TERMINAL_MCP_TOKEN`).
 - `--no-open` prints without opening a browser; this is useful over SSH.
@@ -512,5 +512,28 @@ result. After changing tool schemas or descriptions, refresh ChatGPT's MCP
 tools when `refresh_tools_required` is true.
 
 Run `make check` and consult the current GitHub Actions results for source
-verification. [TEST_REPORT.md](../TEST_REPORT.md) and
+verification.
+
+`make check` includes `make test-js`, which runs the dashboard page's
+module tests with Node's built-in runner (Node 22 or newer; no npm
+packages):
+
+```sh
+node --test internal/viewer/webtest/*.test.js
+```
+
+To check the page by hand without a real server, run the manual fixture.
+It serves the dashboard over a scripted audit journal with live appends and
+prints a pairing code; stop it with Ctrl-C:
+
+```sh
+TERMINAL_MCP_DASHBOARD_FIXTURE=1 go test -run TestManualDashboardFixture -timeout 0 -v ./internal/dashboard
+```
+
+`TERMINAL_MCP_DASHBOARD_FIXTURE_ADDR` sets its address (default: a random
+local port). `TERMINAL_MCP_DASHBOARD_FIXTURE_CAPACITY=450` lowers the window
+capacity and writes that many older calls, so **Discover older
+conversations** ends the live window's history (coverage `evicted`) and **Open older history** can be
+tried. The page assets are embedded, so restart the fixture after changing
+them. [TEST_REPORT.md](../TEST_REPORT.md) and
 [RELEASE_READINESS.md](RELEASE_READINESS.md) record earlier validation only.

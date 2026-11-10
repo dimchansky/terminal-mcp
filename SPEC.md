@@ -526,7 +526,7 @@ Do not expose the local HTTP endpoint through an unauthenticated public tunnel.
 
 ### Dashboard viewer access
 
-The HTTP server also serves a read-only owner dashboard under `/dashboard/`. Its login, history API and live stream exist; the activity page comes later. Viewer routes have their **own guard** and never relax the MCP guard above:
+The HTTP server also serves a read-only owner dashboard under `/dashboard/`. It consists of a login, a history API, a live stream and the activity page described below. Viewer routes have their **own guard** and never relax the MCP guard above:
 
 - **Pairing.** `terminal-mcp dashboard` authenticates with the MCP bearer to `POST /admin/viewer-grant` and prints a single-use pairing code (130 random bits, valid 5 minutes, at most 4 unused). It opens the grant-free address `http://<listen>/dashboard/`; the code never appears in a URL, browser argv or log. The command uses the saved standalone configuration, or `--listen` with `--token-file` (or `TERMINAL_MCP_TOKEN`) for a foreground server. `--revoke-all` calls `POST /admin/viewer-revoke`, which ends every viewer session and drops unused codes. These two exact admin paths are the only additions to the bearer guard.
 - **Login.** The page exchanges the pasted code for a separate read-only viewer token (256 bits). The tab keeps it in `sessionStorage` and sends it as `Authorization: Viewer <token>` on every request. Cookies never authorize, the MCP bearer is refused on viewer routes, and viewer tokens never authorize `/mcp` or administration.
@@ -543,7 +543,7 @@ The HTTP server also serves a read-only owner dashboard under `/dashboard/`. Its
 
 ### Dashboard history API
 
-Behind the viewer guard, the dashboard reads the audit journal through **projection windows**. Every route is an authenticated `POST` under `/dashboard/api/` with a strict JSON body: one object, at most 4 KiB, holding only the endpoint's own fields. The browser page that uses these routes comes later (#9); this API is the contract.
+Behind the viewer guard, the dashboard reads the audit journal through **projection windows**. Every route is an authenticated `POST` under `/dashboard/api/` with a strict JSON body: one object, at most 4 KiB, holding only the endpoint's own fields. The activity page below uses these routes; this API is the contract.
 
 | Route | Body | Answer |
 |---|---|---|
@@ -585,6 +585,45 @@ Behind the viewer guard, the dashboard reads the audit journal through **project
 | 503 | `rebuilding`, `timeout`, with `Retry-After` |
 | 500 | `internal` |
 | viewer | 401 `unauthorized` or `session_replaced`, 503 `server_stopping` |
+
+### Dashboard activity page
+
+The page at `/dashboard/` is a set of plain ES modules embedded in the binary. There is no build step and nothing comes from a third party. The strict CSP above applies, with no inline script or style and no `eval`.
+
+- **Rendering.** All audit text reaches the DOM as text nodes, through an allowlist of tags and attributes. Control, bidirectional and invisible characters are shown as visible escapes. JSON is read losslessly. When duplicate keys, inexact numbers, lone surrogates, invalid UTF-8 or a byte order mark would make the typed view lossy, or the record does not parse, the card shows the recorded text with the reason.
+- **Cards.** The main content of a card is what the model asked for, in readable form:
+  - `terminal_start` is shown as a command line in POSIX display notation, with `env` overrides first. That notation is labelled as display only, not proof that a shell ran. A Copy button is offered only when the line has no hidden characters, uses valid shell names for `env`, and parses back to the same `argv` and `env`. On Windows servers the exact tokens are listed, followed by `env`.
+  - `terminal_write` shows its input with escapes.
+  - `file_edit` shows a red/green diff for each replacement, without invented line numbers, or Before and After blocks when a line diff is not possible.
+  - `file_write` shows its full content.
+  - Every other supplied field is listed, including unknown ones.
+  - Each card also offers the original audit JSONL with Copy and any effect receipt.
+  - A large record shows its size and a Load control.
+  - Request duration and effect duration are shown separately. A `file_read` body and process output are not in the audit, and the card says so.
+  - Repeated polls collapse into one group.
+- **Lanes.** Conversations are listed as *client-claimed*, never as verified.
+  - Each one has a deterministic identicon derived from a SHA-256 digest of its namespaced conversation key, plus a text label.
+  - The other lanes keep their own names: Unattributed, Invalid metadata, Pending origin and Journal.
+  - An optional owner alias is stored locally.
+- **Unread.** Unread is per tab and kept only in memory; a reload starts with nothing unread.
+  - Only live changes count: a new action (an operation replay included), a change of request state, status, outcome, rejection or possibly-unrecorded mark, or an effect finishing or changing status.
+  - Snapshots, history pages, rows delivered again after a reconnect, and lane moves never count. A generation change keeps unread by lane identity. Activity that arrives only through a new snapshot is not marked unread; the possible-unseen indicator covers it.
+  - While unseen, a start and its finish count once, and a poll group counts once.
+  - An item is seen when at least half of its card, or half of the view, is shown while the tab is visible. The archive view marks nothing seen.
+  - Each lane shows "N new" as text.
+- **Auto-switch.** Auto-switch is off by default.
+  - When on, it moves the selection only to a claimed conversation that starts a new live call of a known non-polling tool.
+  - Finishes, polls, history, unattributed or pending-origin lanes and unknown tools never trigger it.
+  - Any selection holds focus for 5 seconds; candidates during the hold are dropped.
+  - While the owner reads, the switch waits and the current view shows a note. Reading means scrolled away from the tail, selecting text, an open block or expanded group, a focused card control, or the archive view. The switch happens once none of these applies and the hold has passed. Only the newest waiting chat is kept; a manual selection or turning auto-switch off drops it.
+- **Scrolling.** The timeline follows the tail only while the owner is at the bottom. Scrolling away stops following, and Jump to latest returns to the tail.
+- **History.** The page offers Earlier in this conversation and Discover older conversations. When coverage says `use_archive`, Open older history shows a separate archive window with its own selection, until the owner goes back to the live view.
+- **Browser storage.**
+  - `sessionStorage` holds the viewer token and the IDs of the tab's live and archive windows.
+  - `localStorage` holds the auto-switch setting and aliases, keyed by the conversation digest.
+  - Decoded audit records are kept only in memory. Above 64 MiB per window (live or archive), the page releases records of other lanes that can be fetched again. The selected lane's records are never released, so the bound can be exceeded. A released record shows its size and can be loaded again.
+  - The page writes nothing to the console.
+- **One tab per session.** A tab that duplicates another tab's session ends with `duplicate_tab` and asks for a new code. This is detected through `BroadcastChannel` while the original tab is open.
 
 ## 11. Audit log
 
