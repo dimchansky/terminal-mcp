@@ -392,12 +392,22 @@ terminal-mcp dashboard
 
 The command asks the running standalone server for a one-time code, prints the code and the local address in your terminal (on stderr when stdout is redirected), and opens `http://127.0.0.1:8090/dashboard/` (your saved listener). Paste the code into the page. The tab then stays signed in across reloads until one of these happens: the tab has been closed or unreachable for 30 minutes, 12 hours pass, a newer sign-in replaces it (more than 8 sessions), you sign out, or the server restarts. The page lists the observed conversations, marked client-claimed, and shows each one's actions as readable cards, with live updates. A conversation with new activity shows "N new". **Auto-switch chats** (off by default) follows new work in another chat, but waits while you scroll, select text or have a block open. Scroll up to read; **Jump to latest** returns to the tail. Use **Earlier in this conversation**, **Discover older conversations** and, when older rows were evicted from the live window, **Open older history** for the past. The page contract is in SPEC §10 (the API needs the viewer token from a pairing code, not the MCP bearer).
 
-- For a foreground `serve`, pass `--listen` and `--token-file` (or set `TERMINAL_MCP_TOKEN`).
+- For a foreground server (`terminal-mcp serve` or plain `terminal-mcp`), pass its address with `--listen` and its token with `--token-file` (or set `TERMINAL_MCP_TOKEN`).
 - `--no-open` prints without opening a browser; this is useful over SSH.
 - `--revoke-all` ends every dashboard session and unused code.
 - `terminal-mcp status` shows `viewer_sessions` and `viewer_pending_codes`.
 
 The dashboard shows complete audit inputs, including any secrets a model supplied, so do not share the screen casually. It is local only: the embedded tunnel never forwards it. See SPEC §10 for the guard and lifetimes.
+
+If the page does not show what you expect:
+
+- **"does not support the dashboard"** from the command: the running server is older than the dashboard; update it first (`make update`).
+- **Offline** or **Reconnecting** with a reason: the page retries by itself. "The server is busy" and "cannot be reached" are temporary; "too many dashboard views are open" means the session's or the server's window limit is in use (close another tab or the archive view); "does not fit within one view's capacity" means a very large burst of recent activity; "kept failing to rebuild" means the server could not rebuild the view and opens a new one.
+- **"already open in another tab"**: each sign-in serves one tab. Sign in with a new code to view it in another tab too.
+- **"The server is stopping or restarting"**, **"Your session has ended"** or **"replaced by a newer sign-in"**: run `terminal-mcp dashboard` again for a new code; a restart ends every session.
+- **"Some activity may have been missed while the view was rebuilt"**: the server rebuilt the view; new activity during the rebuild is shown, but not counted as new.
+- A card shows **Large record (N bytes)** with **Load complete original**: the record's base64 form is over one page (1 MiB, about 768 KiB of JSONL); the button reads it in full.
+- A chat is missing: use **Discover older conversations**; if older history was evicted from the live view, **Open older history** shows it separately.
 
 ## 5. Audit and diagnostics
 
@@ -522,6 +532,13 @@ packages):
 node --test internal/viewer/webtest/*.test.js
 ```
 
+`go test ./cmd/terminal-mcp` also runs the page journey tests
+(`TestPage*`): a Node driver uses the page's own modules against the real
+server (cards, request budget, history, unread, auto-switch, stop). They
+skip without `node`, except when `TERMINAL_MCP_REQUIRE_NODE=1`, as CI sets.
+`TERMINAL_MCP_BASELINE=1 go test -count=1 -run TestPageBaseline -v ./cmd/terminal-mcp`
+prints the dashboard's performance baseline.
+
 To check the page by hand without a real server, run the manual fixture.
 It serves the dashboard over a scripted audit journal with live appends and
 prints a pairing code; stop it with Ctrl-C:
@@ -536,4 +553,5 @@ capacity and writes that many older calls, so **Discover older
 conversations** ends the live window's history (coverage `evicted`) and **Open older history** can be
 tried. The page assets are embedded, so restart the fixture after changing
 them. [TEST_REPORT.md](../TEST_REPORT.md) and
-[RELEASE_READINESS.md](RELEASE_READINESS.md) record earlier validation only.
+[RELEASE_READINESS.md](RELEASE_READINESS.md) record dated validation, not
+the current state.

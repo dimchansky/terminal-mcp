@@ -1,12 +1,76 @@
-# Release readiness — historical stage 7 review
+# Release readiness — dated reviews
 
-> **Historical review (2026-10-26).** This report describes the stage 7
-> source review and its checks at that time, **not** the current release
+> **Dated records:** the dashboard readiness of #10 (2026-11-10) and the
+> historical stage 7 review (2026-10-26). Each describes its checks at that
+> time, **not** the current release
 > state, the present CI matrix or a deployment procedure. The application
-> was installed and subsequently changed after this review, including the
+> was installed and subsequently changed after the stage 7 review, including the
 > removal of cold audit migration. Use [README.md](../README.md) for setup,
 > [SPEC.md](../SPEC.md) for behavior, and current GitHub Actions for test
 > results. Do not follow the old rollout checklist as instructions.
+
+## Dashboard readiness (#10, 2026-11-10)
+
+This section records the end-to-end checks of the owner-only activity
+dashboard (#2, stages #3–#10) on the date above. Like the rest of this file,
+it is a dated record; current results are in GitHub Actions.
+
+### Automated checks
+
+| Scope | Where | Evidence |
+| --- | --- | --- |
+| All page modules, and a boot smoke test of `app.js` | `make test-js` (`internal/viewer/webtest/*.test.js`) | Node 22, Linux, macOS, Windows CI |
+| Page client against the real server | `TestPage*` in `cmd/terminal-mcp` (Node driver `journey.mjs` with the page's own modules) | Required in CI on all three platforms (`TERMINAL_MCP_REQUIRE_NODE=1`) |
+| What the model asked for | `TestPageShowsWhatTheModelAskedFor` | Real MCP calls: readable commands with env first, copy only on exact round trip (exact tokens on Windows); terminal input with visible escapes; full `file_write`; red/green edits; unknown and nested fields; duplicate keys and inexact numbers flagged; a replay from another chat; a near-4-MiB record deferred and loaded byte for byte; an unrecordable input rejected before any effect, in its chat; no invented file contents or process output; every record byte-equal to its journal line; nothing in browser storage or URLs |
+| Request budget | `TestPageFirstScreenRequestBudget` | First screen: one window request, no record reads; mid-size records inline across pages; a large record read once, on Load |
+| History and archive | `TestPageHistoryJourney` | A chat only beyond the live window is found through Discover and the archive view; the live selection survives |
+| Unread and auto-switch | `TestPageUnreadAndAutoSwitch` | Logical actions per chat, a poll storm once; no new unread for rows delivered again (reconnect, earlier cursor) or a rebuilt window (new generation, possible unseen activity); auto-switch only on new non-polling starts in another claimed chat, outside the hold, waiting while reading, never when off; separate request and effect durations |
+| Lifecycle | `TestPageEndsOnStopAndNeedsANewCode`, `TestDashboardStream*`, `TestShutdownFencesAViewer…`, `TestForceStopEndsViewersFirst` | Stop and update end open pages with `server_stopping`, also with queued record reads, and no request follows; a restart needs a new code; force stop ends viewers first |
+| Isolation and security | `TestTunnelCannotReachViewerRoutes`, `TestBrowserNeverReceivesTheMCPBearer`, asset bans, `TestThePageOffersNoPause` | The tunnel reaches only `/mcp`; the bearer never reaches the browser; inert rendering; no Pause |
+| Rotation, slow viewers | `TestDashboardStreamCompleteAcrossRotation`, `TestDashboardStreamSlowConsumer`, Windows reader proofs | No lost rows across rotation; a slow viewer never blocks MCP writes |
+| Older installed server | `TestDashboardExplainsServerProblems` | `terminal-mcp dashboard` says the server does not support the dashboard |
+| MCP tool schemas | `tools/list` of a build of bbf28ac (before the dashboard) and of HEAD, over stdio with the audit off | All 14 tool schemas byte-identical |
+
+### Manual check
+
+Chromium (the desktop app's built-in browser) against an isolated
+foreground server built from HEAD: its own port, token, audit file and file
+root in a temporary directory, no tunnel. Two chats, a poll group, an
+unattributed call, a live call raising "1 new" in another chat, and a
+normal stop showing "The server is stopping or restarting". The fixture
+checks of #9 (follow and Jump, deferral while reading, archive view,
+keyboard, aliases) were repeated during #10's fixes. **Safari: not checked**
+(owner decision: Chromium is enough).
+
+### Baseline
+
+Apple M1 Max, macOS, Go 1.27.3, Node 22; one run, not a guarantee.
+
+| Measure | Result |
+| --- | --- |
+| `BenchmarkRecentAtCapacity` (one Recent request, window of 50,000 occurrences) | about 14 ms, 14.6 MB, 9,900 allocations |
+| First screen over 50,000 recorded rows (`TestPageBaseline`) | about 45 ms after sign-in: one window request and the stream |
+| Discovering 50 chats in that journal | about 9 s in 63 requests |
+| `tools/call terminal_list`, median / p95, without a dashboard | 0.58 ms / 0.90 ms |
+| The same with an open dashboard (live window and stream) | 0.38 ms / 0.71 ms (no measurable overhead; the difference is noise) |
+
+### Defects found and fixed in #10
+
+- An archive scan ignored updates that did not fit; a rebuilt archive window failed on every Earlier.
+- A window that kept ending was reopened in a tight loop; the header said only "Offline".
+- A record deferred for its size ended its page, so ordinary cards needed Earlier; now only records whose base64 form exceeds 1 MiB are deferred with their size.
+- An oversized-input rejection lost its call metadata and showed as unattributed (owner decision: keep `call_meta`).
+- The manual fixture command could print a stale code from a cached test result.
+
+### Known limits
+
+- Unread counts and a waiting auto-switch are per tab and in memory (the on/off setting is kept in localStorage); activity arriving only through a new snapshot is not counted (the page says so).
+- One record read per request; a page reads at most 8 MiB of over-budget records (base64), plus one record.
+- The embedded tunnel with real ChatGPT chats is checked by the owner after `make update` (owner decision); its result will be recorded in #10.
+
+## Stage 7 review (2026-10-26)
+
+The sections below record the stage 7 source review.
 
 ## Scope of this review
 
