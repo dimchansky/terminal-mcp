@@ -75,14 +75,25 @@ func auditToolRequests(recorder *audit.Log, serverID string) mcp.Middleware {
 					}
 					// The input cannot fit, so don't pretend a partial
 					// request_start is complete. Record a small *rejection*
-					// event without its arguments and refuse dispatch.
+					// event without its arguments and refuse dispatch. It
+					// keeps the call metadata, which names the caller's
+					// conversation, unless that alone cannot be recorded
+					// either (or would exceed the history budget); Start
+					// reports that without degrading the log.
 					rejection := audit.NewEvent(audit.Event{
 						ServerID: serverID, RequestID: info.id, Tool: call.Name,
 						OperationID: start.OperationID,
 						Phase:       "request_rejected", Status: "rejected", Reason: reason,
-						Error: err.Error(),
+						Error: err.Error(), CallMeta: callMeta,
 					})
-					_ = recorder.Write(rejection) // The log records and diagnoses its own failures.
+					if callMeta == nil {
+						_ = recorder.Write(rejection) // The log records and diagnoses its own failures.
+					} else if err := recorder.Start(rejection); err != nil {
+						if errors.Is(err, audit.ErrEventTooLarge) || errors.Is(err, audit.ErrInvalidEvent) || errors.Is(err, audit.ErrHistoryLimit) {
+							rejection.CallMeta = nil
+						}
+						_ = recorder.Write(rejection)
+					}
 					return auditToolError("audit input cannot be fully recorded: " + err.Error() + "; tool not executed"), nil
 				default:
 					return auditToolError("audit_unavailable: " + err.Error() + "; tool not executed"), nil

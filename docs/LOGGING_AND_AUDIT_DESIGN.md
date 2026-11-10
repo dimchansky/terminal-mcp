@@ -423,7 +423,8 @@ diagnostic formatting and lossless retention policy (stage 6).
   exceeds the 4 MiB JSONL record limit, or cannot be serialized, is
   **refused before dispatch** with a clear MCP error. Only a small
   `request_rejected` event (with the reason and no misleading partial
-  arguments) is written. No mutation is admitted in this path.
+  arguments) is written. It keeps the call's `call_meta`, so the caller's
+  conversation stays known, unless that alone cannot be recorded either. No mutation is admitted in this path.
   Ordinary filesystem append/rotation failures remain fail-open until
   stage 4; this exception does not implement the full fail-closed policy.
 - A syntactically invalid/unparseable JSON-RPC message rejected before

@@ -551,7 +551,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 	checkRecords(b[0], "")
 
 	// The near-4-MiB record is deferred with its exact size and loads whole.
-	d.waitLane(chatIdentity("chat-c"), 1)
+	d.waitLane(chatIdentity("chat-c"), 2)
 	c := d.cards(chatIdentity("chat-c"))
 	safe(c)
 	big := byOp(c, "op-big")
@@ -570,30 +570,19 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 	expect(big, fmt.Sprintf("Large record (%s bytes)", groupDigits(len(bigLine)+1)))
 	checkRecords(big, "")
 
-	// The oversized input: rejected before any effect, saying so and why.
-	// Its call metadata is not recorded with it, so it is not in chat-c.
-	var unattributed string
-	deadline := time.Now().Add(30 * time.Second)
-	for unattributed == "" {
-		for _, l := range d.lanes() {
-			if l.Kind == "unattributed" {
-				unattributed = l.Identity
-			}
-		}
-		if unattributed == "" && time.Now().After(deadline) {
-			t.Fatalf("no unattributed lane: %+v", d.lanes())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	d.waitLane(unattributed, 1)
-	u := d.cards(unattributed)
-	safe(u)
-	rejected := byOp(u, "op-huge")
+	// The oversized input: rejected before any effect, saying so and why,
+	// in the chat that sent it (the rejection keeps the call metadata).
+	rejected := byOp(c, "op-huge")
 	expect(rejected, "Input not recorded · tool not executed", "audit_record_too_large", "audit event exceeds maximum file size")
 	if hasAction(rejected, "load-record") {
 		t.Error("an unrecorded input offers a record to load")
 	}
 	checkRecords(rejected, "")
+	for _, l := range d.lanes() {
+		if l.Kind == "unattributed" {
+			t.Errorf("a lane of unattributed activity exists: %+v", l)
+		}
+	}
 
 	// Nothing private leaves memory: the client's storage holds window IDs
 	// only, and API paths never carry input.

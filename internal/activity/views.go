@@ -12,10 +12,12 @@ const (
 	// OriginNotLoaded: the action's request_start is outside the loaded
 	// window; it may still be found by backfill. Not "unattributed".
 	OriginNotLoaded Attribution = iota + 1
-	// Unattributed: the recorded start has no usable conversation hint, or
-	// the input was rejected without a recorded start.
+	// Unattributed: the recorded start (or, for an input rejected without
+	// a recorded start, the rejection's call_meta) has no usable
+	// conversation hint.
 	Unattributed
-	// Attributed: the recorded start names a client-claimed conversation.
+	// Attributed: the recorded start, or the rejection's call_meta, names a
+	// client-claimed conversation.
 	Attributed
 )
 
@@ -219,7 +221,7 @@ func (p *Projection) Action(key RequestKey) (ActionView, bool) {
 		v.Identity, v.Input = start.Identity, InputRecorded
 		v.Order = p.order(v.Start.Primary)
 	case hasRejected:
-		v.Input = InputNotRecorded
+		v.Identity, v.Input = rejected.Identity, InputNotRecorded
 	default:
 		v.Input = InputUnknown
 	}

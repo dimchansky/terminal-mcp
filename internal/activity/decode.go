@@ -69,8 +69,9 @@ type Event struct {
 	DurationMS  int64
 	HasDuration bool
 
-	// Identity is normalized from call_meta. Only request_start records
-	// carry call_meta; for other records it is the zero value.
+	// Identity is normalized from call_meta. request_start records carry
+	// call_meta, and so may request_rejected ones; for other records it is
+	// the zero value.
 	Identity Identity
 }
 

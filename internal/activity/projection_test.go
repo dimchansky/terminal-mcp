@@ -312,6 +312,12 @@ func TestRejectedAndLegacyRequests(t *testing.T) {
 		a.State != RequestFinished || a.Effect != nil || len(w.p.Needs()) != 0 {
 		t.Fatalf("rejected %+v", a)
 	}
+	// A rejection that kept its call_meta belongs to the caller's chat.
+	w.onLive("rej2", `{"schema_version":2,"time":"t","server_id":"srv-now","request_id":"r2","tool":"file_write","phase":"request_rejected","status":"rejected","reason":"audit_record_too_large","call_meta":{"openai/session":"chat-x"}}`)
+	named := w.action(current, "r2")
+	if c, ok := named.Identity.Key(); named.Attribution != Attributed || !ok || c.ConversationID != "chat-x" || named.Input != InputNotRecorded {
+		t.Fatalf("rejected with call_meta %+v", named)
+	}
 
 	w.history("ls", `{"time":"t","request_id":"old","tool":"terminal_start","phase":"start","args":{"argv":["sh"]}}`)
 	w.history("lf", `{"time":"t","request_id":"old","tool":"terminal_start","phase":"finish","status":"applied"}`)

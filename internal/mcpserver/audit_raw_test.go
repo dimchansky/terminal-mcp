@@ -217,7 +217,8 @@ func TestOversizedAuditedRequestIsRejectedBeforeEffect(t *testing.T) {
 	tooLarge := session.StartArgs{
 		OperationID: "too-large", ServerID: "size-test", Argv: []string{strings.Repeat("&", 720000)},
 	}
-	rejected, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "size_test_mutation", Arguments: tooLarge})
+	rejected, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "size_test_mutation", Arguments: tooLarge,
+		Meta: mcp.Meta{"openai/session": "chat-oversized"}})
 	if err != nil || rejected == nil || !rejected.IsError {
 		t.Fatalf("oversized input was not explicitly rejected: result=%+v err=%v", rejected, err)
 	}
@@ -231,18 +232,42 @@ func TestOversizedAuditedRequestIsRejectedBeforeEffect(t *testing.T) {
 		t.Fatalf("oversized input was truncated or executed: response=%q effects=%d", msg, effects.Load())
 	}
 
-	var denial bool
+	// Metadata too large to record with the rejection: the rejection is
+	// still recorded, without it, and the log stays healthy.
+	hugeMeta, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "size_test_mutation",
+		Arguments: session.StartArgs{OperationID: "huge-meta", ServerID: "size-test", Argv: []string{"x"}},
+		Meta:      mcp.Meta{"openai/session": "chat-huge-meta", "pad": strings.Repeat("&", 720000)}})
+	if err != nil || hugeMeta == nil || !hugeMeta.IsError || effects.Load() != 0 {
+		t.Fatalf("an unrecordable call was not rejected: result=%+v err=%v effects=%d", hugeMeta, err, effects.Load())
+	}
+	if st := recorder.Status(); st.State != "ok" {
+		t.Fatalf("a rejection degraded the audit: %+v", st)
+	}
+
+	var denials int
 	for _, e := range readLifecycleAudit(t, path) {
-		if e.Tool == "size_test_mutation" {
-			if e.Phase != "request_rejected" || e.Status != "rejected" ||
-				e.Reason != "audit_record_too_large" || e.Args != nil {
-				t.Fatalf("oversized input was misrepresented as fully audited: %+v", e)
+		if e.Tool != "size_test_mutation" {
+			continue
+		}
+		if e.Phase != "request_rejected" || e.Status != "rejected" ||
+			e.Reason != "audit_record_too_large" || e.Args != nil {
+			t.Fatalf("oversized input was misrepresented as fully audited: %+v", e)
+		}
+		denials++
+		meta, _ := e.CallMeta.(map[string]any)
+		switch e.OperationID {
+		case "too-large": // The caller's conversation stays known.
+			if meta["openai/session"] != "chat-oversized" {
+				t.Fatalf("the rejection lost its call metadata: %+v", e)
 			}
-			denial = true
+		case "huge-meta":
+			if e.CallMeta != nil {
+				t.Fatalf("an unrecordable metadata was recorded: %.200v", e.CallMeta)
+			}
 		}
 	}
-	if !denial {
-		t.Fatal("no auditable oversized-input rejection was recorded")
+	if denials != 2 {
+		t.Fatalf("%d oversized-input rejections recorded, want 2", denials)
 	}
 
 	// A sizable input just below the 4 MiB file limit must be preserved

@@ -434,8 +434,13 @@ func (p *Projection) attribution(a *action) Attribution {
 		}
 		return Unattributed
 	}
-	if len(a.phases[slotRejected].occ) > 0 {
-		return Unattributed // request_rejected carries no call_meta.
+	if _, rejected, ok := p.primary(a.phases[slotRejected]); ok {
+		// A rejection keeps the call's call_meta when it fits (older
+		// rejections have none).
+		if _, named := rejected.Identity.Key(); named {
+			return Attributed
+		}
+		return Unattributed
 	}
 	return OriginNotLoaded
 }
