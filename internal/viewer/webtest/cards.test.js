@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { card, timeline, entry, entryKey } from "../static/cards.js";
+import { card, timeline, entry, entryKey, compactable, groupTarget } from "../static/cards.js";
 import { textOf, find, materialize } from "../static/view.js";
 
 const enc = (s) => new TextEncoder().encode(s);
@@ -91,12 +91,36 @@ test("consecutive polls of one target collapse into a group", () => {
   const polls = [1, 2, 3].map((n) => {
     records.set("ref-" + n, { bytes: startRecord("terminal_read", { session_id: "sess-1" }), size: 1 });
     return { kind: "action", key: "a:s/p" + n, lane: "L", order: { live: true, rank: n },
-      action: { key: { server_id: "s", request_id: "p" + n }, tool: "terminal_read", state: "finished", start: { primary: "ref-" + n, time: "t" } } };
+      action: { key: { server_id: "s", request_id: "p" + n }, tool: "terminal_read", input: "recorded", state: "finished", status: "ok", start: { primary: "ref-" + n, time: "t" } } };
   });
   const groups = timeline(polls, { records });
   assert.equal(groups.length, 1);
   assert.equal(groups[0].items.length, 3);
-  assert.match(textOf(entry(groups[0], { records, expanded: new Set() })), /terminal_read × 3 \(polling\)/);
+  const collapsed = entry(groups[0], { records, expanded: new Set() });
+  assert.match(textOf(collapsed), /^Read output × 3 Checked: output read session_id sess-1 · last /);
+  assert.equal(find(collapsed, "members")[0].attrs.hidden, true, "collapsed: one row, the polls hidden but complete");
+  assert.equal(find(find(collapsed, "members")[0], "compact").length, 3);
+  assert.equal(find(entry(groups[0], { records, expanded: new Set([entryKey(groups[0])]) }), "compact").length, 3, "expanded: every poll, as a row");
+  // A failed poll is its own card, between groups.
+  polls[1].action.status = "error";
+  const split = timeline(polls, { records });
+  assert.deepEqual(split.map((e) => (e.item ? "card" : e.items.length)), [1, "card", 1]);
+});
+
+test("listing calls fold to one row that expands to the full card", () => {
+  const { it, ctx } = item("file_search", { path: "/src", pattern: "TODO", max_results: 10 });
+  it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"] };
+  ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", search_matches: 2, outcome: "ok" }) + "\n") });
+  let v = card(it, ctx);
+  assert.match(textOf(find(v, "row-head")[0]), /^Search files Done path \/src pattern TODO /);
+  assert.equal(find(v, "full")[0].attrs.hidden, true, "collapsed, the card is hidden but complete");
+  assert.match(textOf(find(v, "full")[0]), /max_results/);
+  ctx.open = new Set([it.key + ":row"]);
+  v = card(it, ctx);
+  assert.equal(find(v, "full")[0].attrs.hidden, undefined);
+  // An undefined field keeps the full card.
+  const odd = item("file_search", { path: "/src", pattern: "x", sneaky: 1 });
+  assert.equal(find(card(odd.it, odd.ctx), "compact").length, 0);
 });
 
 // leaves collects every string and number value of an args object.
@@ -302,4 +326,65 @@ test("caveats sit behind an info control and stay in the card", () => {
 test("an empty script says so", () => {
   const { it, ctx } = item("terminal_start", { argv: ["sh", "-c", ""], env: {} });
   assert.match(textOf(find(card(it, ctx), "input")[0]), /\(empty script\)/);
+});
+
+test("only calls that need no attention fold to a row", () => {
+  const base = () => {
+    const r = item("file_list", { path: "/src", limit: 5 });
+    r.it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"] };
+    r.ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok" }) + "\n") });
+    return r;
+  };
+  assert.ok(compactable(base().it, base().ctx), "a plain listing folds");
+  const cases = {
+    rejected: (it) => { it.action.rejected = { primary: "ref-start" }; it.action.status = "rejected"; },
+    failed: (it) => { it.action.status = "error"; },
+    unknown: (it) => { it.action.state = "unknown"; it.action.status = ""; },
+    stopped: (it) => { it.action.status = "canceled"; },
+    legacy: (it) => { it.action.legacy = true; },
+    "not recorded": (it) => { it.action.input = "not_recorded"; },
+    "possibly unrecorded": (it) => { it.action.possibly_unrecorded = true; },
+    conflict: (it) => { it.action.start.conflict = true; },
+    "pending identity": (it) => { it.action.start.occurrences = ["p:1"]; },
+    "unusable metadata": (it) => { it.action.identity = { metadataInvalid: true }; },
+  };
+  for (const [what, change] of Object.entries(cases)) {
+    const { it, ctx } = base();
+    change(it);
+    assert.equal(compactable(it, ctx), null, what);
+  }
+  const lossy = item("file_list", null, { raw: enc('{"args":{"path":"a"},"args":{"path":"b"}}\n') });
+  assert.equal(compactable(lossy.it, lossy.ctx), null, "lossy");
+  const nested = item("file_read", { files: [{ path: "/a", extra: 1 }] });
+  assert.equal(compactable(nested.it, nested.ctx), null, "an undefined nested field");
+  const notLoaded = base();
+  notLoaded.ctx.records.set("ref-start", { bytes: null, size: 10, deferred: true });
+  assert.equal(compactable(notLoaded.it, notLoaded.ctx), null, "input not loaded");
+});
+
+test("a row shows every main field, in schema order, each value apart", () => {
+  const spoof = "x · path /tmp/harmless" + " ".repeat(200);
+  const { it, ctx } = item("file_search", { pattern: spoof, path: "/Users/owner/.ssh", max_results: 3 });
+  const head = find(card(it, ctx), "row-head")[0];
+  const keys = find(head, "row-key").map(textOf);
+  assert.deepEqual(keys, ["path", "pattern"], "schema order, protocol fields left out");
+  assert.match(textOf(head), /path \/Users\/owner\/\.ssh pattern x · path \/tmp\/harmless/);
+  assert.ok(!textOf(head).includes("max_results"));
+});
+
+test("unread counts a failed poll on its own, like the timeline shows it", async () => {
+  const { attentionFor } = await import("../static/attention.js");
+  const records = new Map();
+  const store = { lanes: new Map([["L", { id: "L", kind: "conversation", identitySource: "openai/session", conversationId: "c" }]]), records };
+  const poll = (n, status) => {
+    records.set("ref-" + n, { bytes: startRecord("terminal_read", { session_id: "s1" }), size: 1 });
+    return { kind: "action", key: "a:s/p" + n, lane: "L", order: { live: true, rank: n },
+      action: { key: { server_id: "s", request_id: "p" + n }, tool: "terminal_read", input: "recorded", state: "finished", status,
+        start: { primary: "ref-" + n, occurrences: ["ref-" + n], time: "t" } } };
+  };
+  const att = attentionFor(store, { now: () => 0 });
+  const items = [poll(1, "ok"), poll(2, "ok"), poll(3, "error"), poll(4, "error")];
+  att.observe(items.map((item) => ({ type: "added", item })), { live: true }, { autoSwitch: false, current: "", deferred: false, laneKind: () => "conversation" });
+  assert.equal(att.count("c\u0000openai/session\u0000c"), 3, "two good polls as one, each failure apart");
+  assert.equal(groupTarget(items[2], { records }), null);
 });

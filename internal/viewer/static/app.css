@@ -87,3 +87,12 @@ details.info > summary { list-style: none; cursor: help; width: 1.1em; height: 1
 details.info > summary::-webkit-details-marker { display: none; }
 details.info[open] { display: block; }
 .via { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.2rem; }
+.card.compact { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+.row-head, .group-head { display: flex; gap: 0.4rem; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0.15rem 0; }
+.row-head::before, .group-head::before { content: "▸"; color: var(--muted); }
+.row-head[aria-expanded="true"]::before, .group-head[aria-expanded="true"]::before { content: "▾"; }
+.row-main { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.badge.claimed { color: var(--muted); }
+details.conv-id { display: inline-block; font-size: 0.8rem; color: var(--muted); }
+details.conv-id code { overflow-wrap: anywhere; }
+.row-key { color: var(--muted); font-style: italic; }

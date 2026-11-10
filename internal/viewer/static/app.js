@@ -139,6 +139,7 @@ const view = {
   renderNonce: 0, // Forces a timeline render after a local view change.
   lanesSignature: "",
   timelineSignature: "",
+  titleSignature: "",
   open: new Set(), // Open "Original audit JSONL" blocks, by key.
   entries: new Map(), // Timeline entry key → signature of its rendered element.
   laneOrder: [], // Lane identities in the order last shown.
@@ -168,7 +169,7 @@ function resetView() {
   view.open.clear();
   view.entries.clear();
   view.requested.clear();
-  view.lanesSignature = view.timelineSignature = "";
+  view.lanesSignature = view.timelineSignature = view.titleSignature = "";
   view.laneOrder = [];
   view.loading = view.loadError = view.renewNote = "";
   view.controls = null;
@@ -225,8 +226,9 @@ function deferred() {
   const selecting = sel && !sel.isCollapsed && box.contains(sel.anchorNode);
   // An open block counts only when it shows: not inside a closed Details.
   // A small note ("i") is not reading: it never holds a switch back.
-  const reading = [...box.querySelectorAll("details[open]:not(.info)")].some((d) => !(d.parentElement && d.parentElement.closest("details:not([open])"))) ||
-    box.querySelector(".group-head[aria-expanded=\"true\"]") !== null;
+  // Hidden blocks (in a closed Details or a collapsed row) do not count.
+  const reading = [...box.querySelectorAll("details[open]:not(.info)")].some((d) => !(d.parentElement && d.parentElement.closest("details:not([open]), [hidden]"))) ||
+    [...box.querySelectorAll(".group-head[aria-expanded=\"true\"], .row-head[aria-expanded=\"true\"]")].some((b) => !b.closest("[hidden]"));
   const active = document.activeElement;
   const working = active !== box && box.contains(active); // A focused card control, not the box itself.
   return !view.follow || selecting || reading || working || !!view.archive;
@@ -343,6 +345,7 @@ function renderLanes() {
     const base = id ? labels.get(id) : "(empty conversation ID)";
     return uses.get(id) > 1 ? base + " (" + (l.identitySource || "?") + ")" : base;
   };
+  view.laneNames = new Map(conv.map((l) => [laneIdentity(l), laneName(l)])); // The chat's title uses the same short name.
   const list = $("lane-list");
   const focused = document.activeElement && document.activeElement.parentElement === list ? document.activeElement.dataset.lane : null;
   const existing = new Map([...list.children].map((li) => [li.dataset.lane, li]));
@@ -395,7 +398,7 @@ function entrySig(e, ctx) {
   const store = source();
   // The view is part of the signature: live and archive entries never share an element.
   return (view.archive ? "a" + view.archive.id : "l") + "|" + JSON.stringify(items) + "|" + items.map((it) => recordSig(it, store)).join(";") + "|" +
-    items.map((it) => ["originals", "details", "meta"].map((k) => view.open.has(it.key + ":" + k)).join(",")).join(";") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
+    items.map((it) => ["originals", "details", "meta", "row"].map((k) => view.open.has(it.key + ":" + k)).join(",")).join(";") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
     // A command's card shows what later calls saw of its process.
     JSON.stringify(items.map((it) => (it.action && it.action.tool === "terminal_start" && ctx.processes && ctx.processes.get(processKey(it))) || null));
 }
@@ -405,11 +408,12 @@ function renderTimeline() {
   const box = $("timeline");
   const src = view.archive ? view.archive.store : client.store;
   const signature = [src.version, laneIdentity(lane), view.renderNonce, view.loading, view.loadError, !!view.archive,
-    lane ? aliasOf(lane) : "", lane ? !!view.digests.get(laneIdentity(lane)) : false, !!view.attention.pending].join("|");
+    lane ? aliasOf(lane) + "\u0000" + ((view.laneNames && view.laneNames.get(laneIdentity(lane))) || "") : "", lane ? !!view.digests.get(laneIdentity(lane)) : false, !!view.attention.pending].join("|");
   if (signature === view.timelineSignature) { return; }
   view.timelineSignature = signature;
   if (!lane) {
     $("lane-title").textContent = "No activity loaded yet.";
+    view.titleSignature = "";
     box.replaceChildren();
     return;
   }
@@ -418,15 +422,26 @@ function renderTimeline() {
   const items = laneTimeline(store, shown.id);
   const ctx = { records: store.records, serverOS: client.status.serverOS, expanded: view.expanded, open: view.open };
   const alias = aliasOf(lane);
+  // The title changes only with its own inputs, so an open Conversation ID
+  // (and a selection in it) survives new records.
+  const titleSig = [laneIdentity(lane), alias, (view.laneNames && view.laneNames.get(laneIdentity(lane))) || "", !!view.digests.get(laneIdentity(lane)),
+    !!view.archive, !!view.attention.pending, lane.conversationId || "", lane.identitySource || ""].join("\u0000");
+  if (titleSig !== view.titleSignature) {
+  view.titleSignature = titleSig;
   $("lane-title").replaceChildren(materialize(document, h("div", {},
-    lane.kind === "conversation" ? [alias ? [h("strong", {}, text(alias)), " · "] : null, h("strong", {}, text(lane.conversationId || "")), " ",
-      h("span", { class: "claimed" }, "client-claimed via ", text(lane.identitySource || "")), " ",
-      view.digests.get(laneIdentity(lane)) ? h("button", { type: "button", "data-action": "rename" }, alias ? "Rename or remove alias" : "Set alias") : null]
+    lane.kind === "conversation" ? [
+      h("strong", { title: lane.conversationId || "" }, text(alias || (view.laneNames && view.laneNames.get(laneIdentity(lane))) || lane.conversationId || "")), " ",
+      h("span", { class: "badge claimed", tabindex: 0, title: "Named by the client's own metadata (" + (lane.identitySource || "?") + "); not verified",
+        "aria-label": "client-claimed: named by the client's own metadata (" + (lane.identitySource || "?") + "), not verified" }, "client-claimed"), " ",
+      view.digests.get(laneIdentity(lane)) ? h("button", { type: "button", "data-action": "rename" }, alias ? "Rename or remove alias" : "Set alias") : null, " ",
+      h("details", { class: "conv-id" }, h("summary", {}, "Conversation ID"), h("code", {}, text(lane.conversationId || "")),
+        " via ", text(lane.identitySource || ""))]
       : h("strong", {}, LANE_NAMES[lane.kind] || lane.kind),
     view.archive ? h("div", { class: "warning" }, "Older history (archive view, separate from the live view). ",
       h("button", { type: "button", "data-action": "close-archive" }, "Back to the live view")) : null,
     view.attention.pending ? h("div", { class: "note" }, "New activity in another chat; auto-switch waits while you read.") : null,
     h("div", { class: "note" }, "The audit records what was asked for and the outcome, not file contents read or process output."))));
+  }
 
   // Keep the reader's place: remember the first visible entry and its offset.
   const atTail = view.follow;
@@ -504,7 +519,13 @@ async function onTimelineClick(ev) {
   const key = button.dataset.key;
   const lane = selectedLane();
   switch (button.dataset.action) {
-    case "load-record": if (view.archive) { client.loadArchiveRecord(view.archive.store, key); } else { client.loadRecord(key); } break;
+    case "load-record": {
+      // A card that becomes a row once its record loads stays open.
+      const owner = button.closest(".card[data-key]");
+      if (owner && !owner.classList.contains("compact")) { view.open.add(owner.dataset.key + ":row"); } // Harmless if it never folds.
+      if (view.archive) { client.loadArchiveRecord(view.archive.store, key); } else { client.loadRecord(key); }
+      break;
+    }
     case "copy-record":
     case "copy-record-base64": {
       const rec = source().records.get(key);
@@ -525,8 +546,27 @@ async function onTimelineClick(ev) {
       if (cmd.exact) { copy(button, cmd.line); }
       break;
     }
+    case "toggle-row": {
+      // A collapsed row keeps no open blocks: they would hide as reading.
+      const itemKey = key.slice(0, -":row".length);
+      // Open as the row shows it: any of its blocks open.
+      if (["row", "details", "originals", "meta"].some((k) => view.open.has(itemKey + ":" + k))) {
+        for (const k of ["row", "details", "originals", "meta"]) { view.open.delete(itemKey + ":" + k); }
+      } else { view.open.add(key); view.follow = false; }
+      view.renderNonce++;
+      render();
+      if (!["row", "details", "originals", "meta"].some((k) => view.open.has(itemKey + ":" + k))) { tryResume(); }
+      break;
+    }
     case "toggle-group":
-      if (view.expanded.has(key)) { view.expanded.delete(key); } else { view.expanded.add(key); view.follow = false; }
+      if (view.expanded.has(key)) {
+        view.expanded.delete(key);
+        // A collapsed group keeps no open member blocks: they would hide as reading.
+        const group = button.closest(".group");
+        for (const m of group ? group.querySelectorAll(".members .card[data-key]") : []) {
+          for (const k of ["row", "details", "originals", "meta"]) { view.open.delete(m.dataset.key + ":" + k); }
+        }
+      } else { view.expanded.add(key); view.follow = false; }
       view.renderNonce++;
       render();
       tryResume();

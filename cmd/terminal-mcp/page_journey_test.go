@@ -989,14 +989,27 @@ func TestPageUnreadAndAutoSwitch(t *testing.T) {
 	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-b") {
 		t.Fatalf("switched within the hold: %+v", a)
 	}
-	// After the hold: polls and an unattributed call never switch.
+	// After the hold: polls and an unattributed call never switch. The
+	// polls read a real session (started in the "unattributed" lane, so
+	// the chats' counts stay as they are).
+	started := call(t, cs, "", "terminal_start", map[string]any{"server_id": sid, "operation_id": "op-unread-poll", "argv": []string{"go", "version"},
+		"cwd": root, "wait_for": "completion", "wait_ms": 5000})
+	var startResult struct {
+		Receipt struct {
+			SessionID string `json:"session_id"`
+		} `json:"receipt"`
+	}
+	if err := json.Unmarshal([]byte(toolText(started)), &startResult); err != nil || startResult.Receipt.SessionID == "" {
+		t.Fatalf("terminal_start result %q: %v", toolText(started), err)
+	}
+	pollSession := startResult.Receipt.SessionID
 	attend(map[string]any{"clock": 200_000})
 	for range 6 {
-		call(t, cs, "chat-c", "terminal_read", map[string]any{"session_id": "sess-poll", "wait_ms": 0})
+		call(t, cs, "chat-c", "terminal_read", map[string]any{"session_id": pollSession, "wait_ms": 0})
 	}
 	call(t, cs, "", "file_write", map[string]any{"server_id": sid, "operation_id": "op-unread-nobody", "path": filepath.Join(root, "nobody.txt"), "content": "x"})
 	d.waitItems(chatIdentity("chat-c"), 7)
-	d.waitItems(unattributed, 1)
+	d.waitItems(unattributed, 2)
 	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-b") || len(a.Switches) != 1 {
 		t.Fatalf("a poll or an unattributed call switched: %+v", a)
 	}
@@ -1018,7 +1031,7 @@ func TestPageUnreadAndAutoSwitch(t *testing.T) {
 	// Unread: chat-a 1, chat-b 1, chat-c 2 (a start, and six polls as one
 	// group), the unattributed call in its own lane. Rendering is not
 	// seeing; seeing a chat clears it.
-	want := map[string]int{chatIdentity("chat-a"): 1, chatIdentity("chat-b"): 1, chatIdentity("chat-c"): 2, unattributed: 1}
+	want := map[string]int{chatIdentity("chat-a"): 1, chatIdentity("chat-b"): 1, chatIdentity("chat-c"): 2, unattributed: 2}
 	eventually("first activity", want)
 	d.do(map[string]any{"cmd": "cards", "identity": chatIdentity("chat-b"), "seen": true}, nil)
 	delete(want, chatIdentity("chat-b"))

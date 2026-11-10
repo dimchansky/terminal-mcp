@@ -165,9 +165,10 @@ function started(facts, suffix) {
 
 function checked(a, status, facts) {
   if (a.tool === "terminal_read") {
-    const exit = exitText(facts.process && facts.process.exit);
+    const ex = facts.process && facts.process.exit;
+    const exit = exitText(ex);
     const state = facts.process && typeof facts.process.state === "string" ? facts.process.state : "";
-    return { kind: "checked", label: "Checked: " + (exit || state || "output read"), detail: "" };
+    return { kind: "checked", label: "Checked: " + (exit || state || "output read"), detail: "", warn: !!exit && !(ex && ex.code === 0) && exit !== "exited" };
   }
   if (status === "completed") { return { kind: "checked", label: "Checked: download completed", detail: "" }; }
   return { kind: "checked", label: "Checked: still downloading", detail: "" };

@@ -4,7 +4,7 @@
 
 import { mayAutoSwitch } from "./classes.js";
 import { laneIdentity } from "./model.js";
-import { pollTarget } from "./cards.js";
+import { groupTarget } from "./cards.js";
 
 export const HOLD_MS = 5000;
 
@@ -116,7 +116,7 @@ export class Attention {
 export function attentionFor(store, options = {}) {
   return new Attention({
     laneOf: (item) => laneIdentity(store.lanes.get(item.lane)) || item.lane,
-    unitOf: (item) => { const t = pollTarget(item, { records: store.records }); return t ? "poll\u0000" + t : item.key; },
+    unitOf: (item) => { const t = groupTarget(item, { records: store.records }); return t ? "poll\u0000" + t : item.key; },
     ...options,
   });
 }

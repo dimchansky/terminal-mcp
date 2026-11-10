@@ -11,7 +11,7 @@ import { lineDiff } from "./diff.js";
 import { isPolling } from "./classes.js";
 import { refOccurrence } from "./model.js";
 import { outcome, verb, headDuration, timing } from "./outcome.js";
-import { fieldClass, knownTool, hasChildren } from "./fields.js";
+import { FIELDS, fieldClass, knownTool, hasChildren } from "./fields.js";
 
 // parsed caches parsed records by their bytes (records are immutable).
 const parsed = new WeakMap();
@@ -613,8 +613,102 @@ export function card(item, ctx) {
       moreDetails(item, c, [timingLine(item), receipt(item, c), originals(item, c)]));
   }
   const [input, protocol] = inputView(item, c);
-  return h("div", { class: "card", "data-key": item.key }, actionHeader(item, c, factsOf(item, c)), input,
-    moreDetails(item, c, [protocol, timingLine(item), callMeta(item, c), receipt(item, c), originals(item, c)]));
+  const full = [actionHeader(item, c, factsOf(item, c)), input,
+    moreDetails(item, c, [protocol, timingLine(item), callMeta(item, c), receipt(item, c), originals(item, c)])];
+  const row = compactable(item, c);
+  if (row) { return compactRow(item, c, row, full); }
+  return h("div", { class: "card", "data-key": item.key }, full);
+}
+
+// Listing and polling calls fold to one row when nothing about them needs
+// attention.
+const COMPACT = new Set(["terminal_list", "terminal_read", "file_list", "file_search", "file_receive_result", "file_receive_status"]);
+
+// compactable answers {o, summary} when an item may show as one row: a
+// listing or polling call whose input is loaded and lossless, whose every
+// field (at any depth) its schema defines, with no warning, that did not
+// fail, run partly or end unknown. Otherwise null.
+export function compactable(item, ctx) {
+  const a = item.action;
+  if (!a || !COMPACT.has(a.tool) || !a.start || a.input !== "recorded" || a.legacy || a.possibly_unrecorded) { return null; }
+  const e = item.effect;
+  const phases = [a.start, a.finish, a.rejected, e && e.start, e && e.finish].filter(Boolean);
+  if (phases.some((p) => p.conflict || p.more > 0 || (p.occurrences || [p.primary]).some((id) => id.startsWith("p:")))) { return null; }
+  if (a.identity && a.identity.metadataInvalid) { return null; }
+  const rs = recordState(ctx, a.start.primary);
+  if (rs.state !== "loaded" || !rs.parsed.value || rs.parsed.issues.length) { return null; }
+  const args = field(rs.parsed.value, "args");
+  if (args && (args.kind !== "object" || !allDefined(a.tool, "", args))) { return null; }
+  const o = outcome(item, factsOf(item, ctx));
+  if (!["done", "checked", "running"].includes(o.kind)) { return null; }
+  return { o, summary: mainSummary(a.tool, args) };
+}
+
+// groupTarget is the poll group an item joins on the timeline and counts
+// in for unread: polls of one target that need no attention. A poll that
+// does (failed, rejected …) is its own card and its own unit.
+export function groupTarget(item, ctx) {
+  const target = pollTarget(item, ctx);
+  return target && compactable(item, ctx) ? target : null;
+}
+
+// allDefined reports whether every key of an object node, at any depth
+// the schema describes, is defined by the tool's schema.
+function allDefined(tool, path, node) {
+  if (!node) { return true; }
+  if (node.kind === "array") { return node.items.every((it) => allDefined(tool, path + "[]", it)); }
+  if (node.kind !== "object") { return true; }
+  return node.entries.every((e) => {
+    const p = path ? path + "." + e.key : e.key;
+    if (fieldClass(tool, p) === "") { return false; }
+    return !hasChildren(tool, p) || allDefined(tool, p, e.value);
+  });
+}
+
+// mainSummary puts a call's main values on one line, in the schema's
+// order: each key styled apart from its value, each value cut on its own,
+// so every main field shows and no value can pose as another field. The
+// full text is in the expanded card.
+function mainSummary(tool, args) {
+  if (!args || !Object.hasOwn(FIELDS, tool)) { return []; }
+  const parts = [];
+  for (const name of FIELDS[tool].main) {
+    if (name.includes(".") || name.includes("[]")) { continue; }
+    const node = field(args, name);
+    if (!node) { continue; }
+    const v = Array.from(shortValue(node));
+    parts.push([parts.length ? " " : "", h("span", { class: "row-key" }, text(name)), " ",
+      h("code", {}, text(v.length > 60 ? v.slice(0, 59).join("") + "…" : v.join("")))]);
+  }
+  return parts;
+}
+
+function shortValue(node) {
+  switch (node.kind) {
+    case "string": return node.value;
+    case "number": return node.text;
+    case "bool": return String(node.value);
+    case "array": return node.items.map(shortValue).join(", ");
+    case "object": return node.entries.map((e) => e.key + "=" + shortValue(e.value)).join(", ");
+    default: return "null";
+  }
+}
+
+// compactRow shows a call as one line; the full card follows when the row
+// is expanded (it is always built, hidden while collapsed).
+function compactRow(item, ctx, row, full) {
+  const key = item.key + ":row";
+  // Open also while a block of the card is open (it was a full card while
+  // its record loaded, or the owner opened Details): nothing hides under
+  // the owner.
+  const open = !!(ctx.open && ["row", "details", "originals", "meta"].some((k) => ctx.open.has(item.key + ":" + k)));
+  const a = item.action;
+  return h("div", { class: "card compact", "data-key": item.key },
+    h("button", { type: "button", class: "row-head", "data-action": "toggle-row", "data-key": key, "aria-expanded": open },
+      h("strong", { class: "verb" }, text(verb(a.tool))), " ",
+      h("span", { class: "outcome-chip " + chipClass(row.o), title: row.o.detail || "" }, text(row.o.label)), " ",
+      h("span", { class: "row-main" }, row.summary), " ", localTime((a.start || {}).time)),
+    open ? h("div", { class: "full" }, full) : h("div", { class: "full", hidden: true }, full));
 }
 
 function localTimeOf(item, ctx) {
@@ -645,7 +739,8 @@ export function timeline(items, ctx) {
   ctx.processes = processSeen(items, ctx);
   const out = [];
   for (const item of items) {
-    const target = pollTarget(item, ctx);
+    // A poll that needs attention (failed, rejected …) is its own card.
+    const target = groupTarget(item, ctx);
     const last = out[out.length - 1];
     if (target && last && last.group === target) { last.items.push(item); continue; }
     out.push(target ? { group: target, items: [item] } : { item });
@@ -667,9 +762,13 @@ export function entry(e, ctx) {
   const last = e.items[e.items.length - 1];
   const key = entryKey(e);
   const open = ctx.expanded && ctx.expanded.has(key);
-  const failed = e.items.filter((it) => it.action.rejected || (it.action.status && it.action.status !== "ok")).length;
+  const row = compactable(last, { ...ctx, key: last.key });
+  // One row for the group: what the last poll saw; expanded, every poll.
   return h("div", { class: "group", "data-key": key },
     h("button", { type: "button", class: "group-head", "data-action": "toggle-group", "data-key": key, "aria-expanded": !!open },
-      text(last.action.tool), " × " + e.items.length + " (polling)" + (failed ? ", " + failed + " not ok" : "") + " · last ", localTime((last.action.start || {}).time)),
-    open ? e.items.map((it) => card(it, ctx)) : card(last, ctx));
+      h("strong", { class: "verb" }, text(verb(last.action.tool))), " × " + e.items.length, " ",
+      row ? h("span", { class: "outcome-chip " + chipClass(row.o) }, text(row.o.label)) : null, " ",
+      h("span", { class: "row-main" }, row ? row.summary : null), " · last ", localTime((last.action.start || {}).time)),
+    // Always built: collapsed, the polls are hidden but complete.
+    open ? h("div", { class: "members" }, e.items.map((it) => card(it, ctx))) : h("div", { class: "members", hidden: true }, e.items.map((it) => card(it, ctx))));
 }

@@ -145,10 +145,14 @@ func TestAPIStreamNotifiesAndEnds(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(ev.Items) > 0 && ev.Items[0].Key == actionKey(requestKey(id)) {
-			if ev.Items[0].Summary == nil || ev.Items[0].Summary.Text != "x" || ev.Items[0].State != "finished" {
+			if ev.Items[0].Summary == nil || ev.Items[0].Summary.Text != "x" {
 				t.Fatalf("item %+v", ev.Items[0])
 			}
-			break
+			// The start and finish are two appends: a slow runner may
+			// report the open request first; its finish follows.
+			if ev.Items[0].State == "finished" {
+				break
+			}
 		}
 	}
 	// Catch-up delivers the complete item.
