@@ -23,8 +23,13 @@ if (!base) { process.stderr.write("usage: node journey.mjs <base URL>\n"); proce
 const counts = new Map(); // API path → requests sent.
 const recordReads = new Map(); // Occurrence ID → record requests sent.
 let streamCut = new AbortController(); // Aborted by the cut command.
+let streamHold = null; // While set, a new stream waits for it (the hold command).
 async function pageFetch(url, init = {}) {
   const path = url.replace("/dashboard/api/", "");
+  if (path === "stream" && streamHold) {
+    const aborted = new Promise((r) => { if (init.signal) { init.signal.addEventListener("abort", r, { once: true }); } });
+    await Promise.race([streamHold.promise, aborted]);
+  }
   if (init.signal && init.signal.aborted) { throw new DOMException("aborted", "AbortError"); }
   counts.set(path, (counts.get(path) || 0) + 1);
   if (path === "record") {
@@ -72,7 +77,14 @@ function actionsOf(node, out = []) {
   return out;
 }
 
-const context = () => ({ autoSwitch, current, deferred, laneKind: (id) => (client.store.laneByIdentity(id) || {}).kind });
+// As app.js deferred(): reading defers a switch, and so does the archive view.
+const context = () => ({ autoSwitch, current, deferred: deferred || archive !== null, laneKind: (id) => (client.store.laneByIdentity(id) || {}).kind });
+
+// resume is app.js tryResume: a deferred switch happens once nothing defers it.
+function resume() {
+  const t = attention.resume(context());
+  if (t) { switches.push(t); current = t; attention.selected(); render(); }
+}
 
 const laneByIdentity = (identity) => client.store.laneByIdentity(identity);
 
@@ -98,6 +110,28 @@ async function until(cond, what, ms = 15000) {
 }
 
 const settled = () => client.store.pendingRecords().length === 0 && client.loading.size === 0;
+
+
+// lanesOf summarizes a store's lanes as the driver reports them.
+function lanesOf(store) {
+  return [...store.lanes.values()].map((l) => ({ identity: laneIdentity(l), kind: l.kind, conversation: l.conversationId || "",
+    items: l.items, loaded: store.laneItems(l.id).length, unread: store === client.store ? attention.count(laneIdentity(l)) : 0 }));
+}
+
+// renderCards renders a lane's timeline like the page.
+function renderCards(store, lane) {
+  const items = laneTimeline(store, lane.id);
+  const ctx = { records: store.records, serverOS: client.status.serverOS, expanded: new Set(), open: new Set() };
+  return timeline(items, ctx).map((e) => {
+    const tree = entry(e, ctx);
+    const first = e.item || e.items[0];
+    const its = e.item ? [e.item] : e.items;
+    return { key: entryKey(e), tool: first.action ? first.action.tool : first.kind, size: its.length, text: textOf(tree), actions: actionsOf(tree),
+      occurrences: its.flatMap((it) => occurrencesOf(it)) };
+  });
+}
+
+let archive = null; // The archive view: {store, requested}.
 
 const commands = {
   async login({ code }) {
@@ -131,13 +165,7 @@ const commands = {
     await until(() => client.status.connection === connection || (ended && connection === "ended"), "connection " + connection);
     return { ok: true, connection: client.status.connection, ended };
   },
-  async lanes() {
-    return {
-      ok: true,
-      lanes: [...client.store.lanes.values()].map((l) => ({ identity: laneIdentity(l), kind: l.kind, conversation: l.conversationId || "",
-        items: l.items, loaded: client.store.laneItems(l.id).length, unread: attention.count(laneIdentity(l)) })),
-    };
-  },
+  async lanes() { return { ok: true, lanes: lanesOf(client.store) }; },
   // select chooses a lane like a click; the page's render then loads its
   // first page. It answers once that page and its records arrived.
   async select({ identity }) {
@@ -175,33 +203,79 @@ const commands = {
   async cards({ identity, seen }) {
     const lane = laneByIdentity(identity);
     if (!lane) { return { ok: false, code: "no_lane" }; }
-    const items = laneTimeline(client.store, lane.id);
-    const ctx = { records: client.store.records, serverOS: client.status.serverOS, expanded: new Set(), open: new Set() };
-    const out = timeline(items, ctx).map((e) => {
-      const tree = entry(e, ctx);
-      const first = e.item || e.items[0];
-      const items = e.item ? [e.item] : e.items;
-      return { key: entryKey(e), tool: first.action ? first.action.tool : first.kind, size: items.length, text: textOf(tree), actions: actionsOf(tree),
-        occurrences: items.flatMap((it) => occurrencesOf(it)) };
-    });
-    if (seen) { attention.seen(items); }
+    const out = renderCards(client.store, lane);
+    if (seen) { attention.seen(laneTimeline(client.store, lane.id)); }
     return { ok: true, cards: out };
   },
+
   async record({ occurrence }) {
     const r = client.store.records.get(occurrence);
     if (r && !r.bytes) { client.loadRecord(occurrence); await until(() => client.store.records.get(occurrence).bytes || client.store.records.get(occurrence).unavailable, "record"); }
     const now = client.store.records.get(occurrence);
     return { ok: true, b64: now && now.bytes ? Buffer.from(now.bytes).toString("base64") : "", unavailable: !!(now && now.unavailable) };
   },
+  // discover is the page's Discover older conversations.
+  async discover() {
+    const r = await client.discover();
+    if (!r.ok) { return { ok: false, code: r.code }; }
+    await until(settled, "records");
+    return { ok: true, coverage: client.store.coverage };
+  },
+  // archive opens the archive view (Open older history) and answers its lanes.
+  async archive() {
+    const r = await client.openArchive();
+    if (!r.ok) { return { ok: false, code: r.code }; }
+    archive = { store: r.store, requested: new Set() };
+    return { ok: true, lanes: lanesOf(archive.store) };
+  },
+  // archiveCards selects a lane in the archive view, loads its first page
+  // like the page does, and renders it.
+  async archiveCards({ identity }) {
+    const store = archive.store;
+    const lane = store.laneByIdentity(identity);
+    if (!lane) { return { ok: false, code: "no_lane" }; }
+    const key = firstPageKey(store, lane, archive.requested);
+    if (key) {
+      archive.requested.add(key);
+      const r = await client.archivePage(store, "lane-items", lane.id);
+      if (!r.ok) { return { ok: false, code: r.code }; }
+    }
+    await until(() => store.pendingRecords().length === 0 && client.loading.size === 0, "archive records");
+    return { ok: true, cards: renderCards(store, lane) };
+  },
+  async closeArchive() { archive = null; await client.closeArchive(); resume(); return { ok: true }; },
+  // item answers the live store's item with this key.
+  async item({ key }) { return { ok: true, item: client.store.items.get(key) || null }; },
   async requests() { return { ok: true, counts: Object.fromEntries(counts), records: Object.fromEntries(recordReads) }; },
   async reset() { counts.clear(); recordReads.clear(); return { ok: true }; },
-  async status() { return { ok: true, status: client.status, text: describeStatus(client.status), window: client.windowId, storage: Object.fromEntries(storage), ended }; },
-  async cut() { streamCut.abort(); streamCut = new AbortController(); return { ok: true }; },
+  async status() { return { ok: true, status: client.status, text: describeStatus(client.status), window: client.windowId, generation: client.store.generation, storage: Object.fromEntries(storage), ended }; },
+  // cut ends the open stream and answers once the page noticed it.
+  async cut() {
+    streamCut.abort();
+    streamCut = new AbortController();
+    await until(() => client.status.connection !== "live", "the page to notice the cut");
+    return { ok: true, connection: client.status.connection };
+  },
+  // hold makes new streams wait (on: true) until released (on: false).
+  async hold({ on }) {
+    if (on && !streamHold) { let release; const promise = new Promise((r) => { release = r; }); streamHold = { promise, release }; }
+    if (!on && streamHold) { streamHold.release(); streamHold = null; }
+    return { ok: true };
+  },
+  // cursor answers the live cursor; rewind sets an earlier one and catches
+  // up from it, so the page receives rows it already applied again.
+  async cursor() { return { ok: true, cursor: client.cursor }; },
+  async rewind({ cursor }) {
+    client.cursor = cursor;
+    await client.catchUp();
+    await until(settled, "records");
+    return { ok: true, cursor: client.cursor };
+  },
   async attention(opts) {
     if (opts.clock !== undefined) { clock = opts.clock; }
     if (opts.autoSwitch !== undefined) { autoSwitch = opts.autoSwitch; }
     if (opts.deferred !== undefined) { deferred = opts.deferred; }
-    if (opts.resume) { const t = attention.resume(context()); if (t) { switches.push(t); current = t; attention.selected(); render(); } }
+    if (opts.resume) { resume(); }
     return { ok: true, switches: [...switches], pending: attention.pending, current };
   },
   async stop() { if (client) { client.stop(); } return { ok: true }; },

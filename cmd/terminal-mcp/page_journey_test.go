@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"terminalmcp/internal/audit"
+	"terminalmcp/internal/dashboard"
 )
 
 // The page journey tests drive the dashboard page's own modules (client,
@@ -130,14 +135,16 @@ func (d *pageDriver) do(cmd map[string]any, out any) map[string]any {
 }
 
 // signIn issues a pairing code and signs the driver in with it, as the
-// page does with a pasted code.
-func (d *pageDriver) signIn(s *liveServer) {
+// page does with a pasted code; it answers the viewer token.
+func (d *pageDriver) signIn(s *liveServer) string {
 	d.t.Helper()
 	code, _, err := s.viewers.Issue()
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	d.do(map[string]any{"cmd": "login", "code": code}, nil)
+	var r struct{ Token string }
+	d.do(map[string]any{"cmd": "login", "code": code}, &r)
+	return r.Token
 }
 
 type testWriter struct{ t *testing.T }
@@ -736,5 +743,421 @@ func TestPageFirstScreenRequestBudget(t *testing.T) {
 	}
 	if n := d.requests().Counts["record"]; n != after.Counts["record"] {
 		t.Errorf("paging mid-size records read %d records on their own", n-after.Counts["record"])
+	}
+}
+
+// writeOld appends finished calls of a chat directly to the audit, to build
+// history quickly (MCP calls would add nothing but time).
+func (s *liveServer) writeOld(chat string, n int) {
+	s.t.Helper()
+	for i := range n {
+		id := fmt.Sprintf("old-%s-%d", chat, i)
+		for _, e := range []audit.Event{
+			{ServerID: s.manager.ID(), RequestID: id, Tool: "file_read", Phase: "request_start",
+				Args: map[string]any{"files": []map[string]any{{"path": fmt.Sprintf("/old/%s/%d.txt", chat, i)}}}, CallMeta: map[string]any{"openai/session": chat}},
+			{ServerID: s.manager.ID(), RequestID: id, Tool: "file_read", Phase: "request_finish", Status: "ok"},
+		} {
+			if err := s.recorder.Write(audit.NewEvent(e)); err != nil {
+				s.t.Fatal(err)
+			}
+		}
+	}
+}
+
+// waitItems waits until a lane of the live view has at least n items.
+func (d *pageDriver) waitItems(identity string, n int) journeyLane {
+	d.t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		for _, l := range d.lanes() {
+			if l.Identity == identity && l.Items >= n {
+				return l
+			}
+		}
+		if time.Now().After(deadline) {
+			d.t.Fatalf("lane %q never had %d items: %+v", identity, n, d.lanes())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestPageHistoryJourney (#10): a chat recorded only beyond the live
+// window is found by Discover older conversations and read in the archive
+// view; the live view meanwhile keeps its own chats and selection, and new
+// live calls extend the same timeline.
+func TestPageHistoryJourney(t *testing.T) {
+	root := t.TempDir()
+	s := startLiveServerWith(t, liveOptions{fileRoot: root, capacity: 250})
+	s.writeOld("chat-old", 300)    // 600 rows, older than everything below.
+	s.writeOld("chat-filler", 150) // 300 newer rows: the first history page holds none of chat-old.
+	cs := s.mcpSession(t.Context())
+	sid := s.manager.ID()
+	for i := range 4 {
+		call(t, cs, "chat-a", "file_write", map[string]any{"server_id": sid, "operation_id": fmt.Sprintf("op-hist-a%d", i),
+			"path": filepath.Join(root, fmt.Sprintf("a%d.txt", i)), "content": "a"})
+	}
+
+	d := startPageDriver(t, s)
+	d.signIn(s)
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	d.do(map[string]any{"cmd": "settle"}, nil)
+	for _, l := range d.lanes() {
+		if l.Identity == chatIdentity("chat-old") {
+			t.Fatalf("the old chat is in the live window before any scan: %+v", l)
+		}
+	}
+	// The owner reads another chat than the default one.
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-filler")}, nil)
+
+	// Discover older conversations scans until the window is full; its
+	// coverage then says older history needs the archive view.
+	var disc struct {
+		Coverage struct {
+			End        string `json:"end"`
+			UseArchive bool   `json:"use_archive"`
+		}
+	}
+	for range 20 {
+		d.do(map[string]any{"cmd": "discover"}, &disc)
+		if disc.Coverage.UseArchive {
+			break
+		}
+	}
+	if !disc.Coverage.UseArchive || disc.Coverage.End != "evicted" {
+		t.Fatalf("coverage after discovery: %+v", disc.Coverage)
+	}
+
+	// The archive view shows the old chat with its recorded input.
+	var arch struct{ Lanes []journeyLane }
+	d.do(map[string]any{"cmd": "archive"}, &arch)
+	found := false
+	for _, l := range arch.Lanes {
+		found = found || l.Identity == chatIdentity("chat-old")
+	}
+	if !found {
+		t.Fatalf("the archive has no old chat: %+v", arch.Lanes)
+	}
+	var old struct{ Cards []journeyCard }
+	d.do(map[string]any{"cmd": "archiveCards", "identity": chatIdentity("chat-old")}, &old)
+	if len(old.Cards) == 0 {
+		t.Fatal("the archive shows no card of the old chat")
+	}
+	for _, c := range old.Cards {
+		if !strings.Contains(c.Text, "/old/chat-old/") || slices.Contains(c.Actions, "load-record") {
+			t.Fatalf("an archive card of another chat, or not loaded: %.300s", c.Text)
+		}
+	}
+	d.do(map[string]any{"cmd": "closeArchive"}, nil)
+
+	// Back in the live view: the owner's live selection is intact, and a
+	// new call extends chat-a's timeline.
+	var st struct{ Current string }
+	d.do(map[string]any{"cmd": "settle"}, &st)
+	if st.Current != chatIdentity("chat-filler") {
+		t.Fatalf("live selection after the archive: %q", st.Current)
+	}
+	call(t, cs, "chat-a", "file_write", map[string]any{"server_id": sid, "operation_id": "op-hist-live",
+		"path": filepath.Join(root, "live.txt"), "content": "live"})
+	d.waitItems(chatIdentity("chat-a"), 5)
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-a")}, nil)
+	cards := d.cards(chatIdentity("chat-a"))
+	if len(cards) != 5 || !strings.Contains(cards[len(cards)-1].Text, "live.txt") {
+		t.Fatalf("live chat-a cards: %d, last %.200s", len(cards), cards[len(cards)-1].Text)
+	}
+}
+
+// journeyStatus is the part of the driver's status the tests read.
+type journeyStatus struct {
+	Status struct {
+		Connection     string `json:"connection"`
+		PossibleUnseen bool   `json:"possibleUnseen"`
+	} `json:"status"`
+	Window     string `json:"window"`
+	Generation uint64 `json:"generation"`
+}
+
+// unread maps lane identities to their unread counts.
+func (d *pageDriver) unread() map[string]int {
+	d.t.Helper()
+	out := map[string]int{}
+	for _, l := range d.lanes() {
+		if l.Unread > 0 {
+			out[l.Identity] = l.Unread
+		}
+	}
+	return out
+}
+
+// TestPageUnreadAndAutoSwitch (#10): unread counts logical actions per
+// chat, once per poll group, and never again for rows delivered again
+// (after a reconnect, or from an earlier cursor) or for a rebuilt window,
+// which reports possible unseen activity instead; auto-switch follows only
+// new non-polling starts in another claimed chat, outside the focus hold,
+// waits while the owner reads, and never moves when it is off; request and
+// effect durations stay separate. Earlier and mid-size paging are covered
+// by TestPageFirstScreenRequestBudget, the archive by TestPageHistoryJourney;
+// late origins and short-ID collisions by unit tests (internal/activity,
+// internal/dashboard, attention.test.js).
+func TestPageUnreadAndAutoSwitch(t *testing.T) {
+	root := t.TempDir()
+	s := startLiveServerWith(t, liveOptions{fileRoot: root})
+	cs := s.mcpSession(t.Context())
+	sid := s.manager.ID()
+	d := startPageDriver(t, s)
+	token := d.signIn(s)
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	n := 0
+	write := func(chat string) {
+		n++
+		call(t, cs, chat, "file_write", map[string]any{"server_id": sid, "operation_id": fmt.Sprintf("op-unread-%d", n),
+			"path": filepath.Join(root, fmt.Sprintf("u%d.txt", n)), "content": "x"})
+	}
+	type attentionState struct {
+		Switches []string
+		Pending  *string
+		Current  string
+	}
+	attend := func(opts map[string]any) attentionState {
+		t.Helper()
+		opts["cmd"] = "attention"
+		var a attentionState
+		d.do(opts, &a)
+		return a
+	}
+	// eventually waits until unread matches want.
+	eventually := func(what string, want map[string]int) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for !maps.Equal(d.unread(), want) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: unread %v, want %v", what, d.unread(), want)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	unattributed := "unattributed"
+
+	// The first chat is shown by default; the owner turns auto-switch on.
+	write("chat-a")
+	d.waitItems(chatIdentity("chat-a"), 1)
+	attend(map[string]any{"autoSwitch": true, "clock": 100_000})
+	// A new start in another chat moves the selection.
+	write("chat-b")
+	d.waitItems(chatIdentity("chat-b"), 1)
+	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-b") || len(a.Switches) != 1 {
+		t.Fatalf("no switch to chat-b: %+v", a)
+	}
+	// Within the hold, another chat's start does not.
+	attend(map[string]any{"clock": 101_000})
+	write("chat-c")
+	d.waitItems(chatIdentity("chat-c"), 1)
+	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-b") {
+		t.Fatalf("switched within the hold: %+v", a)
+	}
+	// After the hold: polls and an unattributed call never switch.
+	attend(map[string]any{"clock": 200_000})
+	for range 6 {
+		call(t, cs, "chat-c", "terminal_read", map[string]any{"session_id": "sess-poll", "wait_ms": 0})
+	}
+	call(t, cs, "", "file_write", map[string]any{"server_id": sid, "operation_id": "op-unread-nobody", "path": filepath.Join(root, "nobody.txt"), "content": "x"})
+	d.waitItems(chatIdentity("chat-c"), 7)
+	d.waitItems(unattributed, 1)
+	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-b") || len(a.Switches) != 1 {
+		t.Fatalf("a poll or an unattributed call switched: %+v", a)
+	}
+	// The six polls are one group card.
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-c")}, nil)
+	groups := 0
+	for _, c := range d.cards(chatIdentity("chat-c")) {
+		if c.Tool == "terminal_read" {
+			groups++
+			if c.Size != 6 {
+				t.Errorf("a poll group of %d", c.Size)
+			}
+		}
+	}
+	if groups != 1 {
+		t.Fatalf("%d poll groups, want 1", groups)
+	}
+
+	// Unread: chat-a 1, chat-b 1, chat-c 2 (a start, and six polls as one
+	// group), the unattributed call in its own lane. Rendering is not
+	// seeing; seeing a chat clears it.
+	want := map[string]int{chatIdentity("chat-a"): 1, chatIdentity("chat-b"): 1, chatIdentity("chat-c"): 2, unattributed: 1}
+	eventually("first activity", want)
+	d.do(map[string]any{"cmd": "cards", "identity": chatIdentity("chat-b"), "seen": true}, nil)
+	delete(want, chatIdentity("chat-b"))
+	eventually("after seeing chat-b", want)
+
+	// Auto-switch off: new work in another chat never moves the selection.
+	attend(map[string]any{"autoSwitch": false, "clock": 300_000})
+	write("chat-b")
+	want[chatIdentity("chat-b")] = 1
+	eventually("with auto-switch off", want)
+	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-c") || a.Pending != nil {
+		t.Fatalf("auto-switch off moved or queued: %+v", a)
+	}
+	// Reading defers a switch; it happens once reading ends, and a manual
+	// selection drops a deferred one.
+	attend(map[string]any{"autoSwitch": true, "deferred": true, "clock": 400_000})
+	write("chat-a")
+	want[chatIdentity("chat-a")]++
+	eventually("while reading", want)
+	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-c") || a.Pending == nil || *a.Pending != chatIdentity("chat-a") {
+		t.Fatalf("not deferred: %+v", a)
+	}
+	if a := attend(map[string]any{"deferred": false, "resume": true}); a.Current != chatIdentity("chat-a") || a.Pending != nil {
+		t.Fatalf("the deferred switch did not happen: %+v", a)
+	}
+	attend(map[string]any{"deferred": true, "clock": 500_000})
+	write("chat-b")
+	want[chatIdentity("chat-b")]++
+	eventually("a second deferral", want)
+	if a := attend(map[string]any{}); a.Pending == nil || *a.Pending != chatIdentity("chat-b") {
+		t.Fatalf("no deferred switch to drop: %+v", a)
+	}
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-c")}, nil)
+	if a := attend(map[string]any{}); a.Pending != nil {
+		t.Fatalf("a manual selection kept a deferred switch: %+v", a)
+	}
+	if a := attend(map[string]any{"deferred": false, "clock": 600_000, "resume": true}); a.Current != chatIdentity("chat-c") {
+		t.Fatalf("a dropped switch happened later: %+v", a)
+	}
+	attend(map[string]any{"autoSwitch": false})
+
+	// Calls made while the stream is down arrive once on reconnect, each
+	// counted once.
+	d.do(map[string]any{"cmd": "hold", "on": true}, nil)
+	d.do(map[string]any{"cmd": "cut"}, nil)
+	for range 3 {
+		write("chat-a")
+	}
+	d.do(map[string]any{"cmd": "hold", "on": false}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	want[chatIdentity("chat-a")] += 3
+	eventually("after a reconnect", want)
+	// Rows delivered again from an earlier cursor change nothing.
+	var cur struct{ Cursor string }
+	d.do(map[string]any{"cmd": "cursor"}, &cur)
+	for range 5 {
+		write("chat-b")
+	}
+	want[chatIdentity("chat-b")] += 5
+	eventually("five more calls", want)
+	var newest struct{ Cursor string }
+	d.do(map[string]any{"cmd": "cursor"}, &newest)
+	var gen journeyStatus
+	d.do(map[string]any{"cmd": "status"}, &gen)
+	catchUps := d.requests().Counts["catch-up"]
+	var rw struct{ Cursor string }
+	d.do(map[string]any{"cmd": "rewind", "cursor": cur.Cursor}, &rw)
+	var genAfter journeyStatus
+	d.do(map[string]any{"cmd": "status"}, &genAfter)
+	if rw.Cursor != newest.Cursor || genAfter.Generation != gen.Generation || d.requests().Counts["catch-up"] <= catchUps {
+		t.Fatalf("the rows were not delivered again: cursor %q (newest %q), generation %d -> %d", rw.Cursor, newest.Cursor, gen.Generation, genAfter.Generation)
+	}
+	if got := d.unread(); !maps.Equal(got, want) {
+		t.Fatalf("after rows delivered again: unread %v, want %v", got, want)
+	}
+
+	// A rebuilt window (forced as in TestAPIResnapshotAfterRebuild): a new
+	// snapshot of a new generation replaces the old one, without new
+	// unread; the page says activity may have been missed instead.
+	var st journeyStatus
+	d.do(map[string]any{"cmd": "status"}, &st)
+	if st.Status.PossibleUnseen {
+		t.Fatal("possible unseen activity before any rebuild")
+	}
+	gen0 := st.Generation
+	resp, err := http.DefaultClient.Do(s.request(dashboard.PathCatchUp, token,
+		map[string]any{"window": st.Window, "generation": gen0, "after": "not-issued"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("forcing a rebuild: %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		d.do(map[string]any{"cmd": "status"}, &st)
+		if st.Generation > gen0 && st.Status.PossibleUnseen && st.Status.Connection == "live" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no new snapshot after a rebuild: %+v", st)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := d.unread(); !maps.Equal(got, want) {
+		t.Fatalf("after a rebuild: unread %v, want %v", got, want)
+	}
+
+	// Durations, and finishes never switch: a download in chat-b whose
+	// effect outlasts its request finishes while the owner reads chat-a,
+	// outside the hold.
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release // Finishes only once auto-switch is on (below).
+		time.Sleep(400 * time.Millisecond)
+		_, _ = w.Write([]byte("payload"))
+	}))
+	t.Cleanup(func() { // Release a blocked handler first: Close waits for it.
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		slow.Close()
+	})
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-b")}, nil)
+	itemsB := d.waitItems(chatIdentity("chat-b"), 1).Items
+	call(t, cs, "chat-b", "file_receive", map[string]any{"server_id": sid, "operation_id": "op-unread-receive", "path": filepath.Join(root, "dl.bin"),
+		"file": map[string]any{"download_url": slow.URL + "/f", "file_id": "f1"}, "wait_ms": 0})
+	d.waitItems(chatIdentity("chat-b"), itemsB+1) // Its start is in; only the finish is to come.
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-a")}, nil)
+	before := attend(map[string]any{"autoSwitch": true, "clock": 900_000})
+	close(release)
+	var receive map[string]any
+	deadline = time.Now().Add(30 * time.Second)
+	for receive == nil {
+		for _, c := range d.cards(chatIdentity("chat-b")) {
+			if c.Tool != "file_receive" {
+				continue
+			}
+			var it struct{ Item map[string]any }
+			d.do(map[string]any{"cmd": "item", "key": c.Key}, &it)
+			if e, _ := it.Item["effect"].(map[string]any); e != nil && e["state"] == "finished" {
+				receive = it.Item
+			}
+		}
+		if receive == nil && time.Now().After(deadline) {
+			t.Fatal("the download never finished in the page")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if a := attend(map[string]any{}); a.Current != chatIdentity("chat-a") || len(a.Switches) != len(before.Switches) {
+		t.Fatalf("a finish switched: %+v", a)
+	}
+	ms := func(v any) float64 {
+		dur, _ := v.(map[string]any)["duration"].(map[string]any)
+		switch dur["state"] {
+		case "measured":
+			return dur["milliseconds"].(float64)
+		case "sub_millisecond":
+			return 0
+		}
+		t.Fatalf("duration not measured: %v", v)
+		return 0
+	}
+	request, effect := ms(receive["action"]), ms(receive["effect"])
+	if effect < 350 || request >= effect {
+		t.Fatalf("request %v ms, effect %v ms", request, effect)
+	}
+	raw, _ := json.Marshal(receive)
+	if strings.Contains(string(raw), "runtime") {
+		t.Fatalf("a download reports a process runtime: %s", raw)
 	}
 }

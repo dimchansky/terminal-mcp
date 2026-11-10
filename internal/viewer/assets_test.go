@@ -66,3 +66,22 @@ func TestAssetsUseOnlyInertRendering(t *testing.T) {
 		}
 	}
 }
+
+// TestThePageOffersNoPause (#9, #10): history is read by scrolling, not by
+// pausing the live view; no asset offers a Pause control.
+func TestThePageOffersNoPause(t *testing.T) {
+	entries, err := static.ReadDir("static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pause := regexp.MustCompile(`(?i)\bpaus(e|ed|ing)\b|\x{23F8}`)
+	for _, e := range entries {
+		body, err := static.ReadFile("static/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := pause.Find(body); m != nil {
+			t.Errorf("%s mentions %q", e.Name(), m)
+		}
+	}
+}
