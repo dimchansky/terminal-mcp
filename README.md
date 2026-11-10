@@ -48,7 +48,7 @@ The `file_*` tools use absolute paths inside the configured `file_root`:
 - **New Windows installation:** Your home directory.
 - **Existing standalone settings:** Keep the saved root.
 
-To watch what MCP clients asked the server to do, run `terminal-mcp dashboard`. It prints a one-time code for a local, read-only page that shows each chat's tool calls as the model sent them, live. See [Open the read-only dashboard](docs/DEVELOPMENT.md#open-the-read-only-dashboard), including what to do when the page shows a problem.
+To watch what MCP clients asked the server to do, run `terminal-mcp dashboard` (or `make dashboard` in a source checkout; it uses `bin/terminal-mcp`). It prints a one-time code for a local, read-only page that shows each chat's tool calls as the model sent them, live. See [Open the read-only dashboard](docs/DEVELOPMENT.md#open-the-read-only-dashboard), including what to do when the page shows a problem.
 
 Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`.
 
