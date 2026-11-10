@@ -67,6 +67,8 @@ function textOf(node, firstView = false) {
   if (typeof node === "string" || typeof node === "number") { return String(node); }
   if (Array.isArray(node)) { return node.map((n) => textOf(n, firstView)).join(""); }
   if (firstView && node.attrs && /(^| )more( |$)/.test(node.attrs.class || "")) { return ""; }
+  // A closed note shows only its "i"; its text is its accessible description.
+  if (firstView && node.attrs && /(^| )info( |$)/.test(node.attrs.class || "") && !node.attrs.open) { return ""; }
   const inner = (node.children || []).map((n) => textOf(n, firstView)).join("");
   return /^(div|p|li|pre|dt|dd|tr|h\d|summary|details|ol|ul|dl|table)$/.test(node.tag) ? inner + "\n" : inner;
 }

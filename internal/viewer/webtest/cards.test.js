@@ -271,3 +271,35 @@ test("a zero runtime limit folds only when fields are split", () => {
   bad.it.action.status = "rejected";
   assert.ok(textOf(find(card(bad.it, bad.ctx), "input")[0]).includes("max_runtime_ms"), "a rejected call keeps everything inline");
 });
+
+test("a shell script shows once, with every token around it; the full line is in Details", () => {
+  const argv = ["/bin/sh", "-e", "-c", "echo \"$1\"; uname -a", "_", "rm -rf /tmp/x"];
+  const { it, ctx } = item("terminal_start", { argv, env: { LANG: "C" }, operation_id: "o", server_id: "s" });
+  const v = card(it, ctx);
+  const body = textOf(find(v, "input")[0]);
+  assert.match(body, /via LANG=C \/bin\/sh -e -c/);
+  assert.equal(textOf(find(v, "script")[0]), "echo \"$1\"; uname -a");
+  assert.match(body, /Arguments after the script \(\$0 first\)\s*_\s*'rm -rf \/tmp\/x'/);
+  assert.equal(body.split("uname -a").length - 1, 1, "the script once at a glance");
+  assert.match(textOf(find(v, "more")[0]), /Full command line\s*LANG=C \/bin\/sh -e -c 'echo "\$1"; uname -a' _ 'rm -rf \/tmp\/x'/);
+  assert.equal(find(v, "copy").length, 1);
+  // A line that cannot be copied keeps its exact tokens inline.
+  const odd = item("terminal_start", { argv: ["/bin/sh", "-c", "echo‮x"], env: {} });
+  assert.match(textOf(find(card(odd.it, odd.ctx), "input")[0]), /Not copyable/);
+});
+
+test("caveats sit behind an info control and stay in the card", () => {
+  const { it, ctx } = item("file_read", { files: [{ path: "/a" }] });
+  const v = card(it, ctx);
+  const note = find(v, "info")[0];
+  assert.equal(note.tag, "details");
+  assert.match(textOf(note), /The audit records the request, not the file contents returned\./);
+  const summary = note.children[0];
+  assert.equal(summary.attrs["aria-describedby"], note.children[1].attrs.id, "the note's text describes its control");
+  assert.match(summary.attrs["aria-describedby"], /^tm-note-/);
+});
+
+test("an empty script says so", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["sh", "-c", ""], env: {} });
+  assert.match(textOf(find(card(it, ctx), "input")[0]), /\(empty script\)/);
+});

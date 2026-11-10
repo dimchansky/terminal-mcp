@@ -82,3 +82,8 @@ details.more[open] > summary { margin-bottom: 0.3rem; }
 .undefined-fields { border-left: 3px solid var(--warn); padding-left: 0.5rem; margin: 0.3rem 0; }
 .undefined-fields > .label { color: var(--warn); }
 .essentials code { font-size: 0.8rem; overflow-wrap: anywhere; }
+details.info { display: inline-block; vertical-align: middle; margin-left: 0.3rem; font-size: 0.8rem; color: var(--muted); }
+details.info > summary { list-style: none; cursor: help; width: 1.1em; height: 1.1em; line-height: 1.1em; text-align: center; border: 1px solid var(--muted); border-radius: 50%; font-style: italic; }
+details.info > summary::-webkit-details-marker { display: none; }
+details.info[open] { display: block; }
+.via { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.2rem; }

@@ -54,9 +54,44 @@ test("random tokens round-trip", () => {
 });
 
 test("interpreter scripts are found", () => {
-  assert.deepEqual(interpreterScript(["/bin/zsh", "-lc", "make test"]), { flagIndex: 1, script: "make test" });
-  assert.deepEqual(interpreterScript(["bash", "-c", "--", "echo hi"]), { flagIndex: 1, script: "echo hi" });
+  assert.deepEqual(interpreterScript(["/bin/zsh", "-lc", "make test"]), { flagIndex: 1, scriptIndex: 2, script: "make test" });
+  assert.deepEqual(interpreterScript(["bash", "-c", "--", "echo hi"]), { flagIndex: 1, scriptIndex: 3, script: "echo hi" });
   assert.equal(interpreterScript(["sh", "--", "-c", "x"]), null);
   assert.equal(interpreterScript(["bash", "-o", "pipefail", "-c", "x"]), null);
   assert.equal(interpreterScript(["go", "-c", "x"]), null);
+});
+
+// The card shows a shell script as "via <env, interpreter, options>", the
+// script, and the operands after it; together they must rebuild the exact
+// command whenever the card uses that form.
+test("a script card's parts rebuild the command exactly", () => {
+  const rebuild = (env, argv) => {
+    const s = interpreterScript(argv);
+    const via = commandLine(env, argv.slice(0, s.scriptIndex)).line;
+    return parse(via + " " + quote(s.script) + argv.slice(s.scriptIndex + 1).map((a) => " " + quote(a)).join(""));
+  };
+  const fixed = [
+    ["sh", "-c", ""], ["sh", "-c", "-x", "echo"], ["sh", "-c", "--", "-x"], ["bash", "+x", "-c", "echo", "a"],
+    ["bash", "-c", "echo", "--", "a"], ["sh", "-c", "-", "x"], ["sh", "-ce", "x"], ["bash", "--norc", "-c", "x"], ["/bin/zsh", "-lc", "a b", "_", "c d"],
+  ];
+  for (const argv of fixed) {
+    const env = [["LANG", "C"]];
+    if (commandLine(env, argv).exact && interpreterScript(argv)) { assert.deepEqual(rebuild(env, argv), { env, argv }, JSON.stringify(argv)); }
+  }
+  const alphabet = "ab =$'\"\\*;|&()<>{}!#~%,.:/-_@+";
+  const opts = ["-e", "-x", "+x", "-", "--", "-ec", "-lc", "--norc"];
+  let seed = 11;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const word = () => Array.from({ length: rnd(6) }, () => alphabet[rnd(alphabet.length)]).join("");
+  let checked = 0;
+  for (let k = 0; k < 2000; k++) {
+    const argv = [["sh", "bash", "/bin/zsh"][rnd(3)], ...Array.from({ length: rnd(3) }, () => opts[rnd(opts.length)]), "-c",
+      ...Array.from({ length: rnd(2) }, () => opts[rnd(opts.length)]), word(), ...Array.from({ length: rnd(3) }, word)];
+    const env = rnd(2) ? [["V", word()]] : [];
+    if (commandLine(env, argv).exact && interpreterScript(argv)) {
+      assert.deepEqual(rebuild(env, argv), { env, argv }, JSON.stringify(argv));
+      checked++;
+    }
+  }
+  assert.ok(checked > 200, "the random cases exercised the script form (" + checked + ")");
 });

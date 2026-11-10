@@ -224,7 +224,8 @@ function deferred() {
   const sel = window.getSelection();
   const selecting = sel && !sel.isCollapsed && box.contains(sel.anchorNode);
   // An open block counts only when it shows: not inside a closed Details.
-  const reading = [...box.querySelectorAll("details[open]")].some((d) => !(d.parentElement && d.parentElement.closest("details:not([open])"))) ||
+  // A small note ("i") is not reading: it never holds a switch back.
+  const reading = [...box.querySelectorAll("details[open]:not(.info)")].some((d) => !(d.parentElement && d.parentElement.closest("details:not([open])"))) ||
     box.querySelector(".group-head[aria-expanded=\"true\"]") !== null;
   const active = document.activeElement;
   const working = active !== box && box.contains(active); // A focused card control, not the box itself.

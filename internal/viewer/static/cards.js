@@ -6,7 +6,7 @@
 import { h } from "./view.js";
 import { segments } from "./text.js";
 import { parseRecord, field, str } from "./json.js";
-import { commandLine, interpreterScript } from "./shell.js";
+import { commandLine, interpreterScript, quote } from "./shell.js";
 import { lineDiff } from "./diff.js";
 import { isPolling } from "./classes.js";
 import { refOccurrence } from "./model.js";
@@ -83,6 +83,13 @@ function nestedFields(tool, path, node, shown, title) {
   return [known.length ? fieldList(known, title) : null, unknown.length ? fieldList(unknown, "Not in this server version's schema", "undefined-fields") : null];
 }
 
+// info is a small note behind an "i" the owner can open (on touch too);
+// its text stays in the card.
+function info(note, ctx, n) {
+  const id = "tm-note-" + (ctx && ctx.key ? ctx.key : "x").replace(/[^\w:-]/g, "_") + "-" + n;
+  return h("details", { class: "info" }, h("summary", { "aria-label": "Note", "aria-describedby": id, title: note }, "i"), h("span", { id }, note));
+}
+
 function line(label, node) {
   return node ? h("div", { class: "kv" }, h("span", { class: "label" }, label), " ", value(node)) : null;
 }
@@ -108,6 +115,7 @@ const INPUT = {
     if (!argv || !env) { return [null, []]; } // Not representable: the field list shows everything.
     const used = ["argv", "env", "cwd"];
     const out = [];
+    let details = null;
     if (ctx.serverOS === "windows") {
       out.push(h("div", { class: "label" }, "Program and arguments (Windows; exact tokens, no shell notation)"));
       out.push(h("ol", { class: "tokens" }, argv.map((a) => h("li", {}, h("code", {}, text(a))))));
@@ -117,24 +125,44 @@ const INPUT = {
       }
     } else {
       const cmd = commandLine(env, argv);
-      out.push(h("pre", { class: "command" }, h("code", {}, text(cmd.line)))); // Tabs and newlines visible.
-      out.push(h("div", { class: "note" }, "Display notation of argv and environment overrides, not a shell invocation."));
-      if (cmd.exact) {
-        out.push(h("button", { type: "button", class: "copy", "data-action": "copy-command", "data-key": ctx.key }, "Copy command"));
-      } else {
-        out.push(h("div", { class: "warning" }, "Not copyable: ", text(cmd.problems.join("; ")), ". Exact tokens:"));
-        out.push(h("ol", { class: "tokens" }, argv.map((a) => h("li", {}, h("code", {}, text(a))))));
-        if (env.length) { out.push(h("dl", { class: "obj" }, env.map(([k, v]) => [h("dt", {}, text(k)), h("dd", {}, h("code", {}, text(v)))]))); }
-      }
       const script = interpreterScript(argv);
-      if (script) {
-        out.push(h("div", { class: "label" }, "Script passed to ", text(argv[0]), " ", text(argv[script.flagIndex])));
-        out.push(h("pre", { class: "script" }, h("code", {}, text(script.script, true))));
+      const copy = h("button", { type: "button", class: "copy", "data-action": "copy-command", "data-key": ctx.key, title: "Copy the full command line" }, "Copy command line");
+      if (cmd.exact && script) {
+        // A shell script: the script itself, with every other token of the
+        // command (env overrides, the interpreter and its options, the
+        // operands after the script) shown around it; the full line, which
+        // they rebuild exactly, is in Details.
+        const via = commandLine(env, argv.slice(0, script.scriptIndex));
+        out.push(h("div", { class: "via" }, "via ", h("code", {}, text(via.line))));
+        out.push(script.script === "" ? h("div", { class: "warning" }, "(empty script)")
+          : h("pre", { class: "command script" }, h("code", {}, text(script.script, true))));
+        const operands = argv.slice(script.scriptIndex + 1);
+        if (operands.length) {
+          // Quoted as in the full line, so empty and space-padded tokens show.
+          out.push(h("div", { class: "label" }, "Arguments after the script ($0 first)"));
+          out.push(h("ol", { class: "tokens" }, operands.map((a) => h("li", {}, h("code", {}, text(quote(a)))))));
+        }
+        out.push(copy, info("The script and the tokens around it are argv and environment overrides in display notation, not proof that a shell ran.", ctx, 1));
+        details = [h("div", { class: "label" }, "Full command line"), h("pre", { class: "command" }, h("code", {}, text(cmd.line)))];
+      } else {
+        out.push(h("pre", { class: "command" }, h("code", {}, text(cmd.line)))); // Tabs and newlines visible.
+        if (cmd.exact) {
+          out.push(copy, info("Display notation of argv and environment overrides, not a shell invocation.", ctx, 1));
+        } else {
+          out.push(info("Display notation of argv and environment overrides, not a shell invocation.", ctx, 1));
+          out.push(h("div", { class: "warning" }, "Not copyable: ", text(cmd.problems.join("; ")), ". Exact tokens:"));
+          out.push(h("ol", { class: "tokens" }, argv.map((a) => h("li", {}, h("code", {}, text(a))))));
+          if (env.length) { out.push(h("dl", { class: "obj" }, env.map(([k, v]) => [h("dt", {}, text(k)), h("dd", {}, h("code", {}, text(v)))]))); }
+          if (script) {
+            out.push(h("div", { class: "label" }, "Script passed to ", text(argv[0]), " ", text(argv[script.flagIndex])));
+            out.push(h("pre", { class: "script" }, h("code", {}, text(script.script, true))));
+          }
+        }
       }
     }
     const cwd = field(args, "cwd");
     if (cwd) { out.push(line("Working directory", cwd)); }
-    return [h("div", { class: "launch" }, out), used];
+    return [h("div", { class: "launch" }, out), used, details];
   },
 
   terminal_write(args) {
@@ -155,7 +183,7 @@ const INPUT = {
     return [h("div", {}, line("Session", field(args, "session_id")), h("ul", { class: "inputs" }, items)), ["input", "session_id"]];
   },
 
-  file_edit(args) {
+  file_edit(args, ctx) {
     const edits = field(args, "edits");
     if (!edits || edits.kind !== "array") { return [null, []]; }
     const out = [line("File", field(args, "path"))];
@@ -177,7 +205,7 @@ const INPUT = {
       }
       out.push(nestedFields("file_edit", "edits[]", e, ["old_text", "new_text"], "Other fields of this replacement"));
     });
-    out.push(h("div", { class: "note" }, "The requested change, not the file's result; no file line numbers are recorded."));
+    out.push(info("The requested change, not the file's result; no file line numbers are recorded.", ctx, 1));
     return [h("div", { class: "edit" }, out), ["edits", "path"]];
   },
 
@@ -240,15 +268,16 @@ function inputView(item, ctx) {
   }
   const args = field(p.value, "args");
   const out = [legacy];
-  if (Object.hasOwn(NOT_RECORDED_OUTPUT, a.tool)) { out.push(h("div", { class: "note" }, NOT_RECORDED_OUTPUT[a.tool])); }
+  if (Object.hasOwn(NOT_RECORDED_OUTPUT, a.tool)) { out.push(info(NOT_RECORDED_OUTPUT[a.tool], ctx, 0)); }
   const render = Object.hasOwn(INPUT, a.tool) ? INPUT[a.tool] : null;
   let used = [];
   let rendered = !render;
+  let extra = null; // What a renderer moves to Details (a script's full command line).
   if (render && args) {
-    const [view, u] = render(args, ctx);
-    if (view) { out.push(view); used = u; rendered = true; }
+    const [view, u, more] = render(args, ctx);
+    if (view) { out.push(view); used = u; rendered = true; extra = more || null; }
   }
-  let protocol = null;
+  let protocol = extra;
   if (args && args.kind === "object") {
     const rest = args.entries.filter((e) => !used.includes(e.key));
     // Everything stays visible when the split could mislead: a rejected or
@@ -263,7 +292,7 @@ function inputView(item, ctx) {
     const folded = rest.filter((e) => cls(e) === "protocol" || (cls(e) === "main" && zeroLimit(e)));
     if (main.length) { out.push(fieldList(main, used.length ? "Also supplied" : "Supplied fields", "other", knownTool(a.tool) ? a.tool : "")); }
     if (undefinedFields.length) { out.push(fieldList(undefinedFields, "Not in this server version's schema", "undefined-fields")); }
-    if (folded.length) { protocol = fieldList(folded, "Retry identity, waits and limits"); }
+    if (folded.length) { protocol = [extra, fieldList(folded, "Retry identity, waits and limits")]; }
   } else if (args) {
     out.push(h("div", { class: "label" }, "Supplied arguments"), value(args));
   } else {

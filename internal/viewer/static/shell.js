@@ -125,7 +125,7 @@ export function interpreterScript(argv) {
     if (a === "--" || !/^[-+]/.test(a)) {
       // The script is the first operand after the options (after "--").
       const at = a === "--" ? i + 1 : i;
-      return flagIndex >= 0 && at < argv.length ? { flagIndex, script: argv[at] } : null;
+      return flagIndex >= 0 && at < argv.length ? { flagIndex, scriptIndex: at, script: argv[at] } : null;
     }
     if (/^[-+][a-zA-Z]*[oO]/.test(a)) { return null; } // Options taking an argument.
     if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(a)) { flagIndex = i; }

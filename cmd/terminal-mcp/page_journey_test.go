@@ -338,6 +338,8 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		"env": map[string]string{"GOFLAGS": "-count=1"}, "cwd": root, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
 	call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("quoted"), "argv": []string{"printf", `it's a "quoted" $HOME`, "tab\there"},
 		"env": map[string]string{"BAD-NAME": "1"}, "cwd": root, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
+	call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("script"), "argv": []string{"/bin/sh", "-c", `echo "$1"`, "_", "a b"},
+		"cwd": root, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
 	outcome(call(t, cs, "chat-a", "terminal_start", json.RawMessage(`{"server_id":"`+sid+`","operation_id":"`+op("bad-argv")+`","argv":"ls -la"}`)),
 		true, "schema-rejected argv")
 	outcome(call(t, cs, "chat-a", "terminal_write", map[string]any{"server_id": sid, "operation_id": op("write"), "session_id": "no-such-session",
@@ -472,10 +474,10 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		}
 	}
 
-	d.waitLane(chatIdentity("chat-a"), 10)
+	d.waitLane(chatIdentity("chat-a"), 11)
 	a := d.cards(chatIdentity("chat-a"))
-	if len(a) != 10 {
-		t.Fatalf("chat-a has %d cards, want 10", len(a))
+	if len(a) != 11 {
+		t.Fatalf("chat-a has %d cards, want 11", len(a))
 	}
 	safe(a)
 
@@ -500,6 +502,24 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		}
 	}
 	expect(start, "The audit records the launch, not the program's output.")
+	if strings.Contains(start.Head, "The audit records the launch") {
+		t.Error("a caveat shows at a glance instead of behind its note")
+	}
+	// A shell script: the script once, the tokens around it, the full line
+	// in Details, Copy still there.
+	if runtime.GOOS != "windows" {
+		script := byOp(a, op("script"))
+		for _, want := range []string{"via /bin/sh -c", `echo "$1"`, "Arguments after the script ($0 first)", "_", "'a b'"} {
+			if !strings.Contains(script.Head, want) {
+				t.Errorf("script card lacks %q at a glance:\n%s", want, script.Head)
+			}
+		}
+		expect(script, `Full command line`, `/bin/sh -c 'echo "$1"' _ 'a b'`)
+		if strings.Contains(script.Head, "Full command line") || !hasAction(script, "copy-command") {
+			t.Errorf("script card: full line at a glance or no Copy:\n%s %v", script.Head, script.Actions)
+		}
+		checkRecords(script, op("script"))
+	}
 	reject(start, "go.mod file not found", "no Go files", "no packages")
 	checkRecords(start, op("start"))
 
