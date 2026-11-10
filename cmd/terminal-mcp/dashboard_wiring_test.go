@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"terminalmcp/internal/audit"
@@ -101,5 +103,73 @@ func TestDashboardRoutesAnswerWithoutAudit(t *testing.T) {
 	env := dashboardWindow(t, h, address, viewerLogin(t, viewers))
 	if env.State != dashboard.StateDisabled || env.Health.State != "disabled" {
 		t.Fatalf("envelope %+v", env)
+	}
+}
+
+// TestBrowserNeverReceivesTheMCPBearer fetches the page, every asset and
+// the dashboard answers the way a browser does and looks for the bearer.
+func TestBrowserNeverReceivesTheMCPBearer(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := audit.PrepareDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	recorder, err := audit.Open(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = recorder.Close() })
+	manager := session.New(nil)
+	t.Cleanup(manager.Close)
+	if err := recordServerStart(recorder, manager.ID()); err != nil {
+		t.Fatal(err)
+	}
+	viewers := viewer.NewRegistry(viewer.Config{})
+	rt := newViewerRuntime(context.Background(), viewers, recorder, manager.ID())
+	const address = "127.0.0.1:45683"
+	h, err := newHTTPHandler(manager, mcpserver.New(manager), address, viewerTestToken, rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vh, err := newViewerHandler(address, rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bodies []string
+	for _, route := range vh.Routes() {
+		if route.Method != http.MethodGet || route.Auth {
+			continue
+		}
+		r := httptest.NewRequest(http.MethodGet, "http://"+address+route.Path, nil)
+		r.Host = address
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("Sec-Fetch-Mode", "no-cors")
+		r.Header.Set("Sec-Fetch-Dest", "script")
+		if strings.HasSuffix(route.Path, ".css") {
+			r.Header.Set("Sec-Fetch-Dest", "style")
+		}
+		if route.Kind == viewer.RoutePage {
+			r.Header.Set("Sec-Fetch-Site", "none")
+			r.Header.Set("Sec-Fetch-Mode", "navigate")
+			r.Header.Set("Sec-Fetch-Dest", "document")
+		}
+		w := record(h, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d", route.Path, w.Code)
+		}
+		bodies = append(bodies, w.Body.String())
+	}
+	token := viewerLogin(t, viewers)
+	w := record(h, viewerAPIRequest(http.MethodPost, address, dashboard.PathWindow, `{}`, token))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"window"`) {
+		t.Fatalf("window %d %s", w.Code, w.Body)
+	}
+	bodies = append(bodies, w.Body.String())
+	for _, b := range bodies {
+		if strings.Contains(b, viewerTestToken) {
+			t.Fatal("the MCP bearer reached the browser")
+		}
+	}
+	if len(bodies) < 5 {
+		t.Fatalf("only %d answers checked", len(bodies))
 	}
 }

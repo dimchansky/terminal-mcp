@@ -165,7 +165,7 @@ func TestStaticPagesAreServedToBrowsers(t *testing.T) {
 	if handler := regexp.MustCompile(`\son[a-z]+\s*=`).FindString(lower); handler != "" {
 		t.Fatalf("inline event handler %q", handler)
 	}
-	if strings.Count(lower, "<script") != 1 || !strings.Contains(lower, `<script src="/dashboard/app.js"`) {
+	if strings.Count(lower, "<script") != 1 || !strings.Contains(lower, `<script type="module" src="/dashboard/app.js"`) {
 		t.Fatal("exactly one external same-origin script is expected")
 	}
 }
@@ -323,14 +323,17 @@ func TestRouteTableAndExtraRoutes(t *testing.T) {
 	h.HandleAuthorized(http.MethodGet, Prefix+"api/history", func(w http.ResponseWriter, _ *http.Request, s *Session) {
 		_, _ = io.WriteString(w, "history for "+s.String())
 	})
-	found := false
+	found, others := false, 0
 	for _, rt := range h.Routes() {
 		if !Owns(rt.Path) {
 			t.Fatalf("route %s outside the viewer prefix", rt.Path)
 		}
 		found = found || (rt.Path == Prefix+"api/history" && rt.Auth && rt.Kind == RouteAPI)
+		if rt.Kind != RouteAsset {
+			others++
+		}
 	}
-	if !found || len(h.Routes()) != 8 {
+	if !found || others != 6 { // The page, 4 API routes and the extra one, plus every asset.
 		t.Fatalf("routes %+v", h.Routes())
 	}
 	token := signIn(t, h, r)

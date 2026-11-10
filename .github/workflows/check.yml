@@ -17,6 +17,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       # make check also validates go.mod and go.sum without changing them.
       - run: make check
 
@@ -31,6 +34,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Dashboard page tests
+        shell: pwsh
+        run: |
+          node --test (Get-ChildItem internal/viewer/webtest/*.test.js).FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native Windows reader-delete-sharing proof
         shell: pwsh
         run: |

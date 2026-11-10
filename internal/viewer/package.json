@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Marks the viewer's browser modules and their node:test tests as ES modules. No dependencies."
+}

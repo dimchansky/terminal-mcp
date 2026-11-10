@@ -68,8 +68,25 @@ func NewHandler(host string, registry *Registry) (*Handler, error) {
 	}
 	h := &Handler{host: host, origin: "http://" + host, registry: registry, routes: make(map[string]route)}
 	h.add(Route{http.MethodGet, Prefix, RoutePage, false}, h.serveStatic("static/index.html", "text/html; charset=utf-8"))
-	h.add(Route{http.MethodGet, Prefix + "app.js", RouteAsset, false}, h.serveStatic("static/app.js", "text/javascript; charset=utf-8"))
-	h.add(Route{http.MethodGet, Prefix + "app.css", RouteAsset, false}, h.serveStatic("static/app.css", "text/css; charset=utf-8"))
+	// Every script module and stylesheet is its own exact route, so the
+	// route table (and the tunnel-exclusion tests) list all of them.
+	assets, err := static.ReadDir("static")
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range assets {
+		name := a.Name()
+		var contentType string
+		switch {
+		case strings.HasSuffix(name, ".js"):
+			contentType = "text/javascript; charset=utf-8"
+		case strings.HasSuffix(name, ".css"):
+			contentType = "text/css; charset=utf-8"
+		default:
+			continue
+		}
+		h.add(Route{http.MethodGet, Prefix + name, RouteAsset, false}, h.serveStatic("static/"+name, contentType))
+	}
 	h.add(Route{http.MethodPost, Prefix + "api/login", RouteAPI, false}, h.login)
 	h.add(Route{http.MethodPost, Prefix + "api/renew", RouteAPI, true}, h.renew)
 	h.add(Route{http.MethodPost, Prefix + "api/logout", RouteAPI, true}, h.logout)

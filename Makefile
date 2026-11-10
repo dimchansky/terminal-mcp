@@ -13,10 +13,10 @@ BIN ?= ./bin/terminal-mcp
 AUDIT_LOG ?= $(HOME)/.config/terminal-mcp/logs/audit.jsonl
 STDERR_LOG ?= $(HOME)/.config/terminal-mcp/logs/server.stderr.log
 
-.PHONY: help build check check-core audit-feedback fmt-check test-go lint vulncheck start stop status update update-status cleanup cleanup-apply logs logs-service
+.PHONY: help build check check-core audit-feedback fmt-check test-go test-js lint vulncheck start stop status update update-status cleanup cleanup-apply logs logs-service
 
 help:
-	@printf '%s\n' 'make build         Build the Go binary (does not restart the server)' 'make check         Run all checks and build' 'make check-core    Repeat core Go race tests three times' 'make audit-feedback Verify MCP responses against JSONL audit' 'make lint          Run configured Go linters (requires golangci-lint v2)' 'make vulncheck     Scan known reachable Go vulnerabilities' 'make start         Start installed server; first run installs this build' 'make stop          Stop the standalone server when idle' 'make status        Query installed server and its revision' 'make update        Check current source build and update installed server' 'make update-status Show latest self-update result' 'make cleanup       Preview safe cleanup of completed update artifacts' 'make cleanup-apply  Remove safe completed update binaries (never audit/logs/backups)' 'make logs          Follow the MCP audit journal' 'make logs-service  Follow the stable standalone server stderr (including updates)'
+	@printf '%s\n' 'make build         Build the Go binary (does not restart the server)' 'make check         Run all checks and build' 'make test-js       Run the dashboard page tests (requires Node.js >= 22, no npm packages)' 'make check-core    Repeat core Go race tests three times' 'make audit-feedback Verify MCP responses against JSONL audit' 'make lint          Run configured Go linters (requires golangci-lint v2)' 'make vulncheck     Scan known reachable Go vulnerabilities' 'make start         Start installed server; first run installs this build' 'make stop          Stop the standalone server when idle' 'make status        Query installed server and its revision' 'make update        Check current source build and update installed server' 'make update-status Show latest self-update result' 'make cleanup       Preview safe cleanup of completed update artifacts' 'make cleanup-apply  Remove safe completed update binaries (never audit/logs/backups)' 'make logs          Follow the MCP audit journal' 'make logs-service  Follow the stable standalone server stderr (including updates)'
 
 build:
 	@mkdir -p bin
@@ -31,6 +31,13 @@ test-go:
 	$(GO) mod tidy -diff
 	$(GO) test -race -count=1 -timeout=$(TEST_TIMEOUT) ./...
 	$(GO) vet ./...
+
+# The dashboard page is plain browser JavaScript; its pure modules are tested
+# with Node's built-in test runner. No npm packages are installed or used.
+NODE ?= node
+test-js:
+	@$(NODE) -e 'const [major] = process.versions.node.split(".").map(Number); if (major < 22) { console.error("Node.js >= 22 is required for the dashboard page tests, found " + process.version); process.exit(1); }'
+	$(NODE) --test internal/viewer/webtest/*.test.js
 
 lint:
 	$(GOLANGCI_LINT) config verify
@@ -48,6 +55,7 @@ check-core:
 
 check:
 	+@$(MAKE) fmt-check
+	+@$(MAKE) test-js
 	+@$(MAKE) test-go
 	+@$(MAKE) build
 

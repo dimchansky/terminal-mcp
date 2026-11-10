@@ -152,11 +152,15 @@ func TestTunnelCannotReachViewerRoutes(t *testing.T) {
 			}
 		}
 	}
-	stream := false
+	stream, others := false, 0
 	for _, rt := range h.Routes() {
 		stream = stream || rt.Path == dashboard.PathStream
+		if rt.Kind != viewer.RouteAsset {
+			others++
+		}
 	}
-	if reached || !stream || len(paths) != len(h.Routes())+3 || len(h.Routes()) != 17 { // 7 viewer + 10 dashboard routes.
+	// The page, 4 viewer API routes and 10 dashboard routes, plus every asset.
+	if reached || !stream || len(paths) != len(h.Routes())+3 || others != 15 {
 		t.Fatalf("reached=%v paths=%v", reached, paths)
 	}
 }
