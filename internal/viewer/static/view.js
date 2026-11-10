@@ -9,14 +9,14 @@ export const SVG = "http://www.w3.org/2000/svg";
 // meta elements, whatever a renderer computes.
 const TAGS = new Set(["div", "span", "p", "pre", "code", "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody",
   "tr", "th", "td", "button", "label", "input", "details", "summary", "section", "header", "nav", "main", "aside",
-  "h1", "h2", "h3", "h4", "time", "mark", "del", "ins", "strong", "em", "small", "abbr",
+  "h1", "h2", "h3", "h4", "time", "mark", "del", "ins", "strong", "em", "small", "abbr", "kbd",
   "svg", "rect", "g", "circle", "path"]);
 // Attributes; an id must carry the page's own prefix, so recorded text can
 // never name or shadow page elements.
 const ATTRS = new Set(["class", "id", "role", "title", "tabindex", "type", "hidden", "disabled", "for", "checked",
   "aria-label", "aria-live", "aria-hidden", "aria-expanded", "aria-selected", "aria-controls", "aria-describedby",
   "aria-current", "aria-pressed", "data-key", "data-lane", "data-action",
-  "viewBox", "width", "height", "x", "y", "fill", "shape-rendering"]);
+  "open", "viewBox", "width", "height", "x", "y", "fill", "shape-rendering"]);
 
 const ARIA_STATES = new Set(["aria-hidden", "aria-expanded", "aria-selected", "aria-pressed", "aria-current"]);
 const IDREFS = new Set(["id", "for", "aria-controls", "aria-describedby"]);

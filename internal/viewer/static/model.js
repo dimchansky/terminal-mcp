@@ -50,6 +50,7 @@ export function occurrencesOf(item) {
 export class Store {
   constructor(maxRecordBytes = 64 << 20) {
     this.maxRecordBytes = maxRecordBytes;
+    this.version = 0; // Changes whenever anything a view shows may have changed.
     this.reset();
     this.records = new Map(); // occurrence → {bytes, size, deferred, unavailable, retryable, problem}
     this.recordBytes = 0;
@@ -87,6 +88,8 @@ export class Store {
     this.window = env.window;
     this.generation = env.generation;
     this.envelope = env;
+    this.coverage = env.coverage;
+    this.version++;
     for (const l of env.lanes) { this.lanes.set(l.id, l); }
     const { changes } = this.apply(env.recent, { history: true });
     if (!sameGeneration) {
@@ -109,6 +112,8 @@ export class Store {
       return { stale: true, changes: [] };
     }
     const changes = [];
+    this.version++;
+    if (page.coverage) { this.coverage = page.coverage; } // The latest answer knows the window's coverage best.
     for (const l of page.lanes || []) { this.lanes.set(l.id, l); }
     for (const r of page.records || []) { this.putRecord(r); }
     const incoming = [...(page.items || []), ...(page.updated || [])];
@@ -143,6 +148,7 @@ export class Store {
   }
 
   putRecord(r) {
+    this.version++;
     const old = this.records.get(r.occurrence);
     if (r.data_b64) {
       const bytes = decodeBase64(r.data_b64);
@@ -158,6 +164,7 @@ export class Store {
 
   // loaded stores the bytes of a record fetched on its own.
   loaded(occurrence, bytes) {
+    this.version++;
     const old = this.records.get(occurrence);
     if (old && old.bytes) { this.recordBytes -= old.bytes.length; }
     this.records.set(occurrence, { bytes, size: bytes.length, epoch: this.epoch() });
@@ -183,6 +190,7 @@ export class Store {
       if (!r.bytes || keep(id) || !refOccurrence(id) || r.epoch !== this.epoch()) { continue; }
       this.recordBytes -= r.bytes.length;
       this.records.set(id, { bytes: null, size: r.bytes.length, deferred: true, released: true });
+      this.version++;
     }
   }
 
