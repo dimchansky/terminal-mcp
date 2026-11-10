@@ -527,7 +527,7 @@ It serves the dashboard over a scripted audit journal with live appends and
 prints a pairing code; stop it with Ctrl-C:
 
 ```sh
-TERMINAL_MCP_DASHBOARD_FIXTURE=1 go test -run TestManualDashboardFixture -timeout 0 -v ./internal/dashboard
+TERMINAL_MCP_DASHBOARD_FIXTURE=1 go test -count=1 -run TestManualDashboardFixture -timeout 0 -v ./internal/dashboard
 ```
 
 `TERMINAL_MCP_DASHBOARD_FIXTURE_ADDR` sets its address (default: a random

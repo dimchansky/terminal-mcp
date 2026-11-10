@@ -383,3 +383,38 @@ test("a reconnect shows its own reason, not an earlier one", async () => {
   assert.deepEqual([rec.reason, rec.reasonStatus], ["timeout", 503]);
   c.stop();
 });
+
+test("session requests carry only the viewer token and answer error codes", async () => {
+  const { signIn, renewSession, signOut, checkSession } = await import("../static/net.js");
+  const seen = [];
+  const fetchFn = async (url, init) => {
+    seen.push({ url, init });
+    if (url.endsWith("login")) { return json(200, { token: "t1", absolute_expires_at: "2026-11-10T12:00:00Z" }); }
+    if (url.endsWith("renew")) { return json(401, { error: "unauthorized" }); }
+    throw new Error("offline");
+  };
+  assert.deepEqual(await signIn("CODE", fetchFn), { ok: true, data: { token: "t1", absolute_expires_at: "2026-11-10T12:00:00Z" } });
+  assert.deepEqual(await renewSession("t1", fetchFn), { ok: false, code: "unauthorized" });
+  assert.deepEqual(await signOut("t1", fetchFn), { ok: false, code: "network" });
+  assert.equal(seen[0].url, "/dashboard/api/login");
+  assert.equal(seen[0].init.headers.Authorization, undefined, "login sends no token");
+  assert.equal(seen[1].init.headers.Authorization, "Viewer t1");
+  assert.equal(seen[0].init.credentials, "omit");
+  assert.deepEqual(await checkSession("t1", fetchFn), { ok: false, code: "network" });
+  assert.equal(seen[3].url, "/dashboard/api/session");
+  assert.deepEqual([seen[3].init.method, seen[3].init.headers.Authorization, seen[3].init.body], ["GET", "Viewer t1", undefined]);
+});
+
+test("the first page of a lane is requested once per store epoch", async () => {
+  const { firstPageKey } = await import("../static/model.js");
+  const store = new Store();
+  store.snapshot(envelope(1, [action("r1", "L1", -1)], [{ ...lane("L1", "chat-a"), items: 3 }]));
+  const requested = new Set();
+  const key = firstPageKey(store, store.lanes.get("L1"), requested);
+  assert.ok(key);
+  requested.add(key);
+  assert.equal(firstPageKey(store, store.lanes.get("L1"), requested), null, "not again in the same epoch");
+  store.snapshot(envelope(2, [action("r1", "L1", -1)], [{ ...lane("L1", "chat-a"), items: 3 }]));
+  assert.ok(firstPageKey(store, store.lanes.get("L1"), requested), "again after a new snapshot");
+  assert.equal(firstPageKey(store, { ...store.lanes.get("L1"), items: 1 }, new Set()), null, "nothing missing");
+});

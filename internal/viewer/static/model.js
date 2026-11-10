@@ -240,3 +240,11 @@ export class Store {
     return null;
   }
 }
+
+// firstPageKey answers the request key of a lane's first page when the
+// store holds fewer items than the lane has and it was not yet requested
+// in this store's epoch; null otherwise. The caller records the key.
+export function firstPageKey(store, lane, requested) {
+  const key = lane.id + "\u0000" + store.epoch();
+  return store.laneItems(lane.id).length < lane.items && !requested.has(key) ? key : null;
+}

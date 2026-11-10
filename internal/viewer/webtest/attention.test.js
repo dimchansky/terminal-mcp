@@ -110,3 +110,12 @@ test("an effect starting on a seen action does not count; its finish does", () =
   att.observe([{ type: "changed", item: { ...it, effect: { state: "finished", status: "ok" } } }], { live: true }, ctx({ autoSwitch: false }));
   assert.equal(att.count("chat-b"), 1);
 });
+
+test("attentionFor counts by lane identity and poll target of the store", async () => {
+  const { attentionFor } = await import("../static/attention.js");
+  const store = { lanes: new Map([["g1-l1", { id: "g1-l1", kind: "conversation", identitySource: "openai/session", conversationId: "c-1" }]]), records: new Map() };
+  const att = attentionFor(store, { now: () => 0 });
+  att.observe([{ type: "added", item: act("k1", "g1-l1", "file_write") }], { live: true }, ctx({ autoSwitch: false }));
+  assert.equal(att.count("c\u0000openai/session\u0000c-1"), 1, "counted in the lane identity");
+  assert.equal(att.count("g1-l1"), 0, "never in the per-generation lane ID");
+});

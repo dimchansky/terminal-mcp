@@ -4,16 +4,15 @@
 // in a URL, cookie or log. Rendering goes through view trees (view.js), so
 // recorded text is always inert.
 
-import { Client } from "./net.js";
+import { Client, checkSession, signIn, renewSession, signOut } from "./net.js";
 import { h, materialize } from "./view.js";
-import { entry, entryKey, timeline, text, localTime, pollTarget } from "./cards.js";
-import { Attention } from "./attention.js";
+import { entry, entryKey, timeline, text, localTime } from "./cards.js";
+import { attentionFor } from "./attention.js";
 import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
 import { icon, conversationKey, shortLabels } from "./identicon.js";
-import { laneIdentity, orderCompare } from "./model.js";
 import { parseRecord, field, decode } from "./json.js";
-import { occurrencesOf } from "./model.js";
+import { laneIdentity, orderCompare, firstPageKey, occurrencesOf } from "./model.js";
 import { commandLine } from "./shell.js";
 
 const KEY = "terminal-mcp-viewer-token";
@@ -75,25 +74,6 @@ function failed(code) {
   show("offline");
 }
 
-async function api(method, path, body, auth) {
-  const headers = {};
-  if (auth) { headers["Authorization"] = "Viewer " + auth; }
-  if (body !== undefined) { headers["Content-Type"] = "application/json"; }
-  let resp;
-  try {
-    resp = await fetch("/dashboard/api/" + path, {
-      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-      credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer",
-    });
-  } catch (e) {
-    return { ok: false, code: "network" };
-  }
-  let data = null;
-  try { data = resp.status === 204 ? null : await resp.json(); } catch (e) { data = null; }
-  if (!resp.ok) { return { ok: false, code: (data && typeof data.error === "string") ? data.error : "internal" }; }
-  return { ok: true, data };
-}
-
 function signedIn(data) {
   const until = new Date(data.absolute_expires_at);
   let s = "Session ends at the latest at " + until.toLocaleString() + ".";
@@ -107,7 +87,7 @@ function signedIn(data) {
 
 async function renew() {
   if (!current) { failed("unauthorized"); return; }
-  const r = await api("POST", "renew", undefined, current);
+  const r = await renewSession(current);
   if (!r.ok) { failed(r.code); return; }
   view.renewNote = "";
   signedIn(r.data);
@@ -121,7 +101,7 @@ async function login() {
   $("login-error").textContent = "";
   const code = $("code").value;
   try {
-    const r = await api("POST", "login", { code });
+    const r = await signIn(code);
     if (!r.ok) {
       $("login-error").textContent = r.code === "rate_limited" ? reasons.rate_limited
         : r.code === "server_stopping" ? reasons.server_stopping
@@ -144,7 +124,7 @@ async function logout() {
   if (client) { client.stop(); client.forget(); client = null; }
   resetView();
   forget();
-  if (t) { await api("POST", "logout", undefined, t); }
+  if (t) { await signOut(t); }
   $("ended-reason").textContent = "Signed out.";
   show("ended");
 }
@@ -251,10 +231,6 @@ function deferred() {
 }
 
 function startView() {
-  view.attention = new Attention({
-    laneOf: (item) => laneIdentity(client.store.lanes.get(item.lane)) || item.lane,
-    unitOf: (item) => { const t = pollTarget(item, { records: client.store.records }); return t ? "poll\u0000" + t : item.key; },
-  });
   view.observer = new IntersectionObserver((entries) => {
     for (const e of entries) {
       // Seen means really shown: half of the card, or half of the view for a tall one.
@@ -268,6 +244,7 @@ function startView() {
     onStatus: () => schedule(),
     onSessionEnded: (code) => failed(code),
   }, { storage: safeStorage() });
+  view.attention = attentionFor(client.store);
   // Each store keeps the records of its own selected lane.
   client.keep = keeper(() => client.store, () => view.selected);
   client.archiveKeep = keeper(() => view.archive && view.archive.store, () => view.archive && view.archive.selected);
@@ -528,8 +505,8 @@ function renderTimeline() {
       (x.dataset.action ? x.dataset.action + "\u0000" + (x.dataset.key || "") : "summary\u0000" + x.parentElement.dataset.key) === focusKey);
     if (again) { again.focus(); }
   }
-  const requested = lane.id + "\u0000" + store.epoch();
-  if (store.laneItems(lane.id).length < lane.items && !view.requested.has(requested)) {
+  const requested = firstPageKey(store, lane, view.requested);
+  if (requested) {
     view.requested.add(requested);
     if (view.archive) { client.archivePage(store, "lane-items", lane.id); } else { client.laneItems(lane.id); }
   }
@@ -759,7 +736,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   current = load();
   if (!current) { show("login"); return; }
-  const r = await api("GET", "session", undefined, current);
+  const r = await checkSession(current);
   if (!r.ok) { failed(r.code); return; }
   signedIn(r.data);
 });

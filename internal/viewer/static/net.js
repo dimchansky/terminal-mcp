@@ -15,6 +15,32 @@ const CHANNEL = "terminal-mcp-dashboard";
 export const SESSION_ENDED = new Set(["unauthorized", "session_replaced", "server_stopping", "duplicate_tab"]);
 const TERMINAL_STATES = new Set(["failed", "capacity"]); // 409: open another window.
 
+// viewerRequest makes one session request (session, login, renew, logout)
+// with the page's fetch options; it answers {ok, data} or {ok: false, code}.
+export async function viewerRequest(method, path, body, token, fetchFn = (...a) => globalThis.fetch(...a)) {
+  const headers = {};
+  if (token) { headers["Authorization"] = "Viewer " + token; }
+  if (body !== undefined) { headers["Content-Type"] = "application/json"; }
+  let resp;
+  try {
+    resp = await fetchFn(API + path, {
+      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer",
+    });
+  } catch (e) {
+    return { ok: false, code: "network" };
+  }
+  let data = null;
+  try { data = resp.status === 204 ? null : await resp.json(); } catch (e) { data = null; }
+  if (!resp.ok) { return { ok: false, code: (data && typeof data.error === "string") ? data.error : "internal" }; }
+  return { ok: true, data };
+}
+
+export const checkSession = (token, fetchFn) => viewerRequest("GET", "session", undefined, token, fetchFn);
+export const signIn = (code, fetchFn) => viewerRequest("POST", "login", { code }, null, fetchFn);
+export const renewSession = (token, fetchFn) => viewerRequest("POST", "renew", undefined, token, fetchFn);
+export const signOut = (token, fetchFn) => viewerRequest("POST", "logout", undefined, token, fetchFn);
+
 // Queue runs at most `limit` tasks at a time.
 export class Queue {
   constructor(limit) { this.limit = limit; this.running = 0; this.waiting = []; }

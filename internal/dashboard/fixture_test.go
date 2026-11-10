@@ -22,7 +22,7 @@ import (
 // for manual checks in a browser. It is skipped unless
 // TERMINAL_MCP_DASHBOARD_FIXTURE=1 and runs until interrupted:
 //
-//	TERMINAL_MCP_DASHBOARD_FIXTURE=1 go test -run TestManualDashboardFixture -timeout 0 -v ./internal/dashboard
+//	TERMINAL_MCP_DASHBOARD_FIXTURE=1 go test -count=1 -run TestManualDashboardFixture -timeout 0 -v ./internal/dashboard
 //
 // It uses a temporary directory and a free loopback port (or
 // TERMINAL_MCP_DASHBOARD_FIXTURE_ADDR), never the installed server or its

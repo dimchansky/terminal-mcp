@@ -3,6 +3,8 @@
 // the server or persisted; a reload starts with nothing unread.
 
 import { mayAutoSwitch } from "./classes.js";
+import { laneIdentity } from "./model.js";
+import { pollTarget } from "./cards.js";
 
 export const HOLD_MS = 5000;
 
@@ -107,4 +109,14 @@ export class Attention {
 
   // reset forgets everything (a new session).
   reset() { this.unread.clear(); this.known.clear(); this.pending = null; }
+}
+
+// attentionFor builds the page's Attention for a store: items count in the
+// lane identity of their lane, and polls of one target as one unit.
+export function attentionFor(store, options = {}) {
+  return new Attention({
+    laneOf: (item) => laneIdentity(store.lanes.get(item.lane)) || item.lane,
+    unitOf: (item) => { const t = pollTarget(item, { records: store.records }); return t ? "poll\u0000" + t : item.key; },
+    ...options,
+  });
 }
