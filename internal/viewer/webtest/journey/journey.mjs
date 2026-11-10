@@ -8,7 +8,7 @@
 
 import { createInterface } from "node:readline";
 import { Client, signIn } from "../../static/net.js";
-import { laneIdentity, firstPageKey, laneTimeline, orderLanes, defaultLane, keeper, occurrencesOf } from "../../static/model.js";
+import { laneIdentity, firstPageKey, laneTimeline, orderLanes, defaultLane, keeper, occurrencesOf, earlierCursor } from "../../static/model.js";
 import { attentionFor } from "../../static/attention.js";
 import { timeline, entry, entryKey } from "../../static/cards.js";
 import { describeStatus } from "../../static/status.js";
@@ -21,11 +21,16 @@ if (!base) { process.stderr.write("usage: node journey.mjs <base URL>\n"); proce
 // A browser refuses a request whose signal is already aborted without any
 // traffic; so does this wrapper, and such a request is not counted.
 const counts = new Map(); // API path → requests sent.
+const recordReads = new Map(); // Occurrence ID → record requests sent.
 let streamCut = new AbortController(); // Aborted by the cut command.
 async function pageFetch(url, init = {}) {
   const path = url.replace("/dashboard/api/", "");
   if (init.signal && init.signal.aborted) { throw new DOMException("aborted", "AbortError"); }
   counts.set(path, (counts.get(path) || 0) + 1);
+  if (path === "record") {
+    const occ = JSON.parse(init.body).occurrence_id;
+    recordReads.set(occ, (recordReads.get(occ) || 0) + 1);
+  }
   const headers = { ...(init.headers || {}), "Origin": base, "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty" };
   const signals = [init.signal, path === "stream" ? streamCut.signal : null].filter(Boolean);
   return fetch(base + url, { ...init, headers, signal: signals.length ? AbortSignal.any(signals) : undefined });
@@ -141,6 +146,16 @@ const commands = {
     attention.selected();
     return commands.settle();
   },
+  // earlier is the page's Earlier in this conversation for the selected
+  // lane; it answers whether more is left and waits for the records.
+  async earlier() {
+    const lane = laneByIdentity(current);
+    if (!lane) { return { ok: false, code: "no_lane" }; }
+    const r = await client.earlier(lane.id, earlierCursor(client.store, lane.id));
+    if (!r.ok) { return { ok: false, code: r.code }; }
+    await until(settled, "records");
+    return { ok: true, more: !!(r.data && r.data.next), loaded: client.store.laneItems(lane.id).length };
+  },
   // settle waits for the first pages the page requested and their records.
   async settle() {
     const end = Date.now() + 15000;
@@ -178,8 +193,8 @@ const commands = {
     const now = client.store.records.get(occurrence);
     return { ok: true, b64: now && now.bytes ? Buffer.from(now.bytes).toString("base64") : "", unavailable: !!(now && now.unavailable) };
   },
-  async requests() { return { ok: true, counts: Object.fromEntries(counts) }; },
-  async reset() { counts.clear(); return { ok: true }; },
+  async requests() { return { ok: true, counts: Object.fromEntries(counts), records: Object.fromEntries(recordReads) }; },
+  async reset() { counts.clear(); recordReads.clear(); return { ok: true }; },
   async status() { return { ok: true, status: client.status, text: describeStatus(client.status), window: client.windowId, storage: Object.fromEntries(storage), ended }; },
   async cut() { streamCut.abort(); streamCut = new AbortController(); return { ok: true }; },
   async attention(opts) {

@@ -12,7 +12,7 @@ import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
 import { icon, conversationKey, shortLabels } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
-import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper } from "./model.js";
+import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper, earlierCursor } from "./model.js";
 import { commandLine } from "./shell.js";
 
 const KEY = "terminal-mcp-viewer-token";
@@ -536,12 +536,10 @@ async function onTimelineClick(ev) {
       let r;
       if (view.archive) {
         const store = view.archive.store;
-        const oldest = store.laneItems(lane.id)[0];
-        r = await client.archivePage(store, "earlier", lane.id, oldest ? { order: oldest.order, key: oldest.key } : undefined);
+        r = await client.archivePage(store, "earlier", lane.id, earlierCursor(store, lane.id));
       } else {
-        const oldest = client.store.laneItems(lane.id)[0];
         r = button.dataset.action === "earlier"
-          ? await client.earlier(lane.id, oldest ? { order: oldest.order, key: oldest.key } : undefined)
+          ? await client.earlier(lane.id, earlierCursor(client.store, lane.id))
           : await client.origins();
       }
       if (client !== asked) { break; } // Signed out meanwhile.

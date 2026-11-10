@@ -164,12 +164,14 @@ func hasLaneKind(lanes []Lane, kind string) bool {
 
 func TestLargeRecordsAreDeferredButPagingAdvances(t *testing.T) {
 	j := openJournal(t)
-	big := []string{j.bigRequest(3 << 20), j.bigRequest(3 << 20)}
+	big := []string{j.bigRequest(3 << 20), j.bigRequest(3 << 20), j.bigRequest(3 << 20)}
 	mg := newManager(j)
 	s := viewertest.NewSession(nil)
 	id, _ := mg.Open(context.Background(), s, ModeLive, "")
+	// Each record is read (about 4 MiB encoded) and deferred: the read
+	// budget, not the response budget, ends the page after two.
 	page, _ := mg.Recent(context.Background(), s, id, nil)
-	if requestIDs(page) != big[1] || page.Next == nil {
+	if requestIDs(page) != big[2]+" "+big[1] || page.Next == nil {
 		t.Fatalf("first page %s", requestIDs(page))
 	}
 	deferred := 0
@@ -182,7 +184,7 @@ func TestLargeRecordsAreDeferredButPagingAdvances(t *testing.T) {
 			}
 		}
 	}
-	if deferred != 1 {
+	if deferred != 2 {
 		t.Fatalf("deferred %d", deferred)
 	}
 	next, _ := mg.Recent(context.Background(), s, id, page.Next)
@@ -316,4 +318,65 @@ func requestIDs(p Page) string {
 		}
 	}
 	return strings.Join(ids, " ")
+}
+
+// TestOrdinaryRecordsTravelInline: an item whose record fits a page but not
+// the rest of this one moves whole to the next page, and a first item whose
+// records together exceed the budget defers the rest as unsent (size 0),
+// never as too large.
+func TestOrdinaryRecordsTravelInline(t *testing.T) {
+	j := openJournal(t)
+	mid := []string{j.bigRequest(350_000), j.bigRequest(350_000), j.bigRequest(350_000)} // About 467 KB of base64 each.
+	j.write(audit.Event{ServerID: testServer, RequestID: "pair", Tool: "file_write", Phase: "request_start",
+		Args: map[string]any{"content": strings.Repeat("y", 600_000)}})
+	j.write(audit.Event{ServerID: testServer, RequestID: "pair", Tool: "file_write", Phase: "request_finish", Status: "error",
+		Error: strings.Repeat("z", 600_000)})
+	mg := newManager(j)
+	s := viewertest.NewSession(nil)
+	id, _ := mg.Open(context.Background(), s, ModeLive, "")
+
+	pages := []Page{}
+	var before *Continuation
+	for {
+		page, err := mg.Recent(context.Background(), s, id, before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages = append(pages, page)
+		if page.Next == nil {
+			break
+		}
+		before = page.Next
+	}
+	var got []string
+	for _, p := range pages {
+		got = append(got, requestIDs(p))
+		for _, r := range p.Records {
+			if r.Deferred && r.Size != 0 {
+				t.Errorf("an ordinary record is deferred as too large: %+v", r)
+			}
+		}
+	}
+	// The pair's start fits alone; its finish is deferred as unsent. The
+	// middle records travel inline, two to a page.
+	want := []string{"pair", mid[2] + " " + mid[1], mid[0]}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("pages %q, want %q", got, want)
+	}
+	deferred := 0
+	for _, r := range pages[0].Records {
+		if r.Deferred {
+			deferred++
+		}
+	}
+	if deferred != 1 {
+		t.Fatalf("the pair's page defers %d records, want 1", deferred)
+	}
+	for _, p := range pages[1:] {
+		for _, r := range p.Records {
+			if r.Deferred {
+				t.Fatalf("a mid-size record was deferred: %+v", r)
+			}
+		}
+	}
 }

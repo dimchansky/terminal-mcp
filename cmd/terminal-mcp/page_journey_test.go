@@ -616,3 +616,125 @@ func jsonPath(p string) string {
 	b, _ := json.Marshal(p)
 	return string(b[1 : len(b)-1])
 }
+
+// journeyRequests is the driver's request count.
+type journeyRequests struct {
+	Counts  map[string]int `json:"counts"`
+	Records map[string]int `json:"records"`
+}
+
+func (d *pageDriver) requests() journeyRequests {
+	d.t.Helper()
+	var r journeyRequests
+	d.do(map[string]any{"cmd": "requests"}, &r)
+	return r
+}
+
+// TestPageFirstScreenRequestBudget (#10): the first screen of recorded
+// history costs one window request and at most one lane page; ordinary records,
+// mid-size ones included, arrive inside pages, only a record too large for
+// any page waits for Load, and no record is read twice. Switching chats
+// costs one page per chat, once.
+func TestPageFirstScreenRequestBudget(t *testing.T) {
+	root := t.TempDir()
+	s := startLiveServerWith(t, liveOptions{fileRoot: root})
+	cs := s.mcpSession(t.Context())
+	sid := s.manager.ID()
+	write := func(chat, id, content string) {
+		call(t, cs, chat, "file_write", map[string]any{"server_id": sid, "operation_id": "op-budget-" + id,
+			"path": filepath.Join(root, id+".txt"), "content": content})
+	}
+	// Recorded before the page opens: chat-b with small records; chat-c
+	// with mid-size ones (about 470 KB of base64 each: two fit a page);
+	// chat-a, the newest, with small ones and one too large for any page.
+	for i := range 10 {
+		write("chat-b", fmt.Sprintf("b%d", i), fmt.Sprintf("line %d\n", i))
+	}
+	for i := range 6 {
+		write("chat-c", fmt.Sprintf("c%d", i), strings.Repeat("<", 55_000)+strconv.Itoa(i))
+	}
+	for i := range 20 {
+		write("chat-a", fmt.Sprintf("a%d", i), fmt.Sprintf("line %d\n", i))
+	}
+	write("chat-a", "big", strings.Repeat("<", 620_000))
+	for i := 20; i < 25; i++ {
+		write("chat-a", fmt.Sprintf("a%d", i), fmt.Sprintf("line %d\n", i))
+	}
+
+	d := startPageDriver(t, s)
+	d.signIn(s)
+	d.do(map[string]any{"cmd": "reset"}, nil) // Count from the page's start, after sign-in.
+	d.do(map[string]any{"cmd": "start"}, nil)
+	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	var settled struct{ Current string }
+	d.do(map[string]any{"cmd": "settle"}, &settled)
+	if settled.Current != chatIdentity("chat-a") {
+		t.Fatalf("the first screen shows %q, want the newest chat", settled.Current)
+	}
+	// The window's recent page already holds the newest chat whole, so the
+	// first screen needs no lane page of its own.
+	first := d.requests()
+	if first.Counts["window"] != 1 || first.Counts["lane-items"] != 0 || first.Counts["stream"] != 1 || first.Counts["record"] != 0 {
+		t.Fatalf("first screen requests: %+v", first.Counts)
+	}
+	// The large record does not end the page: every chat-a card is there,
+	// and only the large one waits for Load.
+	cards := d.cards(chatIdentity("chat-a"))
+	if len(cards) != 26 {
+		t.Fatalf("chat-a shows %d cards, want 26", len(cards))
+	}
+	var big journeyCard
+	for _, c := range cards {
+		if slices.Contains(c.Actions, "load-record") {
+			if big.Key != "" || !strings.Contains(c.Text, "Large record") {
+				t.Fatalf("an ordinary record waits for Load: %s", c.Text)
+			}
+			big = c
+		}
+	}
+	if big.Key == "" {
+		t.Fatal("the large record is not deferred")
+	}
+	// Loading it reads it once; switching away and back never again.
+	for _, occ := range big.Occurrences {
+		d.do(map[string]any{"cmd": "record", "occurrence": occ}, nil)
+	}
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-b")}, nil)
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-a")}, nil)
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-b")}, nil)
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-a")}, nil)
+	after := d.requests()
+	if after.Counts["lane-items"] != 1 || after.Counts["window"] != 1 { // chat-b's first page, once.
+		t.Fatalf("switching chats: %+v", after.Counts)
+	}
+	if len(after.Records) == 0 {
+		t.Fatal("the large record was not loaded")
+	}
+	for occ, n := range after.Records {
+		if n != 1 {
+			t.Errorf("record %s read %d times", occ, n)
+		}
+	}
+
+	// Mid-size records page through Earlier, every one inline.
+	d.do(map[string]any{"cmd": "select", "identity": chatIdentity("chat-c")}, nil)
+	for range 10 {
+		var e struct{ More bool }
+		d.do(map[string]any{"cmd": "earlier"}, &e)
+		if !e.More {
+			break
+		}
+	}
+	mid := d.cards(chatIdentity("chat-c"))
+	if len(mid) != 6 {
+		t.Fatalf("chat-c shows %d cards after paging, want 6", len(mid))
+	}
+	for _, c := range mid {
+		if slices.Contains(c.Actions, "load-record") {
+			t.Errorf("a mid-size record waits for Load: %.200s", c.Text)
+		}
+	}
+	if n := d.requests().Counts["record"]; n != after.Counts["record"] {
+		t.Errorf("paging mid-size records read %d records on their own", n-after.Counts["record"])
+	}
+}

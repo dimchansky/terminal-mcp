@@ -143,14 +143,10 @@ func TestAPIWindowCatchUpRecordAndClose(t *testing.T) {
 	if env.State != StateOK || env.LiveCursor == "" || env.Health.State != "ok" || len(env.Lanes) != 2 {
 		t.Fatalf("envelope %+v", env)
 	}
-	// The deferred 2 MiB record ends the first page.
-	if got := requestIDs(env.Recent); got != big || env.Recent.Next == nil {
-		t.Fatalf("recent %q", got)
-	}
-	var older Page
-	api.ok(token, PathRecent, map[string]any{"window": env.Window, "before": env.Recent.Next}, &older)
-	if requestIDs(older) != "a1" || older.Next != nil {
-		t.Fatalf("older %q", requestIDs(older))
+	// The 2 MiB record is deferred; it does not end the first page, which
+	// still carries the smaller older item.
+	if got := requestIDs(env.Recent); got != big+" a1" || env.Recent.Next != nil {
+		t.Fatalf("recent %q next %+v", got, env.Recent.Next)
 	}
 	lines := journalLines(t, j)
 	var deferred *Record

@@ -16,10 +16,16 @@ import (
 
 // Delivery limits: a response carries at most responseBudget bytes of
 // base64 record data and maxRecords records, and stops at the time budget;
-// it always carries at least one whole item so paging never stalls. Every
-// request may also read up to scanPages history pages (8 MiB of scan each).
+// it always carries at least one whole item so paging never stalls. A
+// record larger than responseBudget can never travel inline: it is
+// deferred and spends deferBudget (encoded bytes read but not sent, plus
+// at most one record) instead, so it does not end a page of ordinary ones.
+// An ordinary record that does not fit the rest of a page moves, with its
+// item, to the next page. Every request may also read up to scanPages
+// history pages (8 MiB of scan each).
 const (
 	responseBudget = 1 << 20
+	deferBudget    = 8 << 20
 	maxRecords     = 200
 	requestTime    = 2 * time.Second
 	scanPages      = 4
@@ -321,21 +327,23 @@ func (mg *Manager) deliver(ctx context.Context, s snapshot, items []item, before
 func (mg *Manager) deliverFrom(ctx context.Context, s snapshot, items []item, before *Continuation,
 	want func(activity.OccurrenceKey) bool, budget, records int, deadline time.Time) Page {
 	page := Page{Generation: s.generation, Items: []Item{}, Records: []Record{}, Coverage: s.coverage}
+	read := 0 // Encoded bytes of records read but deferred for their size.
 	for _, it := range items {
 		if before != nil && compareItems(it.Item, Item{Order: before.Order, Key: before.Key}) >= 0 {
 			continue
 		}
-		if len(page.Items) > 0 && (budget <= 0 || records >= maxRecords || time.Now().After(deadline)) {
+		if len(page.Items) > 0 && (budget <= 0 || read >= deferBudget || records >= maxRecords || time.Now().After(deadline)) {
 			last := page.Items[len(page.Items)-1]
 			page.Next = &Continuation{Order: last.Order, Key: last.Key}
 			return page
 		}
+		itemsBefore, recordsBefore := len(page.Items), len(page.Records)
 		page.Items = append(page.Items, it.Item)
 		for _, key := range it.occ {
 			if want != nil && !want(key) {
 				continue // The client already has it.
 			}
-			if key.Ref != "" && (budget <= 0 || records >= maxRecords) {
+			if key.Ref != "" && (budget <= 0 || read >= deferBudget || records >= maxRecords) {
 				// Not read at all: the client loads it with the record
 				// endpoint (its size is then unknown here).
 				records++
@@ -344,10 +352,29 @@ func (mg *Manager) deliverFrom(ctx context.Context, s snapshot, items []item, be
 			}
 			rec := mg.readRecord(ctx, key)
 			encoded := len(rec.DataB64)
-			if rec.DataB64 != "" && (encoded > budget || records >= maxRecords) {
+			switch {
+			case rec.DataB64 == "":
+			case encoded > responseBudget:
+				// Too large for any page: deferred with its size; the page
+				// goes on with smaller records.
 				rec.DataB64, rec.Deferred = "", true
+				read += encoded
+			case encoded > budget && itemsBefore > 0:
+				// It fits a page, but not this one: the whole item moves
+				// to the next page, where it travels inline.
+				page.Items, page.Records = page.Items[:itemsBefore], page.Records[:recordsBefore]
+				last := page.Items[itemsBefore-1]
+				page.Next = &Continuation{Order: last.Order, Key: last.Key}
+				return page
+			case encoded > budget:
+				// The page's first item (its earlier records, or a catch-up,
+				// spent the budget): deferred as unsent, not as too large, so
+				// the client loads it; it ends the page.
+				rec.DataB64, rec.Deferred, rec.Size = "", true, 0
+				budget = 0
+			default:
+				budget -= encoded
 			}
-			budget -= encoded // A deferred record still ends the page.
 			records++
 			page.Records = append(page.Records, rec)
 		}

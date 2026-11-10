@@ -296,3 +296,10 @@ function keptRecords(store, identity) {
   }
   return out;
 }
+
+// earlierCursor is the position before a lane's oldest loaded item, where
+// Earlier continues; undefined when nothing is loaded.
+export function earlierCursor(store, laneId) {
+  const oldest = store.laneItems(laneId)[0];
+  return oldest ? { order: oldest.order, key: oldest.key } : undefined;
+}
