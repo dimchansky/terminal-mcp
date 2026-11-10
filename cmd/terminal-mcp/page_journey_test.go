@@ -1055,8 +1055,11 @@ func TestPageUnreadAndAutoSwitch(t *testing.T) {
 	d.do(map[string]any{"cmd": "rewind", "cursor": cur.Cursor}, &rw)
 	var genAfter journeyStatus
 	d.do(map[string]any{"cmd": "status"}, &genAfter)
-	if rw.Cursor != newest.Cursor || genAfter.Generation != gen.Generation || d.requests().Counts["catch-up"] <= catchUps {
-		t.Fatalf("the rows were not delivered again: cursor %q (newest %q), generation %d -> %d", rw.Cursor, newest.Cursor, gen.Generation, genAfter.Generation)
+	// The rewound catch-up moved past the earlier cursor again (rows that
+	// arrived meanwhile, such as late finishes, may take it further than
+	// the cursor read before), in the same generation.
+	if rw.Cursor == cur.Cursor || newest.Cursor == cur.Cursor || genAfter.Generation != gen.Generation || d.requests().Counts["catch-up"] <= catchUps {
+		t.Fatalf("the rows were not delivered again: cursor %q (earlier %q), generation %d -> %d", rw.Cursor, cur.Cursor, gen.Generation, genAfter.Generation)
 	}
 	if got := d.unread(); !maps.Equal(got, want) {
 		t.Fatalf("after rows delivered again: unread %v, want %v", got, want)
