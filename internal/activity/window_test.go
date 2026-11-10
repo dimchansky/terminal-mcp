@@ -323,3 +323,23 @@ func TestViewEnumsRoundTrip(t *testing.T) {
 		t.Fatal("an unknown name was accepted")
 	}
 }
+
+func TestOccurrenceIDsRoundTrip(t *testing.T) {
+	for _, k := range []OccurrenceKey{
+		{Ref: "AQH4abc_-"},
+		{Weak: WeakKey{OlderRef: "AQH4abc", Between: 2, Start: 10, End: 20}},
+		{Weak: WeakKey{OlderRef: StartOfHistory, Start: 0, End: 5}},
+		{Weak: WeakKey{Provisional: "h3", Start: 7, End: 9}},
+	} {
+		var got OccurrenceKey
+		if err := got.UnmarshalText([]byte(k.String())); err != nil || got != k {
+			t.Errorf("%q: %+v %v", k.String(), got, err)
+		}
+	}
+	for _, bad := range []string{"", "w:x:1:5-10x", "p:h1", "w:x:y:1-2"} {
+		var got OccurrenceKey
+		if err := got.UnmarshalText([]byte(bad)); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

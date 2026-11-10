@@ -81,70 +81,70 @@ const (
 // EffectLink connects an action to an effect. Loaded is false when the effect
 // records are outside the window.
 type EffectLink struct {
-	Kind   LinkKind
-	Effect EffectKey
-	Loaded bool
+	Kind   LinkKind  `json:"kind"`
+	Effect EffectKey `json:"effect"`
+	Loaded bool      `json:"loaded"`
 }
 
 // PhaseView lists the journal occurrences of one lifecycle record in journal
 // order. Primary is the earliest; Conflict reports copies with other bytes.
 type PhaseView struct {
-	Primary     OccurrenceKey
-	Time        string // Recorded time of the primary copy (writer clock, before append).
-	Occurrences []OccurrenceKey
-	More        int // Copies beyond the tracked limit.
-	Conflict    bool
+	Primary     OccurrenceKey   `json:"primary"`
+	Time        string          `json:"time"` // Recorded time of the primary copy (writer clock, before append).
+	Occurrences []OccurrenceKey `json:"occurrences,omitempty"`
+	More        int             `json:"more"` // Copies beyond the tracked limit.
+	Conflict    bool            `json:"conflict"`
 }
 
 // ActionView is the derived state of one MCP tool call. Status, Outcome,
 // Reason and Replayed are copied from the recorded request_finish (or
 // request_rejected) and are empty when not recorded.
 type ActionView struct {
-	Key         RequestKey
-	Tool        string
-	Legacy      bool
-	Identity    Identity
-	Attribution Attribution
-	Input       InputState
-	State       RequestState
+	Key         RequestKey   `json:"key"`
+	Tool        string       `json:"tool"`
+	Legacy      bool         `json:"legacy"`
+	Identity    Identity     `json:"identity"`
+	Attribution Attribution  `json:"attribution"`
+	Input       InputState   `json:"input"`
+	State       RequestState `json:"state"`
 	// PossiblyUnrecorded: open, but the audit was degraded meanwhile, so the
 	// finish may never be recorded (see SyncIndex).
-	PossiblyUnrecorded bool
+	PossiblyUnrecorded bool `json:"possibly_unrecorded"`
 	// RequestState is the SDK requestState recorded in request_start.
-	RequestState string
-	Status       string
-	Outcome      string
-	Reason       string
-	Replayed     bool
-	Duration     Duration
-	Start        *PhaseView
-	Finish       *PhaseView
-	Rejected     *PhaseView
-	Effect       *EffectLink
+	RequestState string      `json:"request_state"`
+	Status       string      `json:"status"`
+	Outcome      string      `json:"outcome"`
+	Reason       string      `json:"reason"`
+	Replayed     bool        `json:"replayed"`
+	Duration     Duration    `json:"duration"`
+	Start        *PhaseView  `json:"start,omitempty"`
+	Finish       *PhaseView  `json:"finish,omitempty"`
+	Rejected     *PhaseView  `json:"rejected,omitempty"`
+	Effect       *EffectLink `json:"effect,omitempty"`
 	// Process is the managed process the call created or used. The creator
 	// is the terminal_start effect (and its request) that launched it, when
 	// loaded; a call from another conversation stays in its own lane.
-	Process        *ProcessKey
-	ProcessEffect  *EffectKey
-	ProcessCreator *RequestKey
-	Order          Order
+	Process        *ProcessKey `json:"process,omitempty"`
+	ProcessEffect  *EffectKey  `json:"process_effect,omitempty"`
+	ProcessCreator *RequestKey `json:"process_creator,omitempty"`
+	Order          Order       `json:"order"`
 }
 
 // EffectView is the derived state of one admitted mutation.
 type EffectView struct {
-	Key            EffectKey
-	Tool           string
-	Origin         *RequestKey
-	OriginConflict bool // Start and finish name different requests.
-	State          EffectState
-	Status         string // From operation_finish, when recorded.
+	Key            EffectKey   `json:"key"`
+	Tool           string      `json:"tool"`
+	Origin         *RequestKey `json:"origin,omitempty"`
+	OriginConflict bool        `json:"origin_conflict"` // Start and finish name different requests.
+	State          EffectState `json:"state"`
+	Status         string      `json:"status"` // From operation_finish, when recorded.
 	// PossiblyUnrecorded: in flight, but the audit was degraded meanwhile,
 	// so the finish may never be recorded (see SyncIndex).
-	PossiblyUnrecorded bool
-	Duration           Duration
-	Start              *PhaseView
-	Finish             *PhaseView
-	Order              Order
+	PossiblyUnrecorded bool       `json:"possibly_unrecorded"`
+	Duration           Duration   `json:"duration"`
+	Start              *PhaseView `json:"start,omitempty"`
+	Finish             *PhaseView `json:"finish,omitempty"`
+	Order              Order      `json:"order"`
 }
 
 // DiagnosticView is a journal row that could not be correlated. Its original
@@ -152,17 +152,17 @@ type EffectView struct {
 // ref-less row whose identity could not be established; it may be the same
 // row as another diagnostic and is shown rather than hidden.
 type DiagnosticView struct {
-	Key            OccurrenceKey
-	Problem        string
-	Order          Order
-	PossibleRepeat bool
+	Key            OccurrenceKey `json:"key"`
+	Problem        string        `json:"problem"`
+	Order          Order         `json:"order"`
+	PossibleRepeat bool          `json:"possible_repeat"`
 }
 
 // ServerStartView marks the start of a server instance.
 type ServerStartView struct {
-	Key      OccurrenceKey
-	ServerID string
-	Order    Order
+	Key      OccurrenceKey `json:"key"`
+	ServerID string        `json:"server_id"`
+	Order    Order         `json:"order"`
 }
 
 // Need asks the adapter to look further back for a missing origin.
@@ -170,9 +170,9 @@ type ServerStartView struct {
 // reached, gap, changed source or eviction): the adapter must not scan for it
 // in this window, and the origin is shown as outside the loaded history.
 type Need struct {
-	Request        *RequestKey
-	Effect         *EffectKey
-	BeyondCoverage bool
+	Request        *RequestKey `json:"request,omitempty"`
+	Effect         *EffectKey  `json:"effect,omitempty"`
+	BeyondCoverage bool        `json:"beyond_coverage"`
 }
 
 func (p *Projection) phaseView(ph phase) *PhaseView {

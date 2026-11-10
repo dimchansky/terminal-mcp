@@ -26,11 +26,11 @@ var conversationSources = []string{"openai/session"}
 // unusable conversation hint is unattributed rather than grouped under a
 // guessed identity. Conflicts between journal copies are reported separately.
 type Identity struct {
-	ClientName       *string
-	ConversationID   *string
-	IdentitySource   *string
-	IdentityVerified bool
-	MetadataInvalid  bool
+	ClientName       *string `json:"clientName,omitempty"`
+	ConversationID   *string `json:"conversationId,omitempty"`
+	IdentitySource   *string `json:"identitySource,omitempty"`
+	IdentityVerified bool    `json:"identityVerified"`
+	MetadataInvalid  bool    `json:"metadataInvalid"`
 }
 
 // ConversationKey groups actions into a lane. It deliberately excludes the

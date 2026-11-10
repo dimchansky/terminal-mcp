@@ -28,21 +28,21 @@ var (
 // RequestKey identifies one MCP tool call. ServerID is empty for legacy
 // records written before server IDs existed.
 type RequestKey struct {
-	ServerID  string
-	RequestID string
+	ServerID  string `json:"server_id"`
+	RequestID string `json:"request_id"`
 }
 
 // EffectKey identifies one admitted mutation. A retry with the same
 // operation_id is a new request, never a second effect.
 type EffectKey struct {
-	ServerID    string
-	OperationID string
+	ServerID    string `json:"server_id"`
+	OperationID string `json:"operation_id"`
 }
 
 // ProcessKey identifies a managed terminal process, not an AI conversation.
 type ProcessKey struct {
-	ServerID  string
-	SessionID string
+	ServerID  string `json:"server_id"`
+	SessionID string `json:"session_id"`
 }
 
 // Record is one journal row delivered to a projection window. Exactly one of

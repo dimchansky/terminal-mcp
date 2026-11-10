@@ -29,13 +29,13 @@ const (
 // InFlightEffect is an effect of the current server instance whose
 // operation_start is recorded and whose operation_finish is not.
 type InFlightEffect struct {
-	Key    EffectKey
-	Tool   string
-	Origin *RequestKey
-	Start  OccurrenceKey
+	Key    EffectKey     `json:"key"`
+	Tool   string        `json:"tool"`
+	Origin *RequestKey   `json:"origin,omitempty"`
+	Start  OccurrenceKey `json:"start"`
 	// PossiblyUnrecorded: the audit was degraded after the start, so the
 	// finish may have failed to append and may never be recorded.
-	PossiblyUnrecorded bool
+	PossiblyUnrecorded bool `json:"possibly_unrecorded"`
 	seq                uint64
 }
 

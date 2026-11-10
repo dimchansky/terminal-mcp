@@ -18,8 +18,8 @@ const (
 // terminal_start is process launch, not the child's runtime. Durations are
 // never derived from wall-clock timestamps.
 type Duration struct {
-	State        DurationState
-	Milliseconds int64 // Valid only for DurationMeasured.
+	State        DurationState `json:"state"`
+	Milliseconds int64         `json:"milliseconds"` // Valid only for DurationMeasured.
 }
 
 // FinishDuration interprets duration_ms of a request_finish or
