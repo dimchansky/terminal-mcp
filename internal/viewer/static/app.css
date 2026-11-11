@@ -96,3 +96,14 @@ details.info[open] { display: block; }
 details.conv-id { display: inline-block; font-size: 0.8rem; color: var(--muted); }
 details.conv-id code { overflow-wrap: anywhere; }
 .row-key { color: var(--muted); font-style: italic; }
+.outcome-chip.unknown { color: var(--warn); border-style: dashed; }
+.outcome-chip.seen { color: var(--muted); border-style: dotted; }
+.outcome-chip::before { margin-right: 0.25em; }
+.outcome-chip.ok::before { content: "\2713"; content: "\2713" / ""; }
+.outcome-chip.bad::before { content: "\2715"; content: "\2715" / ""; }
+.outcome-chip.warn::before { content: "\21"; content: "\21" / ""; }
+.outcome-chip.unknown::before { content: "\3f"; content: "\3f" / ""; }
+.outcome-chip.live::before { content: "\25cf"; content: "\25cf" / ""; }
+.outcome-chip.seen::before { content: "\25f7"; content: "\25f7" / ""; }
+.outcome-chip.neutral::before { content: "\25cb"; content: "\25cb" / ""; }
+.secondary { color: var(--muted); font-size: 0.8rem; }

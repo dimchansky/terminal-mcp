@@ -506,9 +506,9 @@ function factsOf(item, ctx) {
     const seen = ctx.processes && ctx.processes.get(processKey(item));
     if (seen) {
       f.process = { state: seen.state, exit: seen.exit };
-      f.seen = localTimeText(seen.time);
+      f.seen = seenText(seen.time, actionTime(a));
     } else if (f.process && a.finish) {
-      f.seen = localTimeText(a.finish.time);
+      f.seen = seenText(a.finish.time, actionTime(a));
     }
   }
   f.data = data;
@@ -519,6 +519,26 @@ function localTimeText(t) {
   const d = new Date(t);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
 }
+
+// shortTime is the page's compact local time: 14:53:51.
+export function shortTime(t) {
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function localDay(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
+
+// seenText is when an observation was recorded, with its date when it is
+// on another local day than the action: "Nov 11 09:02:10".
+export function seenText(t, actionT) {
+  const d = new Date(t);
+  if (!t || Number.isNaN(d.getTime())) { return ""; }
+  const at = new Date(actionT);
+  const sameDay = !!actionT && !Number.isNaN(at.getTime()) && localDay(at) === localDay(d);
+  return (sameDay ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " ") + shortTime(t);
+}
+
+function actionTime(a) { return (a.start || a.rejected || a.finish || {}).time || ""; }
 
 // essentials shows the few result values that matter, inline.
 function essentials(item, f) {
@@ -534,7 +554,12 @@ function essentials(item, f) {
   return parts.length ? h("div", { class: "essentials" }, parts.flatMap((x, i) => (i ? [" · ", x] : [x]))) : null;
 }
 
-const KIND_CLASS = { done: "ok", started: "ok", checked: "neutral", failed: "bad", not_run: "bad", partial: "warn", stopped: "warn", unknown: "warn", running: "live", repeat: "neutral" };
+// Seven looks, so that a launch, a historic observation, a live call, a
+// success, a warning, a failure and an unknown outcome never look alike;
+// app.css adds a glyph to each.
+const KIND_CLASS = { done: "ok", exited_ok: "ok", failed: "bad", not_run: "bad", exited_bad: "warn", signaled: "warn", partial: "warn",
+  stopped: "warn", unknown: "unknown", running: "live", observed: "seen", started: "neutral", exited_unknown: "neutral", checked: "neutral",
+  repeat: "neutral" };
 
 function actionHeader(item, ctx, f) {
   const a = item.action;
@@ -547,8 +572,7 @@ function actionHeader(item, ctx, f) {
   // The server treats an empty expected_version as "create".
   const replaces = !!args && typeof args.expected_version === "string" && args.expected_version !== "";
   const parts = [h("strong", { class: "verb", title: a.tool || "" }, text(verb(a.tool, { inputRecorded: !!args && !a.legacy, hasExpectedVersion: replaces }))),
-    " ", h("span", { class: "outcome-chip " + chipClass(o) }, text(o.label)),
-    " ", localTime(time)];
+    " ", chip(o), " ", localTime(time)];
   if (dur.text) { parts.push(" ", h("span", { class: "dur", title: dur.title }, text(dur.text))); }
   if (a.replayed) {
     parts.push(" ", h("span", { class: "badge replay" }, "of operation ", text(a.effect ? a.effect.effect.operation_id : "?"),
@@ -582,11 +606,17 @@ function timingLine(item) {
   return t ? h("div", { class: "timing note" }, text(t)) : null;
 }
 
-// chipClass colours an outcome: a command that exited non-zero or by a
-// signal is a warning, not a success.
-function chipClass(o) {
+// chipClass styles an outcome: a command (or a poll) that saw a non-zero
+// exit or a signal is a warning, not a success.
+export function chipClass(o) {
   if (o.warn) { return "warn"; }
-  return KIND_CLASS[o.kind] || "neutral";
+  return Object.hasOwn(KIND_CLASS, o.kind) ? KIND_CLASS[o.kind] : "neutral";
+}
+
+// chip renders an outcome: the label in its style, then its muted note.
+function chip(o, title) {
+  return [h("span", title ? { class: "outcome-chip " + chipClass(o), title } : { class: "outcome-chip " + chipClass(o) }, text(o.label)),
+    o.secondary ? [" ", h("span", { class: "secondary" }, text(o.secondary))] : null];
 }
 
 // card renders one timeline item.
@@ -606,7 +636,7 @@ export function card(item, ctx) {
     const o = outcome(item, factsOf(item, c));
     return h("div", { class: "card effect-only", "data-key": item.key },
       h("div", { class: "card-head" }, h("strong", { class: "verb", title: e.tool || "" }, text(verb(e.tool))), " ",
-        h("span", { class: "outcome-chip " + chipClass(o) }, text(o.label)), " ", localTime((e.start || e.finish || {}).time),
+        chip(o), " ", localTime((e.start || e.finish || {}).time),
         " operation ", text(e.key.operation_id)),
       o.detail ? h("div", { class: o.kind === "failed" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true)) : null,
       h("div", { class: "note" }, "The request that admitted this effect is outside the loaded history."),
@@ -706,7 +736,7 @@ function compactRow(item, ctx, row, full) {
   return h("div", { class: "card compact", "data-key": item.key },
     h("button", { type: "button", class: "row-head", "data-action": "toggle-row", "data-key": key, "aria-expanded": open },
       h("strong", { class: "verb" }, text(verb(a.tool))), " ",
-      h("span", { class: "outcome-chip " + chipClass(row.o), title: row.o.detail || "" }, text(row.o.label)), " ",
+      chip(row.o, row.o.detail || ""), " ",
       h("span", { class: "row-main" }, row.summary), " ", localTime((a.start || {}).time)),
     open ? h("div", { class: "full" }, full) : h("div", { class: "full", hidden: true }, full));
 }
@@ -767,7 +797,7 @@ export function entry(e, ctx) {
   return h("div", { class: "group", "data-key": key },
     h("button", { type: "button", class: "group-head", "data-action": "toggle-group", "data-key": key, "aria-expanded": !!open },
       h("strong", { class: "verb" }, text(verb(last.action.tool))), " × " + e.items.length, " ",
-      row ? h("span", { class: "outcome-chip " + chipClass(row.o) }, text(row.o.label)) : null, " ",
+      row ? chip(row.o) : null, " ",
       h("span", { class: "row-main" }, row ? row.summary : null), " · last ", localTime((last.action.start || {}).time)),
     // Always built: collapsed, the polls are hidden but complete.
     open ? h("div", { class: "members" }, e.items.map((it) => card(it, ctx))) : h("div", { class: "members", hidden: true }, e.items.map((it) => card(it, ctx))));

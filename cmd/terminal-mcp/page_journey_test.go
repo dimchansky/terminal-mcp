@@ -340,6 +340,22 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		"env": map[string]string{"BAD-NAME": "1"}, "cwd": root, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
 	call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("script"), "argv": []string{"/bin/sh", "-c", `echo "$1"`, "_", "a b"},
 		"cwd": root, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
+	if runtime.GOOS != "windows" {
+		// Ended by the runtime limit: a signal, not a success.
+		call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("killed"), "argv": []string{"sleep", "5"},
+			"max_runtime_ms": 200, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
+		// Running at launch, its exit seen later by a read.
+		late := call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("late"), "argv": []string{"sleep", "0.3"}, "wait_ms": 0})
+		var lateResult struct {
+			Receipt struct {
+				SessionID string `json:"session_id"`
+			} `json:"receipt"`
+		}
+		if err := json.Unmarshal([]byte(toolText(late)), &lateResult); err != nil || lateResult.Receipt.SessionID == "" {
+			t.Fatalf("terminal_start result %q: %v", toolText(late), err)
+		}
+		call(t, cs, "chat-a", "terminal_read", map[string]any{"session_id": lateResult.Receipt.SessionID, "wait_for": "completion", "wait_ms": 5000})
+	}
 	outcome(call(t, cs, "chat-a", "terminal_start", json.RawMessage(`{"server_id":"`+sid+`","operation_id":"`+op("bad-argv")+`","argv":"ls -la"}`)),
 		true, "schema-rejected argv")
 	outcome(call(t, cs, "chat-a", "terminal_write", map[string]any{"server_id": sid, "operation_id": op("write"), "session_id": "no-such-session",
@@ -474,10 +490,14 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		}
 	}
 
-	d.waitLane(chatIdentity("chat-a"), 11)
+	cardsA := 11
+	if runtime.GOOS != "windows" {
+		cardsA += 3 // The killed command, and a command with a later read.
+	}
+	d.waitLane(chatIdentity("chat-a"), cardsA)
 	a := d.cards(chatIdentity("chat-a"))
-	if len(a) != 11 {
-		t.Fatalf("chat-a has %d cards, want 11", len(a))
+	if len(a) != cardsA {
+		t.Fatalf("chat-a has %d cards, want %d", len(a), cardsA)
 	}
 	safe(a)
 
@@ -519,6 +539,23 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 			t.Errorf("script card: full line at a glance or no Copy:\n%s %v", script.Head, script.Actions)
 		}
 		checkRecords(script, op("script"))
+	}
+	// The outcome says how the program ended, never "running now".
+	if !strings.Contains(start.Head, "Run command Exited · 1 exit seen ") {
+		t.Errorf("a failing command does not read as its exit:\n%s", start.Head)
+	}
+	if runtime.GOOS != "windows" {
+		if script := byOp(a, op("script")); !strings.Contains(script.Head, "Run command Exited · 0 exit seen ") {
+			t.Errorf("a successful command does not read as exit 0:\n%s", script.Head)
+		}
+		if late := byOp(a, op("late")); !strings.Contains(late.Head, "Run command Exited · 0 exit seen ") || strings.Contains(late.Head, "Last seen running") {
+			t.Errorf("a command whose exit a later read saw does not read as that exit:\n%s", late.Head)
+		}
+		// The limit terminates first and kills only a program that stays.
+		if killed := byOp(a, op("killed")); !strings.Contains(killed.Head, "Run command Terminated · SIGTERM exit seen ") &&
+			!strings.Contains(killed.Head, "Run command Killed · SIGKILL exit seen ") {
+			t.Errorf("a killed command does not read as its signal:\n%s", killed.Head)
+		}
 	}
 	reject(start, "go.mod file not found", "no Go files", "no packages")
 	checkRecords(start, op("start"))

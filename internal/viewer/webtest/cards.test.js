@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { card, timeline, entry, entryKey, compactable, groupTarget } from "../static/cards.js";
+import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime } from "../static/cards.js";
 import { textOf, find, materialize } from "../static/view.js";
 
 const enc = (s) => new TextEncoder().encode(s);
@@ -215,7 +216,9 @@ test("a command's card shows the exit a later call saw, with when", () => {
   it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"], time: "2026-11-10T10:00:01Z" };
   ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "applied", process: { state: "running" } }) + "\n") });
   let head = textOf(card(it, { ...ctx, processes: undefined }));
-  assert.match(head, /^Run command Started, running \(seen /, "only what the launch saw, with its time");
+  assert.ok(head.startsWith("Run command Last seen running seen " + shortTime("2026-11-10T10:00:01Z") + " "), head);
+  assert.match(head, /^Run command Last seen running /, "only what the launch saw, with its time");
+  assert.equal(find(card(it, { ...ctx, processes: undefined }), "outcome-chip")[0].attrs.class, "outcome-chip seen", "a historic observation is not a success");
   // A later read of the same process recorded its exit.
   const read = { kind: "action", key: "a:s/r2", lane: "L", order: { live: true, rank: 2 },
     action: { key: { server_id: "s", request_id: "r2" }, tool: "terminal_read", input: "recorded", state: "finished", status: "ok",
@@ -224,8 +227,9 @@ test("a command's card shows the exit a later call saw, with when", () => {
   ctx.records.set("ref-read", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", process: { state: "exited", exit: { code: 2 } } }) + "\n") });
   const entries = timeline([it, read], ctx);
   head = textOf(entry(entries[0], ctx));
-  assert.match(head, /^Run command Started, exited 2 \(seen /);
-  assert.match(textOf(entry(entries[1], ctx)), /^Read output Checked: exited 2 /);
+  assert.ok(head.startsWith("Run command Exited · 2 exit seen " + shortTime("2026-11-10T10:05:00Z") + " "), head);
+  assert.match(textOf(entry(entries[1], ctx)), /^Read output Checked: exited · 2 /);
+  assert.match(find(entry(entries[1], ctx), "outcome-chip")[0].attrs.class, /warn/, "a poll that saw a bad exit is a warning");
   assert.match(head, /started in 15 ms/);
 });
 
@@ -264,7 +268,7 @@ test("a command that exited non-zero is a warning, not a success; recorded statu
   ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "applied", process: { state: "exited", exit: { code: 1 } } }) + "\n") });
   const v = card(it, ctx);
   const chip = find(v, "outcome-chip")[0];
-  assert.match(textOf(chip), /^Started, exited 1/);
+  assert.equal(textOf(chip), "Exited · 1");
   assert.match(chip.attrs.class, /warn/);
   assert.match(textOf(v), /Recorded status: request applied, action applied\./);
 });
@@ -387,4 +391,30 @@ test("unread counts a failed poll on its own, like the timeline shows it", async
   att.observe(items.map((item) => ({ type: "added", item })), { live: true }, { autoSwitch: false, current: "", deferred: false, laneKind: () => "conversation" });
   assert.equal(att.count("c\u0000openai/session\u0000c"), 3, "two good polls as one, each failure apart");
   assert.equal(groupTarget(items[2], { records }), null);
+});
+
+test("each outcome kind has its own look; only a confirmed success is ok", () => {
+  const cls = (kind, warn = false) => chipClass({ kind, warn });
+  assert.deepEqual([cls("done"), cls("exited_ok")], ["ok", "ok"]);
+  assert.deepEqual([cls("failed"), cls("not_run")], ["bad", "bad"]);
+  assert.deepEqual([cls("exited_bad"), cls("signaled"), cls("partial"), cls("stopped"), cls("checked", true)], ["warn", "warn", "warn", "warn", "warn"]);
+  assert.equal(cls("unknown"), "unknown");
+  assert.equal(cls("running"), "live");
+  assert.equal(cls("observed"), "seen");
+  assert.deepEqual([cls("started"), cls("exited_unknown"), cls("checked"), cls("repeat"), cls("constructor")], ["neutral", "neutral", "neutral", "neutral", "neutral"]);
+});
+
+test("an exit seen on another day says which day", () => {
+  const t = "2026-11-11T09:02:10Z";
+  assert.equal(seenText(t, "2026-11-11T09:00:00Z"), shortTime(t));
+  const later = seenText("2026-11-13T09:02:10Z", "2026-11-11T09:00:00Z");
+  assert.ok(later.endsWith(" " + shortTime("2026-11-13T09:02:10Z")) && later.length > shortTime(t).length + 1, later);
+  assert.equal(seenText("", "2026-11-11T09:00:00Z"), "");
+});
+
+test("every outcome look has a glyph, with a fallback for older browsers", () => {
+  const css = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
+  for (const cls of ["ok", "bad", "warn", "unknown", "live", "seen", "neutral"]) {
+    assert.match(css, new RegExp("\\.outcome-chip\\." + cls + "::before \\{ content: \"[^\"]+\"; content: \"[^\"]+\" / \"\"; \\}"), cls);
+  }
 });

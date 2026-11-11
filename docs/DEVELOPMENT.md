@@ -401,7 +401,7 @@ The dashboard shows complete audit inputs, including any secrets a model supplie
 
 Reading a card: its first line is a verb and one outcome.
 - **Outcomes:** Done, Failed, Partly done, Running, Not run, Repeat of an earlier call, Canceled or Timed out (the model stopped waiting), or Outcome unknown.
-- **Commands:** they read "Started", with the last exit or state that any call of the process saw, and when it saw it.
+- **Commands:** they read how the program ended (`Exited · 0`, `Exited · 1`, `Terminated · SIGTERM`) with when the exit was seen, `Last seen running` with when, or `Started` when no exit is in the loaded history; a recorded exit error reads Outcome unknown. A running observation is history, never a claim that the program runs now.
 - **Polls:** they read "Checked: …", which is what the poll saw at that moment. A failed poll reads Failed.
 
 Below that line come the outcome's detail (an error, counts) and the results that matter, then what the model asked for. Failed actions show no result values. **Details** holds the rest: the call's retry identity, waits and limits, the timings and recorded statuses, the call metadata, the full recorded result and the original audit JSONL. A field marked "not in this server version's schema" is input the tool does not define. Listing and polling calls that ran without problems show as one row. Consecutive polls of the same process or download share one row ("Read output × N") that shows the last poll. Click a row to see the full card or every poll. A poll that failed or was rejected gets its own card.
