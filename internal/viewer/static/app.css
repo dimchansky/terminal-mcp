@@ -24,6 +24,7 @@
   --del: #ff4d4f26;
   --ins: #2ea0432e;
   --esc: #6639ba;
+  --shadow: #00000040;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -46,6 +47,7 @@
     --del: #ff7b7233;
     --ins: #57c27a2e;
     --esc: #c39bff;
+    --shadow: #00000099;
   }
 }
 body { margin: 0; background: var(--bg); color: var(--fg); }
@@ -204,3 +206,30 @@ details.info > summary::after { content: ""; position: absolute; inset: -5px; }
 /* The note's enlarged target reaches about 5px out: keep that clear. */
 details.info { margin-left: 0.35rem; margin-right: 0.35rem; }
 .group-head { align-items: center; }
+
+/* Every width: nothing long widens the page; code keeps its exact
+   whitespace and wraps inside its block. */
+.app > *, .timeline-wrap, .card, .card-head, .lane-title { min-width: 0; }
+code, dd, dt, .str, .kv, .lane-title strong, details.conv-id code, ol.tokens li { overflow-wrap: anywhere; }
+dl.obj { grid-template-columns: fit-content(40%) minmax(0, 1fr); }
+.kv { min-width: 0; }
+pre { overflow-wrap: anywhere; }
+.chats-toggle { display: none; }
+
+/* Narrow windows: one column, the conversation list over the timeline. */
+@media (max-width: 48rem) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .bar { grid-column: 1; gap: 0.5rem; padding: 0.4rem 0.6rem; }
+  .chats-toggle { display: inline-block; }
+  /* Under the bar, over the timeline (same grid cell): Chats stays visible. */
+  .lanes { grid-row: 2; grid-column: 1; position: relative; z-index: 10; justify-self: start; box-sizing: border-box;
+    width: min(20rem, 85vw); background: var(--bg); visibility: hidden; transform: translateX(-100%); box-shadow: 2px 0 8px var(--shadow); }
+  .app.lanes-open .lanes { transform: none; visibility: visible; }
+  .timeline-wrap { grid-row: 2; grid-column: 1; }
+  .timeline { padding: 0.5rem 0.6rem 3rem; }
+  .lane-title { padding: 0.5rem 0.6rem; }
+  .session { margin-left: 0; }
+}
+/* An opened note in a block's corner wraps within the block. */
+.block > .corner { max-width: 100%; flex-wrap: wrap; box-sizing: border-box; }
+details.info > span { overflow-wrap: anywhere; }

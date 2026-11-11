@@ -106,3 +106,10 @@ test("no rule outside the token blocks names a colour or redefines a token", () 
   assert.doesNotMatch(rest, /:\s*(red|white|black|blue|green|gray|grey|orange|yellow|purple)\b/);
   for (const n of NAMES) { assert.doesNotMatch(rest, new RegExp("--" + n + "\\s*:"), "--" + n + " redefined outside the token blocks"); }
 });
+
+test("long recorded values wrap inside their blocks instead of widening or being clipped", () => {
+  assert.match(css, /dl\.obj \{ grid-template-columns: fit-content\(40%\) minmax\(0, 1fr\); \}/, "a long key never squeezes its value to nothing");
+  const wrap = /([^{}]*)\{ overflow-wrap: anywhere; \}/.exec(css.slice(css.indexOf("code, dd, dt")))[1];
+  for (const sel of ["code", "dd", "dt", ".str", ".kv", "ol.tokens li"]) { assert.ok(wrap.split(",").map((x) => x.trim()).includes(sel), sel); }
+  assert.match(css, /pre \{ overflow-wrap: anywhere; \}/);
+});

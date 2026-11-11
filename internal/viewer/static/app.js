@@ -15,6 +15,7 @@ import { icon, conversationKey } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
 import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper, earlierCursor } from "./model.js";
 import { commandLine } from "./shell.js";
+import { isReading, canSee, closeEffects } from "./reading.js";
 
 const KEY = "terminal-mcp-viewer-token";
 const RENEW_MS = 5 * 60 * 1000;
@@ -163,6 +164,7 @@ const view = {
   programmatic: null, // scrollTop set by the page itself (its scroll event is ignored).
   scheduled: false,
   renaming: rename.cancel(), // The alias editor in the chat's title.
+  panelOpen: false, // The conversation list is open over the timeline (narrow windows).
 };
 
 
@@ -180,11 +182,12 @@ function resetView() {
   view.shown = null;
   view.renaming = rename.cancel();
   view.newest = null;
+  setPanel(false, "reset");
   if (view.midnight) { clearInterval(view.midnight); view.midnight = null; }
   view.archive = null;
   view.visible.clear();
   if (view.observer) { view.observer.disconnect(); view.observer = null; }
-  for (const id of ["lane-list", "timeline", "lane-title", "connection", "warnings", "pending"]) { $(id).replaceChildren(); }
+  for (const id of ["lane-list", "timeline", "lane-title", "connection", "warnings", "pending", "chats-unread"]) { $(id).replaceChildren(); }
   view.statusSignature = view.pendingSignature = "";
   $("connection").className = "connection";
   $("connection").title = "";
@@ -243,7 +246,7 @@ function deferred() {
   const active = document.activeElement;
   const working = active !== box && box.contains(active); // A focused card control, not the box itself.
   // Naming a chat is reading too: a switch would move the title away.
-  return !view.follow || selecting || reading || working || !!view.archive || view.renaming.editing;
+  return isReading({ follow: view.follow, selecting, reading, working, archive: !!view.archive, renaming: view.renaming.editing, panel: view.panelOpen });
 }
 
 function startView() {
@@ -305,7 +308,7 @@ function selectedLane() {
 
 // markSeen marks what is in view as seen, only while the tab is visible.
 function markSeen() {
-  if (document.visibilityState !== "visible" || !view.attention || view.archive) { return; }
+  if (!view.attention || !canSee({ visible: document.visibilityState === "visible", archive: !!view.archive, panel: view.panelOpen })) { return; }
   let any = false;
   for (const el of view.visible) {
     if (!el.isConnected) { view.visible.delete(el); continue; }
@@ -416,6 +419,9 @@ function renderLanes() {
     return old;
   });
   list.replaceChildren(...fresh);
+  // The narrow layout's Chats button carries the unread total.
+  const total = counts.reduce((x, y) => x + y, 0);
+  $("chats-unread").textContent = total ? " · " + total + " new" : "";
   if (focused) {
     const again = [...list.children].find((li) => li.dataset.lane === focused);
     if (again) { again.focus(); }
@@ -804,8 +810,38 @@ async function copy(button, s) {
   setTimeout(() => { if (button.isConnected) { button.textContent = label; } }, 1500);
 }
 
+// NARROW matches the layout where the conversation list is a panel over
+// the timeline.
+const NARROW = typeof matchMedia === "function" ? matchMedia("(max-width: 48rem)") : null;
+
+// setPanel opens or closes the conversation list over the timeline. The
+// timeline itself is never re-rendered by it: its scroll position, open
+// blocks and selection stay as they are. While open, the timeline is inert,
+// nothing in it counts as seen, and auto-switch waits.
+function setPanel(open, reason = "toggle") {
+  const app = $("signed-in");
+  const toggle = $("chats-toggle");
+  if (!app || !toggle) { return; }
+  const was = view.panelOpen;
+  view.panelOpen = !!open && !!NARROW && NARROW.matches;
+  app.classList.toggle("lanes-open", view.panelOpen);
+  toggle.setAttribute("aria-expanded", String(view.panelOpen));
+  if (view.panelOpen) { $("timeline-wrap").setAttribute("inert", ""); } else { $("timeline-wrap").removeAttribute("inert"); }
+  if (view.panelOpen) {
+    const sel = $("lane-list").querySelector("[aria-selected=\"true\"]") || $("lane-list").firstElementChild;
+    if (sel) { sel.focus(); }
+  }
+  if (was && !view.panelOpen) {
+    const fx = closeEffects(reason);
+    if (fx.focus) { toggle.focus(); }
+    if (fx.seen) { markSeen(); }
+    if (fx.resume) { tryResume(); }
+  }
+}
+
 // selectLane selects a lane; an automatic switch never moves keyboard focus.
 function selectLane(identity, auto = false) {
+  if (!auto && view.panelOpen) { setPanel(false, "lane"); } // Choosing a chat closes the list.
   // Choosing another chat by hand closes an open alias editor unsaved.
   if (!auto && view.renaming.editing && identity !== (view.archive ? view.archive.selected : view.selected)) {
     view.renaming = rename.cancel();
@@ -821,6 +857,9 @@ function selectLane(identity, auto = false) {
   if (!auto) { view.lanesSignature = ""; }
   render();
   toTail();
+  // Choosing the chat already shown re-renders nothing, so what is in view
+  // (perhaps hidden under the list until now) is marked seen here.
+  markSeen();
 }
 
 // toTail shows the newest entries and keeps following them; card sizes are
@@ -869,13 +908,23 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("submit").addEventListener("click", login);
   $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") { login(); } });
   $("logout").addEventListener("click", logout);
+  $("chats-toggle").addEventListener("click", () => setPanel(!view.panelOpen, "toggle"));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && view.panelOpen) { e.preventDefault(); setPanel(false, "escape"); } });
+  // A click outside the open list closes it (the timeline under it is
+  // inert, so such clicks land on the page itself).
+  $("signed-in").addEventListener("pointerdown", (e) => {
+    if (view.panelOpen && !e.target.closest("#lanes, #chats-toggle")) { setPanel(false, e.target.closest(".bar") ? "bar" : "outside"); }
+  });
+  // Widening the window past the narrow layout closes the panel.
+  if (NARROW) { NARROW.addEventListener("change", () => { if (!NARROW.matches && view.panelOpen) { setPanel(false, "resize"); } }); }
   $("pending").addEventListener("click", (e) => {
     const b = e.target.closest("[data-action=\"show-pending\"]");
     const target = view.attention && view.attention.pending;
     if (b && target && !view.archive) {
       selectLane(target);
-      // The chip goes away with its button: focus moves to the chat shown.
-      const sel = $("lane-list").querySelector("[aria-selected=\"true\"]");
+      // The chip goes away with its button: focus moves to the chat shown
+      // (to Chats in the narrow layout, where the list is closed).
+      const sel = NARROW && NARROW.matches ? $("chats-toggle") : $("lane-list").querySelector("[aria-selected=\"true\"]");
       if (sel) { sel.focus(); }
     }
   });
