@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { laneName, laneTime, newestActions, lanePreview, rename, shortIds } from "../static/lanes.js";
+import { laneName, laneTime, newestActions, lanePreview, rename, shortIds, laneMatches, hiddenSummary, shownLanes } from "../static/lanes.js";
 
 const conv = (over = {}) => ({ id: "L1", kind: "conversation", identitySource: "openai/session", conversationId: "v1/abc", items: 3, ...over });
 
@@ -84,4 +84,31 @@ test("the newest action breaks an order tie by key", () => {
   const it = (key) => ({ kind: "action", key, lane: "L", order: { live: true, rank: 1 }, action: { tool: "file_write", start: {} } });
   assert.equal(newestActions([it("a:2"), it("a:1")]).get("L").key, "a:2");
   assert.equal(newestActions([it("a:1"), it("a:2")]).get("L").key, "a:2");
+});
+
+test("a chat search matches alias, client names, the full ID and its source", () => {
+  const l = conv({ client_names: ["Codex CLI"], conversationId: "v1/5bdgb3l05IAHeXYZ", identitySource: "openai/session" });
+  assert.equal(laneMatches(l, "", ""), true, "an empty search hides nothing");
+  assert.equal(laneMatches(l, "Release work", "release"), true);
+  assert.equal(laneMatches(l, "", "codex"), true);
+  assert.equal(laneMatches(l, "", "IAHEXYZ"), true, "the full ID, not only its short form");
+  assert.equal(laneMatches(l, "", "openai/"), true);
+  assert.equal(laneMatches(l, "", "ｃｏｄｅｘ"), true, "full-width letters fold (NFKC)");
+  assert.equal(laneMatches(l, "", "deploy"), false);
+  assert.equal(laneMatches({ kind: "unattributed" }, "", "unattr"), true);
+});
+
+test("hidden chats keep their unread count visible", () => {
+  assert.deepEqual(hiddenSummary([{}, {}, {}], [true, false, false], [1, 2, 0]), { chats: 2, unread: 2 });
+  assert.deepEqual(hiddenSummary([{}], [true], [5]), { chats: 0, unread: 0 });
+});
+
+test("the selected chat is always listed; odd inputs never throw", () => {
+  const a = conv({ conversationId: "v1/a", client_names: ["alpha"] });
+  const b = conv({ conversationId: "v1/b", client_names: ["beta"] });
+  assert.deepEqual(shownLanes([a, b], b, () => "", "alpha"), [true, true], "the selected chat stays though it does not match");
+  assert.deepEqual(shownLanes([a, b], a, () => "", "alpha"), [true, false]);
+  assert.equal(laneMatches(a, "", "   "), true, "whitespace is no search");
+  assert.equal(laneMatches(conv({ conversationId: undefined, client_names: [null, 3, "x"] }), undefined, "x"), true);
+  assert.equal(laneMatches(a, "Release Work", "release work"), true);
 });

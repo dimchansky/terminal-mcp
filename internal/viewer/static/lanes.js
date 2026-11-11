@@ -98,3 +98,33 @@ export const rename = {
     return [{ editing: false }, { digest: state.digest, alias }];
   },
 };
+
+// fold normalizes text for searching: NFKC, lower case.
+export function fold(s) { return String(s ?? "").normalize("NFKC").toLowerCase(); }
+
+// laneMatches says whether a lane matches a search of the chat list: by
+// its alias, client names, full conversation ID and identity source, or a
+// fixed lane's name. An empty query matches every lane.
+export function laneMatches(lane, alias, query) {
+  const q = fold(query).trim();
+  if (!q) { return true; }
+  const fields = lane.kind === "conversation"
+    ? [alias, ...(Array.isArray(lane.client_names) ? lane.client_names : []), lane.conversationId, lane.identitySource]
+    : [laneName(lane).name];
+  return fields.some((f) => typeof f === "string" && fold(f).includes(q));
+}
+
+// hiddenSummary counts the lanes a search hides and their unread total, so
+// new activity never disappears behind a search: {chats, unread}.
+export function hiddenSummary(lanes, shown, counts) {
+  let chats = 0;
+  let unread = 0;
+  lanes.forEach((l, i) => { if (!shown[i]) { chats++; unread += counts[i] || 0; } });
+  return { chats, unread };
+}
+
+// shownLanes says which rows a chat search shows: the matching ones, and
+// always the selected chat, whose timeline is on screen.
+export function shownLanes(lanes, sel, aliasOf, query) {
+  return lanes.map((l) => l === sel || laneMatches(l, aliasOf(l), query));
+}

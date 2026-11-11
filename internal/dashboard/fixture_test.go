@@ -45,7 +45,7 @@ func TestManualDashboardFixture(t *testing.T) {
 	// archive view can be checked by hand.
 	capacity, _ := strconv.Atoi(os.Getenv("TERMINAL_MCP_DASHBOARD_FIXTURE_CAPACITY"))
 	for i := 0; i < capacity; i++ {
-		f.chat("omega", "file_read", map[string]any{"path": fmt.Sprintf("old-%d.txt", i)}, true)
+		f.chat("omega", "file_read", map[string]any{"files": []map[string]any{{"path": fmt.Sprintf("old-%d.txt", i)}}}, true)
 	}
 	f.history()
 	f.restart("srv-fixture-2")
@@ -206,7 +206,7 @@ func (f *fixture) history() {
 	for i := 0; i < 5; i++ {
 		f.chat("beta", "file_receive_result", map[string]any{"server_id": f.server, "operation_id": received}, true)
 	}
-	f.chat("beta", "file_read", map[string]any{"path": "/etc/hosts"}, true)
+	f.chat("beta", "file_read", map[string]any{"files": []map[string]any{{"path": "/etc/hosts"}}}, true)
 	f.chat("", "terminal_list", map[string]any{}, true)
 	// A rejected call: input not recorded, tool not executed.
 	f.n++
@@ -304,7 +304,7 @@ func (f *fixture) live(ctx context.Context, issue func()) {
 					pending = ""
 				}
 			case 5:
-				f.chat(chat, "file_read", map[string]any{"path": fmt.Sprintf("notes-%d.md", i)}, true)
+				f.chat(chat, "file_read", map[string]any{"files": []map[string]any{{"path": fmt.Sprintf("notes-%d.md", i)}}}, true)
 			case 6:
 				f.n++
 				f.write(audit.Event{RequestID: fmt.Sprintf("req-%04d", f.n), Tool: "file_write", Phase: "request_rejected", Status: "rejected", Reason: "audit_record_too_large"})

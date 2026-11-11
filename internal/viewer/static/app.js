@@ -7,7 +7,7 @@
 import { Client, checkSession, signIn, renewSession, signOut } from "./net.js";
 import { h, materialize } from "./view.js";
 import { entry, entryKey, timeline, withDays, jumpTarget, text, fullTime, processKey } from "./cards.js";
-import { laneName, laneTime, newestActions, lanePreview, rename, shortIds } from "./lanes.js";
+import { laneName, laneTime, newestActions, lanePreview, rename, shortIds, laneMatches, hiddenSummary, shownLanes } from "./lanes.js";
 import { attentionFor } from "./attention.js";
 import { describeStatus, sessionText, pendingNotice, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
@@ -165,6 +165,7 @@ const view = {
   scheduled: false,
   renaming: rename.cancel(), // The alias editor in the chat's title.
   panelOpen: false, // The conversation list is open over the timeline (narrow windows).
+  laneQuery: "", // The chat search, in memory only.
 };
 
 
@@ -188,6 +189,10 @@ function resetView() {
   view.visible.clear();
   if (view.observer) { view.observer.disconnect(); view.observer = null; }
   for (const id of ["lane-list", "timeline", "lane-title", "connection", "warnings", "pending", "chats-unread"]) { $(id).replaceChildren(); }
+  view.laneQuery = "";
+  $("lane-search").value = "";
+  $("lanes-hidden").hidden = true;
+  $("lanes-hidden-text").textContent = "";
   view.statusSignature = view.pendingSignature = "";
   $("connection").className = "connection";
   $("connection").title = "";
@@ -377,7 +382,7 @@ function renderLanes() {
   const now = new Date();
   // Today's date is part of it, so "Yesterday" and times update after midnight.
   const signature = JSON.stringify([lanes, laneIdentity(sel), [...view.digests.values()].filter(Boolean).length, counts, [...view.aliases],
-    previews, now.toDateString()]);
+    previews, now.toDateString(), view.laneQuery]);
   if (signature === view.lanesSignature) { return; }
   view.lanesSignature = signature;
   armMidnight();
@@ -387,6 +392,14 @@ function renderLanes() {
   const list = $("lane-list");
   const focused = document.activeElement && document.activeElement.parentElement === list ? document.activeElement.dataset.lane : null;
   const existing = new Map([...list.children].map((li) => [li.dataset.lane, li]));
+  // A search hides rows, never the selected chat, whose timeline is shown.
+  const shown = shownLanes(lanes, sel, aliasOf, view.laneQuery);
+  const hidden = hiddenSummary(lanes, shown, counts);
+  const selMisses = !!sel && !!view.laneQuery.trim() && !laneMatches(sel, aliasOf(sel), view.laneQuery);
+  $("lanes-hidden").hidden = hidden.chats === 0 && !selMisses;
+  $("lanes-hidden-text").textContent = hidden.chats
+    ? hidden.chats + (hidden.chats === 1 ? " chat" : " chats") + " hidden by the search" + (hidden.unread ? ", " + hidden.unread + " new" : "") + "."
+    : selMisses ? "No other chat matches." : "";
   const fresh = lanes.map((l, i) => {
     const n = names.get(laneIdentity(l));
     const unread = counts[i];
@@ -407,11 +420,16 @@ function renderLanes() {
       h("span", { class: "lane-sub" }, p
         ? [h("span", { class: "preview-label" }, "Last: "), p.time ? [h("time", { title: fullTime(p.time) }, laneTime(p.time, now)), " "] : null, text(p.verb), p.text ? [": ", text(p.text), p.cut ? "…" : ""] : null]
         : l.items + " item(s)"));
+    if (l === sel && !laneMatches(l, aliasOf(l), view.laneQuery)) {
+      node.children.push(h("span", { class: "lane-sub no-match" }, "Selected; does not match the search"));
+    }
     const li = materialize(document, node);
+    li.hidden = !shown[i];
     // Keep the element of a lane and change only its content, so a click
     // that is in progress still lands on the same element.
     const old = existing.get(li.dataset.lane);
     if (!old) { return li; }
+    old.hidden = li.hidden;
     for (const name of ["tabindex", "aria-selected", "title"]) {
       if (li.hasAttribute(name)) { old.setAttribute(name, li.getAttribute(name)); } else { old.removeAttribute(name); }
     }
@@ -424,7 +442,11 @@ function renderLanes() {
   $("chats-unread").textContent = total ? " · " + total + " new" : "";
   if (focused) {
     const again = [...list.children].find((li) => li.dataset.lane === focused);
-    if (again) { again.focus(); }
+    // A focused row the search now hides gives focus to the selected one.
+    if (again && !again.hidden) { again.focus(); } else if (again) {
+      const selected = list.querySelector("[aria-selected=\"true\"]");
+      if (selected) { selected.focus(); }
+    }
   }
 }
 
@@ -892,7 +914,7 @@ function onScroll() {
 }
 
 function onLaneKey(ev) {
-  const items = [...$("lane-list").children];
+  const items = [...$("lane-list").children].filter((li) => !li.hidden); // Rows a search hides are skipped.
   const i = items.indexOf(document.activeElement);
   if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
     ev.preventDefault();
@@ -963,6 +985,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("lane-list").addEventListener("click", (e) => { const li = e.target.closest("li[data-lane]"); if (li) { selectLane(li.dataset.lane); } });
   $("lane-list").addEventListener("keydown", onLaneKey);
   $("discover").addEventListener("click", () => client && client.discover());
+  $("lane-search").addEventListener("input", (e) => { view.laneQuery = e.target.value; view.lanesSignature = ""; schedule(); });
+  $("lane-search-clear").addEventListener("click", () => {
+    view.laneQuery = "";
+    $("lane-search").value = "";
+    view.lanesSignature = "";
+    schedule();
+    $("lane-search").focus();
+  });
   $("auto-switch").checked = view.autoSwitch;
   $("auto-switch").addEventListener("change", (e) => {
     view.autoSwitch = e.target.checked;

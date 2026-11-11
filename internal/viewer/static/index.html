@@ -36,6 +36,8 @@
 </header>
 <nav id="lanes" class="lanes" aria-label="Conversations">
 <div class="lanes-actions"><button id="discover" type="button">Discover older conversations</button></div>
+<input id="lane-search" class="lane-search" type="search" placeholder="Search chats" aria-label="Search chats by alias, client name or ID" aria-controls="lane-list" autocomplete="off" spellcheck="false">
+<div role="status"><p id="lanes-hidden" class="lanes-hidden" hidden><span id="lanes-hidden-text"></span> <button id="lane-search-clear" type="button">Clear</button></p></div>
 <ul id="lane-list" role="listbox" aria-label="Conversations"></ul>
 <p class="hint">Chat names come from client metadata and are not verified. "Last:" shows the newest loaded action, not a chat title.</p>
 </nav>

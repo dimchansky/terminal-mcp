@@ -233,3 +233,6 @@ pre { overflow-wrap: anywhere; }
 /* An opened note in a block's corner wraps within the block. */
 .block > .corner { max-width: 100%; flex-wrap: wrap; box-sizing: border-box; }
 details.info > span { overflow-wrap: anywhere; }
+.lane-search { width: 100%; box-sizing: border-box; margin: 0.5rem 0 0; padding: 0.3rem 0.4rem; font: inherit; }
+.lanes-hidden { color: var(--muted); font-size: 0.8rem; margin: 0.3rem 0; }
+.lane-sub.no-match { color: var(--warn); font-style: normal; }
