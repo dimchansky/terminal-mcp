@@ -114,6 +114,8 @@ The sketch is the original design. As built after #11 and #12 (SPEC §10 is the 
 - **Chats are recognisable:** an alias, or a client name and a short ID that stays visible; the last activity and unread count on the right; "Last: <verb>: <hint>" from the newest loaded action, never a title. Rename is inline; About this chat holds the full ID and the metadata's source.
 - **The top bar keeps things apart:** the connection (Connected), one chip per audit or history warning, auto-switch with a held-back switch and Show, and the session's end.
 - **Colours are tokens per theme,** checked for contrast by a test; keyboard focus is always visible.
+- **Narrow windows (#13):** one column; Chats opens the chat list over the timeline without re-rendering it; long values wrap inside their blocks.
+- **Search and filters (#13):** chats by alias, client or ID; the loaded history by text, action type and Needs attention, with what was matched where, what could not be searched, warnings kept regardless and new activity hidden. Nothing is loaded for a search.
 
 **Human-readable presentation is the default, forensic source is always available:**
 
