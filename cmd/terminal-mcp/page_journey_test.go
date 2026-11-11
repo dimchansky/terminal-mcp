@@ -1304,6 +1304,12 @@ func TestPageEndsOnStopAndNeedsANewCode(t *testing.T) {
 	d.signIn(s)
 	d.do(map[string]any{"cmd": "start"}, nil)
 	d.do(map[string]any{"cmd": "wait", "connection": "live"}, nil)
+	var live struct {
+		Text struct{ Connection string } `json:"text"`
+	}
+	if d.do(map[string]any{"cmd": "status"}, &live); live.Text.Connection != "Connected" {
+		t.Errorf("a live page reads %q, want Connected", live.Text.Connection)
+	}
 	d.do(map[string]any{"cmd": "settle"}, nil)
 	// The owner clicks Load on all three; the reads are held, two in flight
 	// and one queued, when the server stops.

@@ -9,7 +9,7 @@ import { h, materialize } from "./view.js";
 import { entry, entryKey, timeline, withDays, jumpTarget, text, fullTime, processKey } from "./cards.js";
 import { laneName, laneTime, newestActions, lanePreview, rename, shortIds } from "./lanes.js";
 import { attentionFor } from "./attention.js";
-import { describeStatus, loadErrorText } from "./status.js";
+import { describeStatus, sessionText, pendingNotice, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
 import { icon, conversationKey } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
@@ -76,10 +76,10 @@ function failed(code) {
 }
 
 function signedIn(data) {
-  const until = new Date(data.absolute_expires_at);
-  let s = "Session ends at the latest at " + until.toLocaleString() + ".";
-  if (!persisted) { s += " This tab cannot keep the sign-in across reloads."; }
-  $("status").textContent = s;
+  const session = sessionText(data.absolute_expires_at);
+  $("status").textContent = session.text;
+  $("status").title = session.title;
+  view.sessionNote = persisted ? "" : "This tab cannot keep the sign-in across reloads.";
   show("signed-in");
   stopTimers();
   renewTimer = setInterval(renew, RENEW_MS);
@@ -148,6 +148,9 @@ const view = {
   loading: "", // A history request in flight.
   loadError: "",
   renewNote: "",
+  sessionNote: "", // Why this tab cannot keep its sign-in, if so.
+  statusSignature: "", // The header's connection and warnings as last shown.
+  pendingSignature: "", // The waiting switch as last shown.
   controls: null, // The history controls element, updated in place.
   attention: null,
   autoSwitch: loadPreference(),
@@ -181,7 +184,10 @@ function resetView() {
   view.archive = null;
   view.visible.clear();
   if (view.observer) { view.observer.disconnect(); view.observer = null; }
-  for (const id of ["lane-list", "timeline", "lane-title", "connection", "health", "notice"]) { $(id).replaceChildren(); }
+  for (const id of ["lane-list", "timeline", "lane-title", "connection", "warnings", "pending"]) { $(id).replaceChildren(); }
+  view.statusSignature = view.pendingSignature = "";
+  $("connection").className = "connection";
+  $("connection").title = "";
 }
 
 const AUTO_KEY = "terminal-mcp-dashboard-auto-switch";
@@ -321,16 +327,36 @@ function digestFor(lane) {
 
 function render() {
   if (!client) { return; }
+  renderLanes(); // First: the header's waiting switch names a chat by it.
   renderStatus();
-  renderLanes();
   renderTimeline();
 }
 
+// renderStatus fills the header's groups: the connection, the warnings,
+// a waiting switch. Each is replaced only when it changed, so a click or
+// keyboard focus on Show is never lost between frames.
 function renderStatus() {
-  const t = describeStatus(client.status, [view.renewNote]);
-  $("connection").textContent = t.connection;
-  $("health").textContent = t.health;
-  $("notice").textContent = t.notice;
+  const t = describeStatus(client.status, [view.renewNote, view.sessionNote]);
+  const c = $("connection");
+  // Written only when it changes, so a screen reader is not told again.
+  if (c.textContent !== t.connection) { c.textContent = t.connection; }
+  c.className = "connection " + t.connectionKind;
+  c.title = t.connectionTitle;
+  const sig = JSON.stringify(t.warnings);
+  if (sig !== view.statusSignature) {
+    view.statusSignature = sig;
+    $("warnings").replaceChildren(...t.warnings.map((w) => materialize(document, h("span", { class: "warn-chip " + w.kind }, text(w.text)))));
+  }
+  // A deferred switch is said where auto-switch is, with a way to follow
+  // it now. The archive view keeps its own selection, so none is offered.
+  const p = pendingNotice(view.attention && view.attention.pending, { archive: !!view.archive, names: view.laneNames || new Map() });
+  const psig = JSON.stringify(p);
+  if (psig !== view.pendingSignature) {
+    view.pendingSignature = psig;
+    $("pending").replaceChildren(...(p ? [materialize(document, h("span", { class: "pending-chip" },
+      "New activity in ", h("strong", {}, text(p.name)), ". Auto-switch waits while you read. ",
+      p.canShow ? h("button", { type: "button", "data-action": "show-pending" }, "Show") : null))] : []));
+  }
 }
 
 function renderLanes() {
@@ -843,6 +869,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("submit").addEventListener("click", login);
   $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") { login(); } });
   $("logout").addEventListener("click", logout);
+  $("pending").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-action=\"show-pending\"]");
+    const target = view.attention && view.attention.pending;
+    if (b && target && !view.archive) {
+      selectLane(target);
+      // The chip goes away with its button: focus moves to the chat shown.
+      const sel = $("lane-list").querySelector("[aria-selected=\"true\"]");
+      if (sel) { sel.focus(); }
+    }
+  });
   $("retry").addEventListener("click", renew);
   $("again").addEventListener("click", () => { $("login-error").textContent = ""; show("login"); });
   $("timeline").addEventListener("click", onTimelineClick);

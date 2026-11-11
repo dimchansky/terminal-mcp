@@ -62,8 +62,24 @@ button { min-height: 24px; }
 .app { display: grid; grid-template-columns: 20rem 1fr; grid-template-rows: auto 1fr; height: 100vh; }
 .bar { grid-column: 1 / 3; display: flex; gap: 1rem; align-items: center; padding: 0.4rem 1rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .bar h1 { font-size: 1rem; margin: 0; }
-.bar #status { color: var(--muted); font-size: 0.85rem; margin-left: auto; }
-#notice:not(:empty) { color: var(--warn); }
+.connection { border: 1px solid currentColor; border-radius: 999px; padding: 0 0.5rem; font-size: 0.85rem; }
+.connection.ok { color: var(--ok); }
+.connection.warn { color: var(--warn); }
+.connection.bad { color: var(--bad); border-width: 2px; }
+.connection.ok::before { content: "\25cf\00a0"; content: "\25cf\00a0" / ""; }
+.connection.warn::before { content: "\21bb\00a0"; content: "\21bb\00a0" / ""; }
+.connection.bad::before { content: "\2715\00a0"; content: "\2715\00a0" / ""; }
+.warnings { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.warnings:empty { display: none; }
+.warn-chip { border: 1px solid currentColor; border-radius: 4px; padding: 0 0.4rem; font-size: 0.8rem; }
+.warn-chip.bad { color: var(--bad); border-width: 2px; }
+.warn-chip.warn { color: var(--warn); }
+.warn-chip.info { color: var(--muted); }
+.warn-chip.bad::before, .warn-chip.warn::before { content: "!\00a0"; content: "!\00a0" / ""; font-weight: 700; }
+.auto-group { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+#pending:empty, .connection:empty { display: none; }
+.pending-chip { min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--live); color: var(--fg); border-radius: 4px; padding: 0.1rem 0.4rem; font-size: 0.85rem; }
+.session { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; color: var(--muted); font-size: 0.85rem; }
 .lanes { border-right: 1px solid var(--line); overflow-y: auto; padding: 0.5rem; }
 .lanes ul { list-style: none; margin: 0.5rem 0; padding: 0; }
 .lanes li { display: grid; grid-template-columns: 20px 1fr auto; gap: 0.4rem; padding: 0.35rem; border-radius: 4px; cursor: pointer; align-items: center; }

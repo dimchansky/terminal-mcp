@@ -2,8 +2,17 @@
 // them to the DOM, and tests check them without one.
 
 export const CONNECTION = {
-  connecting: "Connecting…", live: "Live", reconnecting: "Reconnecting…", rebuilding: "Rebuilding the view…",
+  connecting: "Connecting…", live: "Connected", reconnecting: "Reconnecting…", rebuilding: "Rebuilding the view…",
   offline: "Offline", audit_closed: "Audit unavailable: no live activity", stopped: "Server stopped",
+};
+
+// How each connection state looks: ok, warn or bad.
+const CONNECTION_KIND = { live: "ok", connecting: "warn", reconnecting: "warn", rebuilding: "warn", offline: "bad", audit_closed: "bad", stopped: "bad" };
+
+// What the connection label means, for its tooltip.
+const CONNECTION_TITLE = {
+  live: "Receiving new audit records as they are written. This says nothing about whether any process is running.",
+  audit_closed: "The audit is unavailable, so no live activity can be shown.",
 };
 
 // reasonText explains why the page is offline or reconnecting, and what
@@ -42,19 +51,42 @@ export function loadErrorText(code) {
   }
 }
 
-// describeStatus maps the client's status to the texts of the header:
-// the connection label, health and notices (extra notes come last).
+// describeStatus maps the client's status to the header: the connection
+// {connection, connectionKind, connectionTitle} and the warnings, each
+// {kind, text} (bad, warn or info; extra notes come last as warnings).
 export function describeStatus(s, extra = []) {
-  const connection = CONNECTION[s.connection] || s.connection;
+  const connection = Object.hasOwn(CONNECTION, s.connection) ? CONNECTION[s.connection] : String(s.connection);
+  const connectionKind = Object.hasOwn(CONNECTION_KIND, s.connection) ? CONNECTION_KIND[s.connection] : "warn";
+  const connectionTitle = Object.hasOwn(CONNECTION_TITLE, s.connection) ? CONNECTION_TITLE[s.connection] : connection;
+  const warnings = [];
   const why = s.connection === "offline" || s.connection === "reconnecting" ? reasonText(s.reason, s.reasonStatus) : "";
-  const health = s.health && s.health.state && s.health.state !== "ok" ? "Audit " + s.health.state : "";
-  const index = s.index && s.index.status && s.index.status !== "ready" ? "In-flight index " + s.index.status.replaceAll("_", " ") : "";
-  const outside = s.index && s.index.in_flight_outside && s.index.in_flight_outside.length
-    ? s.index.in_flight_outside.length + " running effect(s) outside the loaded history" : "";
-  const notes = [];
-  if (why) { notes.push(why); }
-  if (s.possibleUnseen) { notes.push("Some activity may have been missed while the view was rebuilt."); }
-  if (s.floorChanged) { notes.push("Older activity was unloaded to stay within memory; use Earlier to see it again."); }
-  notes.push(...extra.filter(Boolean));
-  return { connection, health: [health, index, outside].filter(Boolean).join(" · "), notice: notes.join(" ") };
+  if (why) { warnings.push({ kind: s.connection === "offline" ? "bad" : "warn", text: why }); }
+  if (s.health && s.health.state && s.health.state !== "ok") { warnings.push({ kind: "bad", text: "Audit " + s.health.state }); }
+  if (s.index && s.index.status && s.index.status !== "ready") { warnings.push({ kind: "warn", text: "In-flight index " + s.index.status.replaceAll("_", " ") }); }
+  if (s.index && s.index.in_flight_outside && s.index.in_flight_outside.length) {
+    warnings.push({ kind: "warn", text: s.index.in_flight_outside.length + " running effect(s) outside the loaded history" });
+  }
+  if (s.possibleUnseen) { warnings.push({ kind: "warn", text: "Some activity may have been missed while the view was rebuilt." }); }
+  if (s.floorChanged) { warnings.push({ kind: "info", text: "Older activity was unloaded to stay within memory; use Earlier to see it again." }); }
+  for (const e of extra) { if (e) { warnings.push({ kind: "warn", text: e }); } }
+  return { connection, connectionKind, connectionTitle, warnings };
+}
+
+// sessionText says when the viewer session ends at the latest, compactly:
+// {text, title}, the exact time in the title.
+export function sessionText(until, now = new Date()) {
+  const d = new Date(until);
+  if (Number.isNaN(d.getTime())) { return { text: "", title: "" }; }
+  const time = d.toLocaleTimeString(undefined, { hourCycle: "h23", hour: "2-digit", minute: "2-digit" });
+  const sameDay = d.toDateString() === now.toDateString();
+  return { text: "Session ends by " + (sameDay ? time : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + time),
+    title: "The session ends at the latest at " + d.toLocaleString(undefined, { dateStyle: "full", timeStyle: "long", hourCycle: "h23" }) + "." };
+}
+
+// pendingNotice describes a switch auto-switch is holding back, for the
+// header: {lane, name, canShow}, or null. The archive view keeps its own
+// selection, so Show is not offered there.
+export function pendingNotice(pending, { archive = false, names = new Map() } = {}) {
+  if (!pending) { return null; }
+  return { lane: pending, name: names.get(pending) || "another chat", canShow: !archive };
 }

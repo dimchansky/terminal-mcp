@@ -28,12 +28,10 @@
 <div id="signed-in" class="app" hidden>
 <header class="bar">
 <h1>terminal-mcp activity</h1>
-<span id="connection" role="status" aria-live="polite"></span>
-<span id="health"></span>
-<span id="notice" role="status"></span>
-<label class="auto"><input id="auto-switch" type="checkbox"> Auto-switch chats</label>
-<span id="status"></span>
-<button id="logout" type="button">Sign out</button>
+<span id="connection" class="connection" role="status" aria-live="polite"></span>
+<div id="warnings" class="warnings" role="status"></div>
+<div class="auto-group"><label class="auto"><input id="auto-switch" type="checkbox"> Auto-switch chats</label><span id="pending"></span></div>
+<div class="session"><span id="status"></span><button id="logout" type="button">Sign out</button></div>
 </header>
 <nav class="lanes" aria-label="Conversations">
 <div class="lanes-actions"><button id="discover" type="button">Discover older conversations</button></div>
