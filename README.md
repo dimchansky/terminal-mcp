@@ -31,7 +31,7 @@ The HTTP endpoint listens on `127.0.0.1:8090/mcp` by default. It does not accept
 
 ## Build and start
 
-The project supports macOS, Linux, and Windows. To build it, you need **Go 1.27.3 or later**.
+The project supports macOS, Linux, and Windows. To build it, you need **Go 1.27.4 or later**.
 
 On macOS or Linux, run these commands from the repository directory:
 
