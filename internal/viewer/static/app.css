@@ -1,11 +1,63 @@
-:root { color-scheme: light dark; --focus: #4a90e2; font-family: system-ui, sans-serif; --line: #8884; --muted: #888; --warn: #b26b00;
-  --del: #ff4d4f22; --ins: #2ea04326; --esc: #7a5cff; --unread: #0a7d3b; }
-body { margin: 0; }
+/* Colour tokens, one set per theme. Text and status colours are opaque and
+   checked for contrast by webtest/contrast.test.js; only background tints
+   (--code-bg, --selected-bg, --del, --ins) may be translucent. No other
+   rule names a colour. */
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --bg: #ffffff;
+  --fg: #1b1b1b;
+  --muted: #5f6368;
+  --line: #c4c7cc;
+  --ok: #1a7f37;
+  --bad: #b3261e;
+  --warn: #7a5c00;
+  --unknown: #6f42c1;
+  --live: #0b5cad;
+  --seen: #4d5b70;
+  --focus: #0b5cad;
+  --selected-bg: #0b5cad1f;
+  --selected-bar: #0b5cad;
+  --unread-bg: #1a7f37;
+  --unread-fg: #ffffff;
+  --code-bg: #f2f3f5;
+  --del: #ff4d4f26;
+  --ins: #2ea0432e;
+  --esc: #6639ba;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --fg: #e8e8e8;
+    --muted: #a0a4ab;
+    --line: #44474d;
+    --ok: #57c27a;
+    --bad: #ff7b72;
+    --warn: #e3a73d;
+    --unknown: #c39bff;
+    --live: #6cb6ff;
+    --seen: #9fb0c8;
+    --focus: #6cb6ff;
+    --selected-bg: #6cb6ff26;
+    --selected-bar: #6cb6ff;
+    --unread-bg: #1f7a3f;
+    --unread-fg: #ffffff;
+    --code-bg: #232529;
+    --del: #ff7b7233;
+    --ins: #57c27a2e;
+    --esc: #c39bff;
+  }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); }
+/* Keyboard focus is always visible. */
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* Small controls get at least a 24px target (WCAG 2.5.8), not larger text. */
+button { min-height: 24px; }
 [hidden] { display: none !important; }
 .gate { max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
 .gate input { font-family: ui-monospace, monospace; font-size: 1.1rem; width: 100%; box-sizing: border-box; padding: 0.5rem; }
 .gate button { margin-top: 0.75rem; padding: 0.4rem 1rem; }
-[role="alert"] { color: #b00020; }
+[role="alert"] { color: var(--bad); }
 
 .app { display: grid; grid-template-columns: 20rem 1fr; grid-template-rows: auto 1fr; height: 100vh; }
 .bar { grid-column: 1 / 3; display: flex; gap: 1rem; align-items: center; padding: 0.4rem 1rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -15,12 +67,11 @@ body { margin: 0; }
 .lanes { border-right: 1px solid var(--line); overflow-y: auto; padding: 0.5rem; }
 .lanes ul { list-style: none; margin: 0.5rem 0; padding: 0; }
 .lanes li { display: grid; grid-template-columns: 20px 1fr auto; gap: 0.4rem; padding: 0.35rem; border-radius: 4px; cursor: pointer; align-items: center; }
-.lanes li[aria-selected="true"] { background: #4a90e233; }
-.lanes li:focus { outline: 2px solid #4a90e2; }
+.lanes li[aria-selected="true"] { background: var(--selected-bg); box-shadow: inset 3px 0 0 var(--selected-bar); }
 .lane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-sub { grid-column: 2 / 4; color: var(--muted); font-size: 0.8rem; }
 .claimed { color: var(--muted); font-size: 0.75rem; }
-.unread { background: var(--unread); color: #fff; border-radius: 999px; padding: 0 0.45rem; font-size: 0.75rem; }
+.unread { background: var(--unread-bg); color: var(--unread-fg); font-weight: 600; border-radius: 999px; padding: 0 0.45rem; font-size: 0.75rem; }
 .hint { color: var(--muted); font-size: 0.75rem; }
 .identicon { display: block; }
 .identicon.generic { color: var(--muted); }
@@ -36,23 +87,21 @@ body { margin: 0; }
 .card-head { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: baseline; font-size: 0.85rem; margin-bottom: 0.4rem; }
 .tool { font-family: ui-monospace, monospace; }
 .badge { border: 1px solid var(--line); border-radius: 4px; padding: 0 0.3rem; font-size: 0.75rem; }
-.badge.warn, .badge.state-unknown, .badge.effect-unknown { color: var(--warn); border-color: var(--warn); }
-.badge.state-open, .badge.effect-in_flight { color: #1a6fd1; border-color: #1a6fd1; }
-.badge.status-error, .badge.status-rejected { color: #b00020; border-color: #b00020; }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
 .dur, .outcome { color: var(--muted); }
 .verb { font-weight: 600; }
 .outcome-chip { border-radius: 4px; padding: 0 0.4rem; font-size: 0.8rem; border: 1px solid currentColor; }
-.outcome-chip.ok { color: #2e9e55; }
-.outcome-chip.bad { color: #b00020; }
+.outcome-chip.ok { color: var(--ok); }
+.outcome-chip.bad { color: var(--bad); border-width: 2px; }
 .outcome-chip.warn { color: var(--warn); }
-.outcome-chip.live { color: #1a6fd1; }
+.outcome-chip.live { color: var(--live); }
 .outcome-chip.neutral { color: var(--muted); }
 .outcome-detail { margin: 0.2rem 0; white-space: pre-wrap; }
-.outcome-detail.bad { color: #b00020; }
+.outcome-detail.bad { color: var(--bad); }
 .essentials { margin: 0.2rem 0; color: var(--muted); }
 .timing { margin: 0.1rem 0; }
 .marker { text-align: center; color: var(--muted); font-size: 0.8rem; border-top: 1px dashed var(--line); margin: 0.75rem 0; padding-top: 0.25rem; }
-pre { margin: 0.25rem 0; padding: 0.5rem; background: #8881; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+pre { margin: 0.25rem 0; padding: 0.5rem; background: var(--code-bg); border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 pre.inline { display: inline-block; padding: 0 0.3rem; margin: 0; }
 pre.raw { max-height: 24rem; overflow-y: auto; font-size: 0.8rem; }
 pre.command { font-size: 0.95rem; }
@@ -62,7 +111,7 @@ pre.command { font-size: 0.95rem; }
 .label { color: var(--muted); font-size: 0.8rem; margin-top: 0.3rem; }
 .note { color: var(--muted); font-size: 0.8rem; }
 .warning { color: var(--warn); font-size: 0.85rem; }
-.not-recorded { color: #b00020; font-weight: 600; }
+.not-recorded { color: var(--bad); font-weight: 600; }
 .kv { margin: 0.15rem 0; }
 dl.obj { display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 0.6rem; margin: 0.25rem 0; }
 dl.obj dt { font-family: ui-monospace, monospace; color: var(--muted); }
@@ -83,7 +132,7 @@ details.more[open] > summary { margin-bottom: 0.3rem; }
 .undefined-fields > .label { color: var(--warn); }
 .essentials code { font-size: 0.8rem; overflow-wrap: anywhere; }
 details.info { display: inline-block; vertical-align: middle; margin-left: 0.3rem; font-size: 0.8rem; color: var(--muted); }
-details.info > summary { list-style: none; cursor: help; width: 1.1em; height: 1.1em; line-height: 1.1em; text-align: center; border: 1px solid var(--muted); border-radius: 50%; font-style: italic; }
+details.info > summary { position: relative; list-style: none; cursor: help; width: 1.1em; height: 1.1em; line-height: 1.1em; text-align: center; border: 1px solid var(--muted); border-radius: 50%; font-style: italic; }
 details.info > summary::-webkit-details-marker { display: none; }
 details.info[open] { display: block; }
 .card.compact { padding-top: 0.25rem; padding-bottom: 0.25rem; }
@@ -95,8 +144,8 @@ details.info[open] { display: block; }
 details.conv-id { display: inline-block; font-size: 0.8rem; color: var(--muted); }
 details.conv-id code { overflow-wrap: anywhere; }
 .row-key { color: var(--muted); font-style: italic; }
-.outcome-chip.unknown { color: var(--warn); border-style: dashed; }
-.outcome-chip.seen { color: var(--muted); border-style: dotted; }
+.outcome-chip.unknown { color: var(--unknown); border-style: dashed; }
+.outcome-chip.seen { color: var(--seen); border-style: dotted; }
 .outcome-chip::before { margin-right: 0.25em; }
 .outcome-chip.ok::before { content: "\2713"; content: "\2713" / ""; }
 .outcome-chip.bad::before { content: "\2715"; content: "\2715" / ""; }
@@ -121,5 +170,13 @@ details.conv-id code { overflow-wrap: anywhere; }
 }
 .day { display: flex; align-items: center; gap: 0.6rem; color: var(--muted); font-size: 0.8rem; font-weight: normal; margin: 0.9rem 0 0.4rem; }
 .day::before, .day::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-.card.flash { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* A jump's highlight is dashed, so it never looks like keyboard focus. */
+.card.flash { outline: 2px dashed var(--focus); outline-offset: -2px; }
+/* Cards clip what they paint (content-visibility), so heads that fill
+   them draw their focus ring inside. */
+.row-head:focus-visible, .group-head:focus-visible { outline-offset: -2px; }
 .observation { border-left: 3px solid var(--line); padding-left: 0.5rem; }
+details.info > summary::after { content: ""; position: absolute; inset: -5px; }
+/* The note's enlarged target reaches about 5px out: keep that clear. */
+details.info { margin-left: 0.35rem; margin-right: 0.35rem; }
+.group-head { align-items: center; }
