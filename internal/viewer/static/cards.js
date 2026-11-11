@@ -547,15 +547,13 @@ export function shortTime(t) {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function localDay(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
-
 // seenText is when an observation was recorded, with its date when it is
 // on another local day than the action: "Nov 11 09:02:10".
 export function seenText(t, actionT) {
   const d = new Date(t);
   if (!t || Number.isNaN(d.getTime())) { return ""; }
   const at = new Date(actionT);
-  const sameDay = !!actionT && !Number.isNaN(at.getTime()) && localDay(at) === localDay(d);
+  const sameDay = !!actionT && !Number.isNaN(at.getTime()) && dayOf(actionT) === dayOf(t);
   return (sameDay ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " ") + shortTime(t);
 }
 
@@ -801,15 +799,67 @@ export function timeline(items, ctx) {
   return out;
 }
 
+// itemTime is the time an item's header shows, or "" (only actions and
+// effects carry one in the timeline model).
+function itemTime(item) {
+  if (item.action) { return actionTime(item.action); }
+  const e = item.effect;
+  return e ? (e.start || e.finish || {}).time || "" : "";
+}
+
+// dayOf is the local calendar day of a time ("2026-11-11"), or "".
+export function dayOf(t) {
+  const d = new Date(t);
+  if (!t || Number.isNaN(d.getTime())) { return ""; }
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// withDays marks calendar days in a timeline's order, never re-sorting it:
+// a separator goes before the first dated entry and before every entry
+// whose local day differs from the previous dated entry's (so clocks that
+// go back and forth show every change). A group dates by its first poll;
+// entries without a time never start a day.
+export function withDays(entries) {
+  const out = [];
+  let last = "";
+  for (const e of entries) {
+    const time = itemTime(e.item || e.items[0]);
+    const day = dayOf(time);
+    if (day && day !== last) {
+      // Keyed by the entry it heads: when that entry changes (earlier
+      // history, a poll that becomes a group) the separator is rebuilt;
+      // it holds no state, and the scroll anchor is never a separator.
+      out.push({ day, time, key: "day:" + day + ":" + entryKey(e) });
+      last = day;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+// lastTime is a group's last poll time, dated when it is not the day of
+// the first poll (the day the group is filed under).
+function lastTime(last, first) {
+  const t = (last.action.start || {}).time;
+  if (!t) { return null; }
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? h("time", {}, text(t)) : h("time", { title: fullTime(t) }, seenText(t, itemTime(first)));
+}
+
 // entryKey is unique per timeline: a card's item key, or a group's target
 // with its first member (several groups may poll the same target).
 export function entryKey(e) {
+  if (e.day) { return e.key; }
   if (e.item) { return e.item.key; }
   return e.items.length === 1 ? e.items[0].key : "group:" + e.group + "\u0000" + e.items[0].key;
 }
 
 // entry renders a timeline entry: a card or a poll group.
 export function entry(e, ctx) {
+  if (e.day) {
+    // A heading, so a screen reader announces it and can jump between days.
+    return h("h3", { class: "day" }, h("span", {}, new Date(e.time).toLocaleDateString(undefined, { dateStyle: "full" })));
+  }
   if (e.item) { return card(e.item, ctx); }
   if (e.items.length === 1) { return card(e.items[0], ctx); }
   const last = e.items[e.items.length - 1];
@@ -821,7 +871,7 @@ export function entry(e, ctx) {
     h("button", { type: "button", class: "group-head", "data-action": "toggle-group", "data-key": key, "aria-expanded": !!open },
       h("strong", { class: "verb" }, text(verb(last.action.tool))), " × " + e.items.length, " ",
       row ? chip(row.o) : null, " ",
-      h("span", { class: "row-main" }, row ? row.summary : null), when("last", localTime((last.action.start || {}).time))),
+      h("span", { class: "row-main" }, row ? row.summary : null), when("last", lastTime(last, e.items[0]))),
     // Always built: collapsed, the polls are hidden but complete.
     open ? h("div", { class: "members" }, e.items.map((it) => card(it, ctx))) : h("div", { class: "members", hidden: true }, e.items.map((it) => card(it, ctx))));
 }

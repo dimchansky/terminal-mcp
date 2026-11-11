@@ -119,3 +119,5 @@ details.conv-id code { overflow-wrap: anywhere; }
 @media (max-width: 30rem) {
   .block > .corner { float: none; justify-content: flex-end; margin: 0 0 0.2rem; }
 }
+.day { display: flex; align-items: center; gap: 0.6rem; color: var(--muted); font-size: 0.8rem; font-weight: normal; margin: 0.9rem 0 0.4rem; }
+.day::before, .day::after { content: ""; flex: 1; border-top: 1px solid var(--line); }

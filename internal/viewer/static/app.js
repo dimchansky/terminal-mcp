@@ -6,7 +6,7 @@
 
 import { Client, checkSession, signIn, renewSession, signOut } from "./net.js";
 import { h, materialize } from "./view.js";
-import { entry, entryKey, timeline, text, localTime, processKey } from "./cards.js";
+import { entry, entryKey, timeline, withDays, text, localTime, processKey } from "./cards.js";
 import { attentionFor } from "./attention.js";
 import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
@@ -394,6 +394,7 @@ function recordSig(item, store) {
 }
 
 function entrySig(e, ctx) {
+  if (e.day) { return (view.archive ? "a" + view.archive.id : "l") + "|day|" + e.day; }
   const items = e.item ? [e.item] : e.items;
   const store = source();
   // The view is part of the signature: live and archive entries never share an element.
@@ -449,7 +450,9 @@ function renderTimeline() {
   let anchorOffset = 0;
   for (const el of box.children) {
     const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
-    if (el.dataset.entry && top + el.offsetHeight > 0) { anchor = el; anchorOffset = top; break; }
+    // A day separator is never the anchor: its key follows the entry it
+    // heads, so it is rebuilt when earlier history arrives.
+    if (el.dataset.entry && !el.dataset.day && top + el.offsetHeight > 0) { anchor = el; anchorOffset = top; break; }
   }
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   const focusKey = !focused ? null : focused.dataset.action ? focused.dataset.action + "\u0000" + (focused.dataset.key || "")
@@ -471,7 +474,7 @@ function renderTimeline() {
   for (const el of box.children) { if (el.dataset.entry) { current.set(el.dataset.entry, el); } }
   const nodes = [controls];
   const seen = new Set();
-  for (const e of timeline(items, ctx)) {
+  for (const e of withDays(timeline(items, ctx))) {
     const key = entryKey(e);
     const sig = entrySig(e, ctx);
     let el = current.get(key);
@@ -479,10 +482,12 @@ function renderTimeline() {
       if (el) { view.observer.unobserve(el); view.visible.delete(el); }
       el = materialize(document, entry(e, ctx));
       el.dataset.entry = key;
+      if (e.day) { el.dataset.day = e.day; }
       view.entries.set(key, sig);
-      view.observer.observe(el);
+      // A day separator is not activity: never seen, never read.
+      if (!e.day) { view.observer.observe(el); }
     }
-    view.itemsOf.set(el, e.item ? [e.item] : e.items);
+    if (!e.day) { view.itemsOf.set(el, e.item ? [e.item] : e.items); }
     seen.add(key);
     nodes.push(el);
   }

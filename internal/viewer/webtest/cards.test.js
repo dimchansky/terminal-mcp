@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime, localTime, fullTime } from "../static/cards.js";
+import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime, localTime, fullTime, withDays, dayOf } from "../static/cards.js";
 import { textOf, find, materialize } from "../static/view.js";
 
 // glance is the text of a view as first seen: closed notes show only their
@@ -511,4 +511,53 @@ test("in flight there is no header duration; an effect-only card and a group kee
   assert.equal(eh.children[eh.children.length - 1].attrs.class, "when");
   assert.equal(textOf(localTime("not a time")), "not a time", "an invalid time shows as recorded");
   assert.equal(fullTime("not a time"), "not a time (not a valid time)");
+});
+
+test("day separators mark local days in the timeline's own order", () => {
+  // Times at local noon, so the test holds in every time zone.
+  const at = (y, m, d) => new Date(y, m - 1, d, 12).toISOString();
+  const mk = (n, time) => ({ kind: "action", key: "a:s/" + n, lane: "L", order: { live: true, rank: n },
+    action: { key: { server_id: "s", request_id: String(n) }, tool: "file_write", state: "finished", status: "ok", start: time ? { primary: "ref-" + n, time } : null } });
+  const entries = [mk(1, at(2026, 11, 10)), mk(2, at(2026, 11, 10)), mk(3, ""), mk(4, at(2026, 11, 11)), mk(5, at(2026, 11, 10)), mk(6, at(2026, 11, 10))].map((item) => ({ item }));
+  const out = withDays(entries);
+  assert.deepEqual(out.map((e) => (e.day ? "day " + e.day : e.item.key)),
+    ["day 2026-11-10", "a:s/1", "a:s/2", "a:s/3", "day 2026-11-11", "a:s/4", "day 2026-11-10", "a:s/5", "a:s/6"],
+    "the first dated entry gets one; a timeless entry starts none; days going back show again; nothing is re-sorted");
+  const keys = out.map(entryKey);
+  assert.equal(new Set(keys).size, keys.length, "separator keys are unique and stable");
+  assert.equal(entryKey(out[0]), "day:2026-11-10:a:s/1");
+  const sep = entry(out[0], {});
+  assert.equal(sep.tag, "h3", "a heading, so days can be navigated");
+  assert.equal(sep.attrs.class, "day");
+  assert.equal(textOf(sep), new Date(at(2026, 11, 10)).toLocaleDateString(undefined, { dateStyle: "full" }));
+  assert.equal(find(sep, "card").length, 0);
+  // A group dates by its first poll.
+  const g = withDays([{ group: "x", items: [mk(7, at(2026, 11, 9)), mk(8, at(2026, 11, 12))] }]);
+  assert.equal(g[0].day, "2026-11-09");
+  assert.deepEqual(withDays([]), []);
+});
+
+test("days split at local midnight; timeless and invalid times start none", () => {
+  const mk = (n, time) => ({ item: { kind: "action", key: "a:s/" + n, lane: "L", order: { live: true, rank: n },
+    action: { key: { server_id: "s", request_id: String(n) }, tool: "file_write", state: "finished", status: "ok", start: { primary: "ref-" + n, time } } } });
+  const out = withDays([mk(1, ""), mk(2, "not a time"), mk(3, new Date(2026, 10, 10, 23, 59, 59).toISOString()), mk(4, new Date(2026, 10, 11, 0, 0, 1).toISOString())]);
+  assert.deepEqual(out.map((e) => (e.day ? "day " + e.day : e.item.key)), ["a:s/1", "a:s/2", "day 2026-11-10", "a:s/3", "day 2026-11-11", "a:s/4"]);
+  assert.equal(dayOf("not a time"), "");
+});
+
+test("a separator follows the entry it heads; a group spanning midnight dates its last time", () => {
+  const records = new Map();
+  const poll = (n, time) => {
+    records.set("ref-" + n, { bytes: startRecord("terminal_read", { session_id: "S" }), size: 1 });
+    return { kind: "action", key: "a:s/p" + n, lane: "L", order: { live: true, rank: n },
+      action: { key: { server_id: "s", request_id: "p" + n }, tool: "terminal_read", input: "recorded", state: "finished", status: "ok", start: { primary: "ref-" + n, time } } };
+  };
+  const t1 = new Date(2026, 10, 10, 23, 59, 0).toISOString();
+  const t2 = new Date(2026, 10, 11, 0, 1, 0).toISOString();
+  const one = withDays(timeline([poll(1, t1)], { records }));
+  const two = withDays(timeline([poll(1, t1), poll(2, t2)], { records }));
+  assert.notEqual(entryKey(one[0]), entryKey(two[0]), "the separator key follows its entry (a poll became a group)");
+  assert.equal(two.filter((e) => e.day).length, 1, "a group is filed under its first poll's day");
+  const head = find(entry(two[1], { records, expanded: new Set() }), "when")[0];
+  assert.match(textOf(head), new RegExp("^last \\S+ \\d+ " + shortTime(t2).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$"), "the last poll's date shows when it is another day");
 });
