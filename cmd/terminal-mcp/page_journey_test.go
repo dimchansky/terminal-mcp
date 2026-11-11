@@ -607,6 +607,42 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		t.Errorf("a rejected call folded its protocol fields:\n%s", bad.Head)
 	}
 	checkRecords(bad, "")
+	// Local search and filters on real records: a command word across
+	// argv tokens, and Needs attention (rejected, failed, a non-zero exit).
+	var found struct {
+		Items []struct {
+			Key   string
+			Where string
+			Match bool
+		}
+	}
+	matched := func(args map[string]any) map[string]string {
+		t.Helper()
+		args["cmd"], args["identity"] = "filter", chatIdentity("chat-a")
+		d.do(args, &found)
+		out := map[string]string{}
+		for _, it := range found.Items {
+			if it.Match {
+				out[it.Key] = it.Where
+			}
+		}
+		return out
+	}
+	if m := matched(map[string]any{"query": "go test -race"}); len(m) != 1 || m[byOp(a, op("start")).Key] != "main" {
+		t.Errorf("a search for a command found %v", m)
+	}
+	if m := matched(map[string]any{"query": op("file")}); m[byOp(a, op("file")).Key] != "details" {
+		t.Errorf("a search for an operation ID is not said to be in Details: %v", m)
+	}
+	attn := matched(map[string]any{"attention": true})
+	for _, want := range []string{op("bad-argv"), op("write"), op("start")} {
+		if _, ok := attn[byOp(a, want).Key]; !ok {
+			t.Errorf("Needs attention misses %s: %v", want, attn)
+		}
+	}
+	if _, ok := attn[byOp(a, op("file")).Key]; ok {
+		t.Errorf("Needs attention shows a file created without trouble")
+	}
 	// Terminal input with visible escapes for ANSI, bidi and control bytes.
 	write := byOp(a, op("write"))
 	expect(write, `text echo \e[31mred\e[0m \u202Eevil\u202C\0\x07\r\n`, "key CTRL_C")

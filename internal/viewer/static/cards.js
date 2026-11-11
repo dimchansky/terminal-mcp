@@ -605,6 +605,9 @@ function essentials(item, f) {
 // Seven looks, so that a launch, a historic observation, a live call, a
 // success, a warning, a failure and an unknown outcome never look alike;
 // app.css adds a glyph to each.
+// Labels for a search match that is not visible at a glance.
+const MATCHED = { details: "matched in Details", raw: "matched in the recorded text", hint: "matched in the server's summary only" };
+
 const KIND_CLASS = { done: "ok", exited_ok: "ok", failed: "bad", not_run: "bad", exited_bad: "warn", signaled: "warn", partial: "warn",
   stopped: "warn", unknown: "unknown", running: "live", observed: "seen", started: "neutral", exited_unknown: "neutral", checked: "neutral",
   repeat: "neutral" };
@@ -636,6 +639,9 @@ function actionHeader(item, ctx, f) {
   if (phases.some((p) => (p.occurrences || [p.primary]).some((id) => id.startsWith("p:")))) { parts.push(" ", badge("warn", "pending row identity")); }
   if (a.identity && a.identity.metadataInvalid) { parts.push(" ", badge("warn", "unusable client metadata")); }
   if (a.effect && a.effect.kind === "observe") { parts.push(" ", h("span", { class: "note" }, "checks operation ", text(a.effect.effect.operation_id))); }
+  // Where a search matched, when it is not what shows at a glance.
+  const where = ctx.matchWhere && ctx.matchWhere.get(item.key);
+  if (Object.hasOwn(MATCHED, where || "")) { parts.push(" ", h("span", { class: "badge matched" }, MATCHED[where])); }
   parts.push(when(localTime(time), dur.text ? h("span", { class: "dur", title: dur.title }, text(dur.text)) : null));
   const out = [h("div", { class: "card-head" }, parts)];
   // The outcome's detail: an error in full, counts, or why it did not run.
@@ -826,7 +832,9 @@ function compactRow(item, ctx, row, full) {
     h("button", { type: "button", class: "row-head", "data-action": "toggle-row", "data-key": key, "aria-expanded": open },
       h("strong", { class: "verb" }, text(verb(a.tool))), " ",
       chip(row.o, row.o.detail || ""), " ",
-      h("span", { class: "row-main" }, row.summary), when(localTime((a.start || {}).time))),
+      h("span", { class: "row-main" }, row.summary),
+      ctx.matchWhere && Object.hasOwn(MATCHED, ctx.matchWhere.get(item.key) || "") ? [" ", h("span", { class: "badge matched" }, MATCHED[ctx.matchWhere.get(item.key)])] : null,
+      when(localTime((a.start || {}).time))),
     open ? h("div", { class: "full" }, full) : h("div", { class: "full", hidden: true }, full));
 }
 
@@ -854,13 +862,15 @@ export function pollTarget(item, ctx) {
 
 // timeline groups a lane's items (oldest first): consecutive polls of the
 // same target become one group.
-export function timeline(items, ctx) {
+// With group false (while filters are active) every poll is its own entry,
+// so a group can never hide a match or a failure.
+export function timeline(items, ctx, { group = true } = {}) {
   ctx.processes = processSeen(items, ctx);
   ctx.entries = null; // Set below: a card's jump needs every entry.
   const out = [];
   for (const item of items) {
     // A poll that needs attention (failed, rejected …) is its own card.
-    const target = groupTarget(item, ctx);
+    const target = group ? groupTarget(item, ctx) : null;
     const last = out[out.length - 1];
     if (target && last && last.group === target) { last.items.push(item); continue; }
     out.push(target ? { group: target, items: [item] } : { item });

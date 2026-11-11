@@ -43,6 +43,13 @@
 </nav>
 <main id="timeline-wrap" class="timeline-wrap">
 <div id="lane-title" class="lane-title"></div>
+<div id="filters" class="filters" role="search" aria-label="Search and filter this chat's loaded history">
+<input id="filter-query" type="search" placeholder="Search loaded history" aria-label="Search loaded history" autocomplete="off" spellcheck="false">
+<span id="filter-tools" class="filter-tools" role="group" aria-label="Action types"></span>
+<button id="filter-attention" type="button" aria-pressed="false">Needs attention</button>
+<button id="filter-reset" type="button" hidden>Reset</button>
+<div id="filter-status" class="filter-status" role="status"></div>
+</div>
 <div id="timeline" class="timeline" tabindex="-1"></div>
 <button id="jump" class="jump" type="button" hidden>Jump to latest</button>
 </main>

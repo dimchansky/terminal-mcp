@@ -11,6 +11,7 @@ import { Client, signIn } from "../../static/net.js";
 import { laneIdentity, firstPageKey, laneTimeline, orderLanes, defaultLane, keeper, occurrencesOf, earlierCursor } from "../../static/model.js";
 import { attentionFor } from "../../static/attention.js";
 import { timeline, entry, entryKey } from "../../static/cards.js";
+import { matches, apply } from "../../static/filter.js";
 import { describeStatus } from "../../static/status.js";
 
 let base = process.argv[2]; // The rebase command points the page at a restarted server.
@@ -202,6 +203,18 @@ const commands = {
       if (Date.now() > end) { throw new Error("timed out waiting for first pages and records"); }
       await new Promise((r) => setTimeout(r, 10));
     }
+  },
+  // filter applies the page's filters to a lane like the page: observations
+  // from the full lane, no poll groups, then each item's match.
+  async filter({ identity, query = "", tools = [], attention = false }) {
+    const lane = laneByIdentity(identity);
+    if (!lane) { return { ok: false, code: "no_lane" }; }
+    const ctx = { records: client.store.records, serverOS: client.status.serverOS, expanded: new Set(), open: new Set() };
+    const entries = timeline(laneTimeline(client.store, lane.id), ctx, { group: false });
+    const f = { query, tools: new Set(tools), attention };
+    const shown = apply(entries, f, ctx);
+    return { ok: true, stats: shown.stats, shown: shown.entries.map((e) => e.item.key), items: entries.map((e) => ({ key: e.item.key, tool: e.item.action ? e.item.action.tool : e.item.kind,
+      ...matches(e.item, f, ctx) })) };
   },
   // cards renders the lane's timeline like the page. With seen, it marks the
   // whole lane seen, as if every card had been in view of a visible tab.

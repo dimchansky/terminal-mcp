@@ -73,8 +73,9 @@ test("load errors say what to do", () => {
 
 test("a held-back switch is offered in the header, never in the archive view", () => {
   const names = new Map([["c\u0000s\u0000x", "Release work"]]);
-  assert.deepEqual(pendingNotice("c\u0000s\u0000x", { names }), { lane: "c\u0000s\u0000x", name: "Release work", canShow: true });
-  assert.deepEqual(pendingNotice("journal", {}), { lane: "journal", name: "another chat", canShow: true });
+  assert.deepEqual(pendingNotice("c\u0000s\u0000x", { names }), { lane: "c\u0000s\u0000x", name: "Release work", canShow: true, why: "Auto-switch waits while you read." });
+  assert.deepEqual(pendingNotice("journal", {}), { lane: "journal", name: "another chat", canShow: true, why: "Auto-switch waits while you read." });
+  assert.equal(pendingNotice("journal", { filtering: true }).why, "Auto-switch waits while filters are active.");
   assert.equal(pendingNotice("c\u0000s\u0000x", { archive: true, names }).canShow, false, "said, but not offered, in the archive view");
   assert.equal(pendingNotice(null, { names }), null);
 });

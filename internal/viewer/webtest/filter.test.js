@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { matches, textMatch, needsAttention, alwaysShown, active } from "../static/filter.js";
+import { matches, textMatch, needsAttention, alwaysShown, active, apply } from "../static/filter.js";
 import { timeline } from "../static/cards.js";
 
 const enc = (s) => new TextEncoder().encode(s);
@@ -99,6 +99,7 @@ test("the history's own warnings are always shown, without counting as matches",
   const plain = item("terminal_list", {});
   assert.equal(alwaysShown(plain.it), false);
   assert.deepEqual([matches({ kind: "diagnostic", key: "d" }, q("x"), {}).match, matches({ kind: "diagnostic", key: "d" }, q("x"), {}).keep], [false, true]);
+  assert.equal(matches({ kind: "diagnostic", key: "d" }, q("x"), {}).searchable, true, "a row with nothing to search is not 'not searchable'");
 });
 
 test("filters are active only when set", () => {
@@ -168,4 +169,21 @@ test("every header warning keeps an item shown", () => {
   assert.equal(mk((it) => { it.action.start.more = 2; }), true);
   assert.equal(mk((it) => { it.action.start.occurrences = ["p:1"]; }), true);
   assert.equal(mk((it) => { it.action.start.conflict = true; }), true);
+});
+
+test("apply keeps warnings, counts what the search could not see, and new activity by unit", () => {
+  const records = new Map();
+  const a = item("terminal_start", { argv: ["make", "deploy"], env: {} }, { records });
+  const b = item("terminal_list", {}, { records });
+  const c = item("terminal_start", undefined, { records }); // Not loaded, no hint.
+  const d = item("terminal_read", { session_id: "S" }, { records });
+  const diag = { kind: "diagnostic", key: "d:1" };
+  const ctx = { records };
+  const entries = timeline([a.it, b.it, c.it, d.it], ctx, { group: false });
+  entries.push({ item: diag });
+  const units = new Map([[b.it.key, "u1"], [d.it.key, "u1"], [c.it.key, "u2"]]);
+  const r = apply(entries, q("deploy"), ctx, (k) => units.get(k));
+  assert.deepEqual(r.entries.map((e) => e.item.key), [a.it.key, "d:1"], "the match and the unreadable row");
+  assert.deepEqual(r.stats, { matched: 1, unsearchable: 1, kept: 1, hiddenUnread: 2 }, "two units, not three items");
+  assert.equal(r.matchWhere.get(a.it.key), "main");
 });

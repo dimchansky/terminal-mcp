@@ -623,3 +623,34 @@ test("each recorded result names its moment", () => {
   const later = textOf(card(w.it, w.ctx));
   assert.match(later, /Action result · \S+ \d+ /, "a result on another day than the call carries its date");
 });
+
+test("while filtering, polls never group, so a group cannot hide a match", () => {
+  const records = new Map();
+  const polls = [1, 2, 3].map((n) => {
+    records.set("ref-" + n, { bytes: startRecord("terminal_read", { session_id: "sess-1" }), size: 1 });
+    return { kind: "action", key: "a:s/g" + n, lane: "L", order: { live: true, rank: n },
+      action: { key: { server_id: "s", request_id: "g" + n }, tool: "terminal_read", input: "recorded", state: "finished", status: "ok", start: { primary: "ref-" + n, time: "t" } } };
+  });
+  assert.equal(timeline(polls, { records }).length, 1);
+  const flat = timeline(polls, { records }, { group: false });
+  assert.deepEqual(flat.map((e) => e.item.key), ["a:s/g1", "a:s/g2", "a:s/g3"]);
+});
+
+test("a match a card does not show at a glance is labelled on it", () => {
+  const { it, ctx } = item("file_write", { path: "/a", content: "x", operation_id: "op-z" });
+  ctx.matchWhere = new Map([[it.key, "details"]]);
+  assert.match(textOf(find(card(it, ctx), "card-head")[0]), /matched in Details/);
+  ctx.matchWhere = new Map([[it.key, "main"]]);
+  assert.doesNotMatch(textOf(card(it, ctx)), /matched in/);
+});
+
+test("a source a filter hides offers no jump", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["make"], env: {} });
+  it.action.status = "applied";
+  it.action.process = { server_id: "s", session_id: "S" };
+  it.effect = { tool: "terminal_start", state: "finished", status: "applied" };
+  const seen = { ...ctx, processes: new Map([["s\u0000S", { state: "exited", exit: { code: 0 }, time: "2026-11-10T10:00:03Z", source: "a:s/read", tool: "terminal_read" }]]) };
+  const read = { kind: "action", key: "a:s/read", lane: "L", order: { live: true, rank: 2 }, action: { key: { server_id: "s", request_id: "read" }, tool: "terminal_read", state: "finished", status: "ok" } };
+  assert.match(textOf(card(it, { ...seen, entries: [{ item: it }, { item: read }] })), /Show that call/);
+  assert.doesNotMatch(textOf(card(it, { ...seen, entries: [{ item: it }] })), /Show that call/, "filtered out: no link");
+});

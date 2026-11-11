@@ -144,11 +144,39 @@ export function needsAttention(item, ctx) {
 // but do not count as matches unless they match.
 export function matches(item, f, ctx) {
   const keep = alwaysShown(item);
-  if (!item.action) { return { match: false, keep, where: "", searchable: false }; }
+  if (!item.action) { return { match: false, keep, where: "", searchable: true }; } // Nothing to search; shown regardless.
   if (f.tools && f.tools.size && !f.tools.has(item.action.tool)) { return { match: false, keep, where: "", searchable: true }; }
   if (f.attention && !needsAttention(item, ctx)) { return { match: false, keep, where: "", searchable: true }; }
   const q = f.query ? fold(f.query).trim() : "";
   if (!q) { return { match: true, keep, where: "", searchable: true }; }
   const t = textMatch(item, q, ctx);
   return { match: !!t.where, keep, where: t.where, searchable: t.searchable };
+}
+
+// apply filters a timeline's entries (ungrouped: each holds one item):
+// {entries, stats, matchWhere}. stats counts matches, items the search
+// could not look into (no loaded record and no hint), warnings kept
+// regardless, and new activity in hidden items, by unread unit (as the
+// chat list counts it): unitOf(key) is an unread item's unit, or
+// undefined when it is read.
+export function apply(entries, f, ctx, unitOf = () => undefined) {
+  const stats = { matched: 0, unsearchable: 0, kept: 0, hiddenUnread: 0 };
+  const matchWhere = new Map();
+  const hiddenUnits = new Set();
+  const out = entries.filter((e) => {
+    const r = matches(e.item, f, ctx);
+    if (r.match) {
+      stats.matched++;
+      if (r.where) { matchWhere.set(e.item.key, r.where); }
+      return true;
+    }
+    if (!r.searchable) { stats.unsearchable++; }
+    if (r.keep) { stats.kept++; return true; }
+    // Hidden items stay unread: they are never rendered, so never seen.
+    const unit = unitOf(e.item.key);
+    if (unit !== undefined) { hiddenUnits.add(unit); }
+    return false;
+  });
+  stats.hiddenUnread = hiddenUnits.size;
+  return { entries: out, stats, matchWhere };
 }

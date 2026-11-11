@@ -16,6 +16,8 @@ import { parseRecord, field, decode } from "./json.js";
 import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper, earlierCursor } from "./model.js";
 import { commandLine } from "./shell.js";
 import { isReading, canSee, closeEffects } from "./reading.js";
+import { active as filtersActive, apply as applyFilters } from "./filter.js";
+import { verb } from "./outcome.js";
 
 const KEY = "terminal-mcp-viewer-token";
 const RENEW_MS = 5 * 60 * 1000;
@@ -166,6 +168,8 @@ const view = {
   renaming: rename.cancel(), // The alias editor in the chat's title.
   panelOpen: false, // The conversation list is open over the timeline (narrow windows).
   laneQuery: "", // The chat search, in memory only.
+  filters: { query: "", tools: new Set(), attention: false }, // The history filters, in memory only.
+  filterSignature: "", // The filter bar as last built.
 };
 
 
@@ -191,6 +195,10 @@ function resetView() {
   for (const id of ["lane-list", "timeline", "lane-title", "connection", "warnings", "pending", "chats-unread"]) { $(id).replaceChildren(); }
   view.laneQuery = "";
   $("lane-search").value = "";
+  view.filters = { query: "", tools: new Set(), attention: false };
+  view.filterSignature = "";
+  $("filter-query").value = "";
+  for (const id of ["filter-tools", "filter-status"]) { $(id).replaceChildren(); }
   $("lanes-hidden").hidden = true;
   $("lanes-hidden-text").textContent = "";
   view.statusSignature = view.pendingSignature = "";
@@ -251,7 +259,7 @@ function deferred() {
   const active = document.activeElement;
   const working = active !== box && box.contains(active); // A focused card control, not the box itself.
   // Naming a chat is reading too: a switch would move the title away.
-  return isReading({ follow: view.follow, selecting, reading, working, archive: !!view.archive, renaming: view.renaming.editing, panel: view.panelOpen });
+  return isReading({ follow: view.follow, selecting, reading, working, archive: !!view.archive, renaming: view.renaming.editing, panel: view.panelOpen, filtering: filtersActive(view.filters) });
 }
 
 function startView() {
@@ -357,12 +365,12 @@ function renderStatus() {
   }
   // A deferred switch is said where auto-switch is, with a way to follow
   // it now. The archive view keeps its own selection, so none is offered.
-  const p = pendingNotice(view.attention && view.attention.pending, { archive: !!view.archive, names: view.laneNames || new Map() });
+  const p = pendingNotice(view.attention && view.attention.pending, { archive: !!view.archive, names: view.laneNames || new Map(), filtering: filtersActive(view.filters) });
   const psig = JSON.stringify(p);
   if (psig !== view.pendingSignature) {
     view.pendingSignature = psig;
     $("pending").replaceChildren(...(p ? [materialize(document, h("span", { class: "pending-chip" },
-      "New activity in ", h("strong", {}, text(p.name)), ". Auto-switch waits while you read. ",
+      "New activity in ", h("strong", {}, text(p.name)), ". ", p.why, " ",
       p.canShow ? h("button", { type: "button", "data-action": "show-pending" }, "Show") : null))] : []));
   }
 }
@@ -463,6 +471,65 @@ function armMidnight() {
   }, 60 * 1000);
 }
 
+// filterKey is the filter state as text, for signatures.
+function filterKey() {
+  const f = view.filters;
+  return JSON.stringify([f.query, [...f.tools].sort(), f.attention]);
+}
+
+// renderFilters builds the filter bar: tool chips for the tools of this
+// chat (and any active one it lacks), Needs attention, Reset, and a status
+// line saying what is active and what the search could and could not see.
+function renderFilters(items, stats, filtering, coverage) {
+  const f = view.filters;
+  const here = new Set(items.filter((it) => it.action && it.action.tool).map((it) => it.action.tool));
+  const tools = [...here];
+  for (const t of f.tools) { if (!here.has(t)) { tools.push(t); } }
+  tools.sort((a, b) => verb(a).localeCompare(verb(b)));
+  const absent = tools.filter((t) => !here.has(t));
+  // The chips are rebuilt only when the set of tools changes; pressing one
+  // only updates it, so focus stays on it.
+  const sig = JSON.stringify([tools, absent]);
+  if (sig !== view.filterSignature) {
+    view.filterSignature = sig;
+    const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#filter-tools button") ? document.activeElement.dataset.key : null;
+    $("filter-tools").replaceChildren(...tools.map((t) => materialize(document, h("button", { type: "button", class: "chip", "data-key": t, title: t },
+      text(verb(t)), absent.includes(t) ? " (none here)" : ""))));
+    if (focused) { const again = $("filter-tools").querySelector("button[data-key=\"" + CSS.escape(focused) + "\"]"); if (again) { again.focus(); } }
+  }
+  for (const b of $("filter-tools").querySelectorAll("button[data-key]")) { b.setAttribute("aria-pressed", String(f.tools.has(b.dataset.key))); }
+  $("filter-attention").setAttribute("aria-pressed", String(f.attention));
+  $("filter-reset").hidden = !filtering;
+  let status = "";
+  if (filtering) {
+    const parts = [stats.matched + (stats.matched === 1 ? " loaded action matches" : " loaded actions match")];
+    if (stats.unsearchable && f.query.trim()) { parts.push(stats.unsearchable + " not searchable (record not loaded)"); }
+    if (stats.kept) { parts.push(stats.kept + " warning" + (stats.kept === 1 ? "" : "s") + " shown regardless of filters"); }
+    if (stats.hiddenUnread) { parts.push(stats.hiddenUnread + " new in hidden items"); }
+    status = parts.join(" · ") + ".";
+    if (stats.matched === 0) {
+      status += " No match in the loaded history. Older or unloaded records were not searched." + (coverage && coverage.end !== "reached_start" ? " " + coverageText(coverage) + "." : "");
+    }
+  }
+  // Said once typing settles, so a screen reader is not told every count.
+  if (view.statusTimer) { clearTimeout(view.statusTimer); }
+  if (!status || !f.query) { if ($("filter-status").textContent !== status) { $("filter-status").textContent = status; } return; }
+  view.statusTimer = setTimeout(() => { view.statusTimer = null; if ($("filter-status").textContent !== status) { $("filter-status").textContent = status; } }, 400);
+}
+
+// setFilters changes the filters and shows the result; turning them all
+// off returns to the live tail when the owner was following it.
+function setFilters(change) {
+  const was = filtersActive(view.filters);
+  change(view.filters);
+  view.renderNonce++;
+  render();
+  if (was && !filtersActive(view.filters)) {
+    if (view.follow) { toTail(); }
+    tryResume();
+  }
+}
+
 function coverageText(c) {
   if (!c) { return ""; }
   const ends = { open: "older history can be loaded", reached_start: "the oldest visible record is loaded (not proof of the journal's beginning)",
@@ -486,6 +553,7 @@ function entrySig(e, ctx) {
   // The view is part of the signature: live and archive entries never share an element.
   return (view.archive ? "a" + view.archive.id : "l") + "|" + JSON.stringify(items) + "|" + items.map((it) => recordSig(it, store)).join(";") + "|" +
     items.map((it) => ["originals", "details", "meta", "row"].map((k) => view.open.has(it.key + ":" + k)).join(",")).join(";") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
+    items.map((it) => (ctx.matchWhere && ctx.matchWhere.get(it.key)) || "").join(",") + "|" +
     // A command's card shows what later calls saw of its process.
     JSON.stringify(items.map((it) => {
       const seen = it.action && it.action.tool === "terminal_start" && ctx.processes && ctx.processes.get(processKey(it));
@@ -498,11 +566,12 @@ function renderTimeline() {
   const lane = selectedLane();
   const box = $("timeline");
   const src = view.archive ? view.archive.store : client.store;
-  const signature = [src.version, laneIdentity(lane), view.renderNonce, view.loading, view.loadError, !!view.archive,
+  const signature = [src.version, laneIdentity(lane), view.renderNonce, view.loading, view.loadError, !!view.archive, filterKey(),
     lane ? aliasOf(lane) + "\u0000" + ((view.laneNames && view.laneNames.get(laneIdentity(lane))) || "") : "", lane ? !!view.digests.get(laneIdentity(lane)) : false, !!view.attention.pending].join("|");
   if (signature === view.timelineSignature) { return; }
   view.timelineSignature = signature;
   if (!lane) {
+    renderFilters([], { matched: 0, unsearchable: 0, kept: 0, hiddenUnread: 0 }, filtersActive(view.filters), null);
     $("lane-title").textContent = "No activity loaded yet.";
     view.titleSignature = "";
     box.replaceChildren();
@@ -523,7 +592,7 @@ function renderTimeline() {
   const clientNames = [...(lane.client_names || [])].sort();
   const titleSig = [laneIdentity(lane), alias, (view.laneNames && view.laneNames.get(laneIdentity(lane))) || "", !!d,
     !!view.archive, !!view.attention.pending, lane.conversationId || "", lane.identitySource || "", JSON.stringify(clientNames),
-    editing].join("\u0000");
+    editing, filtersActive(view.filters)].join("\u0000");
   // While the owner types an alias, the title is not rebuilt under them.
   if (titleSig !== view.titleSignature && !(editing && $("lane-title").querySelector("input"))) {
     view.titleSignature = titleSig;
@@ -546,7 +615,7 @@ function renderTimeline() {
         : h("strong", {}, text((view.laneNames && view.laneNames.get(laneIdentity(lane))) || lane.kind)),
       view.archive ? h("div", { class: "warning" }, "Older history (archive view, separate from the live view). ",
         h("button", { type: "button", "data-action": "close-archive" }, "Back to the live view")) : null,
-      view.attention.pending ? h("div", { class: "note" }, "New activity in another chat; auto-switch waits while you read.") : null,
+      view.attention.pending ? h("div", { class: "note" }, "New activity in another chat. ", pendingNotice(view.attention.pending, { filtering: filtersActive(view.filters) }).why) : null,
       h("div", { class: "note" }, "The audit records what was asked for and the outcome, not file contents read or process output."))));
     const input = $("lane-title").querySelector("input");
     if (input) {
@@ -589,7 +658,22 @@ function renderTimeline() {
   for (const el of box.children) { if (el.dataset.entry) { current.set(el.dataset.entry, el); } }
   const nodes = [controls];
   const seen = new Set();
-  const rendered = withDays(timeline(items, ctx));
+  // Observations come from the full lane first, so a hidden Read output
+  // still decides a command's known result; then the filters choose what
+  // shows. While filtering, polls do not group, so a group never hides a
+  // match or a failure.
+  const filtering = filtersActive(view.filters);
+  let entries = timeline(items, ctx, { group: !filtering });
+  let stats = { matched: 0, unsearchable: 0, kept: 0, hiddenUnread: 0 };
+  if (filtering) {
+    const r = applyFilters(entries, view.filters, ctx, (key) => { const u = view.attention.unread.get(key); return u ? u.unit : undefined; });
+    entries = r.entries;
+    stats = r.stats;
+    ctx.matchWhere = r.matchWhere;
+    ctx.entries = entries; // A jump is offered only to a call that shows.
+  }
+  renderFilters(items, stats, filtering, store.coverage);
+  const rendered = withDays(entries);
   view.shown = { entries: ctx.entries, ctx }; // For a jump to a related call.
   for (const e of rendered) {
     const key = entryKey(e);
@@ -985,6 +1069,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("lane-list").addEventListener("click", (e) => { const li = e.target.closest("li[data-lane]"); if (li) { selectLane(li.dataset.lane); } });
   $("lane-list").addEventListener("keydown", onLaneKey);
   $("discover").addEventListener("click", () => client && client.discover());
+  // Typing renders once per frame, not once per key.
+  $("filter-query").addEventListener("input", (e) => {
+    const was = filtersActive(view.filters);
+    view.filters.query = e.target.value;
+    view.renderNonce++;
+    schedule();
+    if (was && !filtersActive(view.filters)) { requestAnimationFrame(() => { if (view.follow) { toTail(); } tryResume(); }); }
+  });
+  $("filter-tools").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-key]");
+    if (b) { setFilters((f) => { if (f.tools.has(b.dataset.key)) { f.tools.delete(b.dataset.key); } else { f.tools.add(b.dataset.key); } }); }
+  });
+  $("filter-attention").addEventListener("click", () => setFilters((f) => { f.attention = !f.attention; }));
+  $("filter-reset").addEventListener("click", () => {
+    $("filter-query").value = "";
+    setFilters((f) => { f.query = ""; f.tools.clear(); f.attention = false; });
+    $("filter-query").focus();
+  });
   $("lane-search").addEventListener("input", (e) => { view.laneQuery = e.target.value; view.lanesSignature = ""; schedule(); });
   $("lane-search-clear").addEventListener("click", () => {
     view.laneQuery = "";

@@ -86,7 +86,8 @@ export function sessionText(until, now = new Date()) {
 // pendingNotice describes a switch auto-switch is holding back, for the
 // header: {lane, name, canShow}, or null. The archive view keeps its own
 // selection, so Show is not offered there.
-export function pendingNotice(pending, { archive = false, names = new Map() } = {}) {
+export function pendingNotice(pending, { archive = false, names = new Map(), filtering = false } = {}) {
   if (!pending) { return null; }
-  return { lane: pending, name: names.get(pending) || "another chat", canShow: !archive };
+  return { lane: pending, name: names.get(pending) || "another chat", canShow: !archive,
+    why: filtering ? "Auto-switch waits while filters are active." : "Auto-switch waits while you read." };
 }

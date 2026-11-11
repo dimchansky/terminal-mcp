@@ -3,10 +3,11 @@
 
 // isReading: auto-switch waits while the owner is not at the live tail,
 // selects text, has a block, row or group open, works with a control,
-// looks at the archive, names a chat, or has the conversation list open
-// over the timeline (they are choosing a chat).
+// looks at the archive, names a chat, has the conversation list open over
+// the timeline (they are choosing a chat), or filters the history (a
+// switch would show another chat through the same filters).
 export function isReading(f) {
-  return !f.follow || !!f.selecting || !!f.reading || !!f.working || !!f.archive || !!f.renaming || !!f.panel;
+  return !f.follow || !!f.selecting || !!f.reading || !!f.working || !!f.archive || !!f.renaming || !!f.panel || !!f.filtering;
 }
 
 // canSee: entries count as seen only while the tab is visible, the live
