@@ -48,8 +48,6 @@ The `file_*` tools use absolute paths inside the configured `file_root`:
 - **New Windows installation:** Your home directory.
 - **Existing standalone settings:** Keep the saved root.
 
-To watch what MCP clients asked the server to do, run `terminal-mcp dashboard` (or `make dashboard` in a source checkout; it uses `bin/terminal-mcp`). It prints a one-time code for a local, read-only page that shows each chat's tool calls as the model sent them, live. See [Open the read-only dashboard](docs/DEVELOPMENT.md#open-the-read-only-dashboard), including what to do when the page shows a problem.
-
 Use `status` to see the active root. To change it, stop the server and run `start --file-root=/absolute/path`.
 
 **This limit does not apply to terminal commands.**
@@ -163,6 +161,30 @@ Text file edits use file versions to detect conflicting changes. Binary download
 
 For tool inputs, outputs, limits, and retry rules, see [SPEC.md](SPEC.md).
 
+## Watch activity in the dashboard
+
+The dashboard is a local, read-only page that shows what MCP clients asked the server to do, chat by chat, as it happens.
+
+![The dashboard: chats on the left; the selected chat's commands and their recorded outcomes on the right](docs/images/dashboard.png)
+
+Open it from a terminal on the same computer while the standalone server runs:
+
+```sh
+./bin/terminal-mcp dashboard
+```
+
+The command prints a one-time code and opens the page in your browser; paste the code there. In a source checkout, `make dashboard` does the same (run `make build` after pulling changes, since it builds `bin/terminal-mcp` only when it is missing).
+
+- **Full calls:** Each chat's tool calls appear as the model sent them: commands with their arguments, environment overrides and working directory, content to write and requested edits. File contents that were read and process output are not in the audit.
+- **Outcomes:** Each call shows what the audit establishes: `Exited · 0`, a non-zero exit, a signal, `Not run`, or `Outcome unknown`.
+- **Search and filters:** Search the chat list and the loaded history, or filter by action type or by calls that need attention.
+
+**The page shows the complete audit, including passwords, tokens and signed URLs that a model sent. Do not share your screen casually.**
+
+The page is served only on the local listener. The tunnel never forwards it. Chat names come from client metadata and are not verified.
+
+See [Open the read-only dashboard](docs/DEVELOPMENT.md#open-the-read-only-dashboard) for foreground servers, sessions, auto-switch and what to do when the page shows a problem.
+
 ## Stop and update
 
 ```sh
@@ -196,6 +218,8 @@ On Windows, see the [audit and log paths](docs/WINDOWS.md#logs). Server stdout a
 The audit records **all arguments from authenticated MCP tool calls that the server can decode**. This includes unknown fields and arguments that fail validation. It records passwords, API keys, terminal input, and signed URLs **without hiding them**. Keep the audit files private. The audit does not copy child process output or the full text returned from file reads.
 
 The server records the request **before** it runs a tool. If it cannot write the required audit event, it refuses the action. After a temporary disk error, the next successful audit write can restore operation automatically.
+
+To read the audit by chat instead of as JSONL, use the [dashboard](#watch-activity-in-the-dashboard).
 
 The active audit file rotates at 4 MiB. Old audit files stay on disk. **There is no total audit size limit by default and no automatic deletion of old records.** Monitor disk use.
 
