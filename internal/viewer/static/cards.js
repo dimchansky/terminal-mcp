@@ -410,7 +410,7 @@ const ERROR_LIMIT = 2048;
 // result shows what a finish, rejection or effect finish record says
 // beyond its envelope: errors, the writer's truncation marker, counts,
 // process details, reasons, receipts.
-function result(title, ctx, phase, requestFinish = false) {
+function result(title, ctx, phase, requestFinish = false, startTime = "") {
   if (!phase) { return null; }
   const rs = recordState(ctx, phase.primary);
   if (rs.state !== "loaded" || !rs.parsed.value || rs.parsed.value.kind !== "object" || rs.parsed.issues.length) { return null; }
@@ -418,7 +418,7 @@ function result(title, ctx, phase, requestFinish = false) {
   if (rest.length === 0) { return null; }
   const truncated = field(rs.parsed.value, "truncated");
   const error = str(field(rs.parsed.value, "error"));
-  return h("div", { class: "result" }, h("div", { class: "label" }, title),
+  return h("div", { class: "result" }, h("div", { class: "label" }, title, phase.time ? [" · ", when2(phase.time, startTime)] : null),
     truncated && truncated.kind === "bool" && truncated.value
       ? h("div", { class: "note" }, "The tool's result to the model was truncated; this record is complete.") : null,
     // Only request_finish errors are cut: to 2048 bytes plus "...", where a
@@ -431,8 +431,9 @@ function result(title, ctx, phase, requestFinish = false) {
 
 function receipt(item, ctx) {
   const a = item.action;
-  return [a ? result(a.rejected ? "Recorded rejection" : "Recorded result", ctx, a.rejected || a.finish, !a.rejected) : null,
-    item.effect ? result("Recorded effect result", ctx, item.effect.finish) : null];
+  const start = a ? actionTime(a) : item.effect ? (item.effect.start || {}).time || "" : "";
+  return [a ? result(a.rejected ? "Recorded rejection" : "Result when this call returned", ctx, a.rejected || a.finish, !a.rejected, start) : null,
+    item.effect ? result("Action result", ctx, item.effect.finish, false, start) : null];
 }
 
 // Output the audit does not record, stated where it matters.
@@ -505,7 +506,7 @@ export function processSeen(items, ctx) {
     if (!fin || !fin.process || typeof fin.process !== "object") { continue; }
     const time = item.action.finish.time || "";
     const prev = out.get(key);
-    if (!prev || time >= prev.time) { out.set(key, { state: fin.process.state, exit: fin.process.exit, time }); }
+    if (!prev || time >= prev.time) { out.set(key, { state: fin.process.state, exit: fin.process.exit, time, source: item.key, tool: item.action.tool }); }
   }
   return out;
 }
@@ -665,7 +666,8 @@ export function card(item, ctx) {
   }
   const [input, protocol] = inputView(item, c);
   const full = [actionHeader(item, c, factsOf(item, c)), input,
-    moreDetails(item, c, [protocol, recordedAt((item.action.start || item.action.rejected || item.action.finish || {}).time), timingLine(item), callMeta(item, c), receipt(item, c), originals(item, c)])];
+    moreDetails(item, c, [protocol, recordedAt((item.action.start || item.action.rejected || item.action.finish || {}).time), timingLine(item), callMeta(item, c), receipt(item, c),
+      observation(item, c), originals(item, c)])];
   const row = compactable(item, c);
   if (row) { return compactRow(item, c, row, full); }
   return h("div", { class: "card", "data-key": item.key }, full);
@@ -788,6 +790,7 @@ export function pollTarget(item, ctx) {
 // same target become one group.
 export function timeline(items, ctx) {
   ctx.processes = processSeen(items, ctx);
+  ctx.entries = null; // Set below: a card's jump needs every entry.
   const out = [];
   for (const item of items) {
     // A poll that needs attention (failed, rejected …) is its own card.
@@ -796,6 +799,7 @@ export function timeline(items, ctx) {
     if (target && last && last.group === target) { last.items.push(item); continue; }
     out.push(target ? { group: target, items: [item] } : { item });
   }
+  ctx.entries = out;
   return out;
 }
 
@@ -845,6 +849,53 @@ function lastTime(last, first) {
   const d = new Date(t);
   return Number.isNaN(d.getTime()) ? h("time", {}, text(t)) : h("time", { title: fullTime(t) }, seenText(t, itemTime(first)));
 }
+
+// when2 is a recorded time relative to the call's start: the date is
+// added when it falls on another day; the full time is in its title.
+function when2(t, startT) {
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? h("time", {}, text(t)) : h("time", { title: fullTime(t) }, seenText(t, startT));
+}
+
+// observation shows, for a command, the newest observation of its process
+// recorded by a later call: the call's own result above stays as it was
+// when it returned, so the two can be told apart by their times.
+function observation(item, ctx) {
+  const a = item.action;
+  if (!a || a.tool !== "terminal_start" || !ctx.processes) { return null; }
+  const seen = ctx.processes.get(processKey(item));
+  if (!seen || seen.source === item.key) { return null; }
+  const rows = [["state", seen.state], ["exit", seen.exit]].filter(([, v]) => v !== undefined)
+    .map(([k, v]) => [h("dt", {}, k), h("dd", {}, typeof v === "string" ? text(v) : text(JSON.stringify(v)))]);
+  const jump = jumpTarget(seen.source, ctx.entries, ctx);
+  return h("div", { class: "result observation" },
+    h("div", { class: "label" }, "Latest recorded process observation", seen.time ? [" · ", when2(seen.time, actionTime(a))] : null),
+    h("div", { class: "note" }, "Seen by ", text(verb(seen.tool)), ", another call about this process.",
+      jump ? [" ", h("button", { type: "button", "data-action": "jump", "data-key": seen.source }, "Show that call")] : null),
+    rows.length ? h("dl", { class: "obj" }, rows) : null);
+}
+
+// jumpTarget says how to show the entry of an item: {entry, open,
+// expanded}, the entry key and the view keys to open (a poll group, a
+// compact row), or null when the item is not in these entries.
+export function jumpTarget(key, entries, ctx) {
+  if (!key || !entries) { return null; }
+  let index = entryIndex.get(entries);
+  if (!index) {
+    index = new Map();
+    for (const e of entries) { for (const it of e.item ? [e.item] : e.items || []) { index.set(it.key, e); } }
+    entryIndex.set(entries, index);
+  }
+  const e = index.get(key);
+  if (!e) { return null; }
+  const it = e.item || e.items.find((x) => x.key === key);
+  const row = compactable(it, { ...ctx, key: it.key }) ? [it.key + ":row"] : [];
+  const grouped = !e.item && e.items.length > 1;
+  return { entry: entryKey(e), open: row, expanded: grouped ? [entryKey(e)] : [] };
+}
+
+// entryIndex maps a timeline's entries (by identity) to item key → entry.
+const entryIndex = new WeakMap();
 
 // entryKey is unique per timeline: a card's item key, or a group's target
 // with its first member (several groups may poll the same target).

@@ -6,7 +6,7 @@
 
 import { Client, checkSession, signIn, renewSession, signOut } from "./net.js";
 import { h, materialize } from "./view.js";
-import { entry, entryKey, timeline, withDays, text, localTime, processKey } from "./cards.js";
+import { entry, entryKey, timeline, withDays, jumpTarget, text, localTime, processKey } from "./cards.js";
 import { attentionFor } from "./attention.js";
 import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
@@ -173,6 +173,7 @@ function resetView() {
   view.laneOrder = [];
   view.loading = view.loadError = view.renewNote = "";
   view.controls = null;
+  view.shown = null;
   view.archive = null;
   view.visible.clear();
   if (view.observer) { view.observer.disconnect(); view.observer = null; }
@@ -373,7 +374,9 @@ function renderLanes() {
   list.replaceChildren(...fresh);
   if (focused) {
     const again = [...list.children].find((li) => li.dataset.lane === focused);
-    if (again) { again.focus(); }
+    const sameEntry = !again && focusEntry ? [...box.children].find((x) => x.dataset.entry === focusEntry) : null;
+    const fallback = sameEntry ? sameEntry.querySelector("[data-action=\"jump\"]") : null;
+    if (again || fallback) { (again || fallback).focus(); }
   }
 }
 
@@ -401,7 +404,11 @@ function entrySig(e, ctx) {
   return (view.archive ? "a" + view.archive.id : "l") + "|" + JSON.stringify(items) + "|" + items.map((it) => recordSig(it, store)).join(";") + "|" +
     items.map((it) => ["originals", "details", "meta", "row"].map((k) => view.open.has(it.key + ":" + k)).join(",")).join(";") + "|" + view.expanded.has(entryKey(e)) + "|" + client.status.serverOS + "|" +
     // A command's card shows what later calls saw of its process.
-    JSON.stringify(items.map((it) => (it.action && it.action.tool === "terminal_start" && ctx.processes && ctx.processes.get(processKey(it))) || null));
+    JSON.stringify(items.map((it) => {
+      const seen = it.action && it.action.tool === "terminal_start" && ctx.processes && ctx.processes.get(processKey(it));
+      // Whether its "Show that call" can be offered changes the card too.
+      return seen ? [seen, !!jumpTarget(seen.source, ctx.entries, ctx)] : null;
+    }));
 }
 
 function renderTimeline() {
@@ -457,6 +464,9 @@ function renderTimeline() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   const focusKey = !focused ? null : focused.dataset.action ? focused.dataset.action + "\u0000" + (focused.dataset.key || "")
     : focused.tagName === "SUMMARY" && focused.parentElement.dataset.key ? "summary\u0000" + focused.parentElement.dataset.key : null;
+  // A "Show that call" button names another call, which a newer
+  // observation may change: it is found again within its own entry.
+  const focusEntry = focused && focused.dataset.action === "jump" && focused.closest("[data-entry]") ? focused.closest("[data-entry]").dataset.entry : null;
 
   const archiveButton = !view.archive && store.coverage && store.coverage.use_archive
     ? h("button", { type: "button", "data-action": "open-archive" }, "Open older history") : null;
@@ -474,7 +484,9 @@ function renderTimeline() {
   for (const el of box.children) { if (el.dataset.entry) { current.set(el.dataset.entry, el); } }
   const nodes = [controls];
   const seen = new Set();
-  for (const e of withDays(timeline(items, ctx))) {
+  const rendered = withDays(timeline(items, ctx));
+  view.shown = { entries: ctx.entries, ctx }; // For a jump to a related call.
+  for (const e of rendered) {
     const key = entryKey(e);
     const sig = entrySig(e, ctx);
     let el = current.get(key);
@@ -500,7 +512,9 @@ function renderTimeline() {
   if (focused && document.activeElement !== focused && focusKey) {
     const again = [...box.querySelectorAll("[data-action], details[data-key] > summary")].find((x) =>
       (x.dataset.action ? x.dataset.action + "\u0000" + (x.dataset.key || "") : "summary\u0000" + x.parentElement.dataset.key) === focusKey);
-    if (again) { again.focus(); }
+    const sameEntry = !again && focusEntry ? [...box.children].find((x) => x.dataset.entry === focusEntry) : null;
+    const fallback = sameEntry ? sameEntry.querySelector("[data-action=\"jump\"]") : null;
+    if (again || fallback) { (again || fallback).focus(); }
   }
   const requested = firstPageKey(store, lane, view.requested);
   if (requested) {
@@ -561,6 +575,36 @@ async function onTimelineClick(ev) {
       view.renderNonce++;
       render();
       if (!["row", "details", "originals", "meta"].some((k) => view.open.has(itemKey + ":" + k))) { tryResume(); }
+      break;
+    }
+    case "jump": {
+      // Show the call an observation came from: open its group or row as
+      // the owner's own click would, then bring it into view and focus it.
+      const t = view.shown && jumpTarget(key, view.shown.entries, view.shown.ctx);
+      if (!t) { break; }
+      for (const k of t.open) { view.open.add(k); }
+      for (const k of t.expanded) { view.expanded.add(k); }
+      view.follow = false;
+      view.renderNonce++;
+      render();
+      const target = [...$("timeline").querySelectorAll(".card[data-key]")].find((x) => x.dataset.key === key);
+      if (!target) { break; }
+      // Centre it in the timeline as the page's own scroll, so following
+      // stays off and the next live record does not move it away.
+      const box = $("timeline");
+      scrollTo(box.scrollTop + target.getBoundingClientRect().top - box.getBoundingClientRect().top - (box.clientHeight - target.offsetHeight) / 2);
+      view.follow = false;
+      $("jump").hidden = false;
+      const head = target.querySelector(":scope > .row-head") || target.querySelector(":scope > .card-head") || target;
+      if (!head.matches("button")) {
+        // Focusable only until focus leaves it: a later click on its text
+        // must not count as working with a control.
+        head.tabIndex = -1;
+        head.addEventListener("blur", () => head.removeAttribute("tabindex"), { once: true });
+      }
+      head.focus({ preventScroll: true });
+      target.classList.add("flash");
+      setTimeout(() => target.classList.remove("flash"), 1600);
       break;
     }
     case "toggle-group":

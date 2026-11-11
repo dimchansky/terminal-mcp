@@ -1,4 +1,4 @@
-:root { color-scheme: light dark; font-family: system-ui, sans-serif; --line: #8884; --muted: #888; --warn: #b26b00;
+:root { color-scheme: light dark; --focus: #4a90e2; font-family: system-ui, sans-serif; --line: #8884; --muted: #888; --warn: #b26b00;
   --del: #ff4d4f22; --ins: #2ea04326; --esc: #7a5cff; --unread: #0a7d3b; }
 body { margin: 0; }
 [hidden] { display: none !important; }
@@ -121,3 +121,5 @@ details.conv-id code { overflow-wrap: anywhere; }
 }
 .day { display: flex; align-items: center; gap: 0.6rem; color: var(--muted); font-size: 0.8rem; font-weight: normal; margin: 0.9rem 0 0.4rem; }
 .day::before, .day::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.card.flash { outline: 2px solid var(--focus); outline-offset: 2px; }
+.observation { border-left: 3px solid var(--line); padding-left: 0.5rem; }

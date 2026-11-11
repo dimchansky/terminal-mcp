@@ -361,6 +361,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		if err := json.Unmarshal([]byte(toolText(late)), &lateResult); err != nil || lateResult.Receipt.SessionID == "" {
 			t.Fatalf("terminal_start result %q: %v", toolText(late), err)
 		}
+		call(t, cs, "chat-a", "terminal_read", map[string]any{"session_id": lateResult.Receipt.SessionID, "wait_ms": 0})
 		call(t, cs, "chat-a", "terminal_read", map[string]any{"session_id": lateResult.Receipt.SessionID, "wait_for": "completion", "wait_ms": 5000})
 	}
 	outcome(call(t, cs, "chat-a", "terminal_start", json.RawMessage(`{"server_id":"`+sid+`","operation_id":"`+op("bad-argv")+`","argv":"ls -la"}`)),
@@ -499,7 +500,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 
 	cardsA := 11
 	if runtime.GOOS != "windows" {
-		cardsA += 4 // The killed and multi-line commands, and a command with a later read.
+		cardsA += 4 // The killed and multi-line commands, and a command with a group of later reads.
 	}
 	d.waitLane(chatIdentity("chat-a"), cardsA)
 	a := d.cards(chatIdentity("chat-a"))
@@ -559,6 +560,26 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		}
 		if late := byOp(a, op("late")); !strings.Contains(glance(late), "Run command Exited · 0 exit seen ") || strings.Contains(glance(late), "Last seen running") {
 			t.Errorf("a command whose exit a later read saw does not read as that exit:\n%s", late.Head)
+		}
+		// Details keep the launch's own result and name the later observation.
+		lateCard := byOp(a, op("late"))
+		expect(lateCard, "Result when this call returned · ", "Latest recorded process observation · ", "Seen by Read output")
+		// Its own result still says running; the observation says exited.
+		own := lateCard.Text[strings.Index(lateCard.Text, "Result when this call returned"):]
+		if i := strings.Index(own, "Latest recorded process observation"); i < 0 || !strings.Contains(own[:i], "running") || !strings.Contains(own[i:], "exited") {
+			t.Errorf("the launch's own result and the later observation are not told apart:\n%s", lateCard.Text)
+		}
+		var reads []journeyCard
+		for _, c := range a {
+			if c.Tool == "terminal_read" {
+				reads = append(reads, c)
+			}
+		}
+		if len(reads) != 1 || reads[0].Size != 2 {
+			t.Errorf("the two reads are not one group: %+v", reads)
+		}
+		if !hasAction(lateCard, "jump") {
+			t.Errorf("no way to show the read the exit came from: %v", lateCard.Actions)
 		}
 		multi := byOp(a, op("multi"))
 		for _, want := range []string{"set -e\necho first-line\necho second-line", "in " + filepath.Join(root, strings.Repeat("a-long-directory-name/", 6))} {

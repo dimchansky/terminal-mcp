@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime, localTime, fullTime, withDays, dayOf } from "../static/cards.js";
+import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime, localTime, fullTime, withDays, dayOf, jumpTarget, processSeen } from "../static/cards.js";
 import { textOf, find, materialize } from "../static/view.js";
 
 // glance is the text of a view as first seen: closed notes show only their
@@ -560,4 +560,66 @@ test("a separator follows the entry it heads; a group spanning midnight dates it
   assert.equal(two.filter((e) => e.day).length, 1, "a group is filed under its first poll's day");
   const head = find(entry(two[1], { records, expanded: new Set() }), "when")[0];
   assert.match(textOf(head), new RegExp("^last \\S+ \\d+ " + shortTime(t2).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$"), "the last poll's date shows when it is another day");
+});
+
+test("a command's Details tells its own result from a later observation, and can show that call", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["make"], env: {} });
+  it.action.status = "applied";
+  it.action.process = { server_id: "s", session_id: "S" };
+  it.effect = { tool: "terminal_start", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 3 } };
+  it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"], time: "2026-11-10T10:00:01Z" };
+  ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "applied", process: { state: "running" } }) + "\n") });
+  const read = (n, time, process) => {
+    ctx.records.set("ref-s" + n, { bytes: startRecord("terminal_read", { session_id: "S" }), size: 1 });
+    ctx.records.set("ref-f" + n, { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", process }) + "\n") });
+    return { kind: "action", key: "a:s/q" + n, lane: "L", order: { live: true, rank: n + 1 },
+      action: { key: { server_id: "s", request_id: "q" + n }, tool: "terminal_read", input: "recorded", state: "finished", status: "ok",
+        process: { server_id: "s", session_id: "S" }, start: { primary: "ref-s" + n, time },
+        finish: { primary: "ref-f" + n, occurrences: ["ref-f" + n], time } } };
+  };
+  // Alone, the launch's own result is the newest observation: no repeat.
+  let entries = timeline([it], ctx);
+  let more = textOf(find(entry(entries[0], ctx), "more")[0]);
+  assert.match(more, /Result when this call returned · /);
+  assert.doesNotMatch(more, /Latest recorded process observation/);
+  assert.equal(processSeen([it], ctx).get("s\u0000S").source, it.key);
+  // Two reads fold into a group; the newest decides.
+  const items = [it, read(1, "2026-11-10T10:00:02Z", { state: "running" }), read(2, "2026-11-10T10:00:03Z", { state: "exited", exit: { code: 0 } })];
+  entries = timeline(items, ctx);
+  assert.equal(entries.length, 2);
+  const v = entry(entries[0], ctx);
+  more = textOf(find(v, "more")[0]);
+  assert.match(more, /Result when this call returned · [\s\S]*staterunning/, "the call's own result, unchanged");
+  assert.match(more, /Latest recorded process observation · [\s\S]*Seen by Read output[\s\S]*stateexited[\s\S]*exit\{"code":0\}/);
+  const jump = find(v, "more")[0];
+  const button = (function walk(n) { if (typeof n !== "object") { return null; } if (n.attrs["data-action"] === "jump") { return n; } for (const c of n.children) { const r = walk(c); if (r) { return r; } } return null; })(jump);
+  assert.equal(button.attrs["data-key"], "a:s/q2");
+  // The target opens the group and the member's row.
+  const t = jumpTarget("a:s/q2", entries, ctx);
+  assert.deepEqual(t, { entry: entryKey(entries[1]), open: ["a:s/q2:row"], expanded: [entryKey(entries[1])] });
+  assert.deepEqual(jumpTarget(it.key, entries, ctx), { entry: it.key, open: [], expanded: [] }, "a plain card");
+  assert.equal(jumpTarget("a:s/missing", entries, ctx), null, "not in this lane: no link");
+  assert.equal(jumpTarget("a:s/q2", null, ctx), null);
+  // A single compact read is its own entry, opened as a row.
+  const single = timeline([it, read(3, "2026-11-10T10:00:04Z", { state: "running" })], ctx);
+  assert.deepEqual(jumpTarget("a:s/q3", single, ctx), { entry: "a:s/q3", open: ["a:s/q3:row"], expanded: [] });
+  // Without the read loaded in this view, no button is offered.
+  const alone = { ...ctx, processes: new Map([["s\u0000S", { state: "exited", exit: { code: 0 }, time: "2026-11-10T10:00:03Z", source: "a:s/elsewhere", tool: "terminal_read" }]]), entries: [{ item: it }] };
+  assert.doesNotMatch(textOf(card(it, alone)), /Show that call/);
+  assert.match(textOf(card(it, alone)), /Latest recorded process observation/);
+});
+
+test("each recorded result names its moment", () => {
+  const { it, ctx } = item("file_read", { path: "a" });
+  it.action.rejected = { primary: "ref-rej", occurrences: ["ref-rej"], time: "2026-11-10T10:00:00Z" };
+  it.action.reason = "schema_validation";
+  ctx.records.set("ref-rej", { bytes: enc(JSON.stringify({ phase: "request_rejected", status: "rejected", reason: "schema_validation" }) + "\n") });
+  assert.match(textOf(card(it, ctx)), new RegExp("Recorded rejection · " + shortTime("2026-11-10T10:00:00Z")));
+  const w = item("file_write", { path: "/a", content: "x" });
+  w.it.action.status = "applied";
+  w.it.effect = { tool: "file_write", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 4 },
+    finish: { primary: "ref-op", occurrences: ["ref-op"], time: "2026-11-12T10:00:05Z" } };
+  w.ctx.records.set("ref-op", { bytes: enc(JSON.stringify({ phase: "operation_finish", status: "applied", receipt: { status: "applied" } }) + "\n") });
+  const later = textOf(card(w.it, w.ctx));
+  assert.match(later, /Action result · \S+ \d+ /, "a result on another day than the call carries its date");
 });
