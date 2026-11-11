@@ -122,10 +122,10 @@ test("verbs are present tense; file_write says create or replace", () => {
 
 test("one header duration, the breakdown in words", () => {
   const start = { action: act("terminal_start"), effect: eff() };
-  assert.deepEqual(headDuration(start).text, "started in 15 ms");
+  assert.deepEqual(headDuration(start), { text: "", title: "" }, "a launch's duration is in Details");
   assert.equal(timing(start), "Answered in 49 ms. The process launched in 15 ms; the program's runtime is not recorded.");
   const download = { action: act("file_receive", { duration: { state: "measured", milliseconds: 2 } }), effect: eff({ state: "in_flight", duration: { state: "unknown" } }) };
-  assert.equal(headDuration(download, () => "10:00:00").text, "since 10:00:00");
+  assert.equal(headDuration(download).text, "", "in flight: no duration yet");
   const done = { action: act("file_receive", { duration: { state: "measured", milliseconds: 2 } }), effect: eff({ duration: { state: "measured", milliseconds: 9000 } }) };
   assert.equal(headDuration(done).text, "9,000 ms");
   assert.equal(headDuration({ action: act("file_write", { replayed: true }) }).text, "49 ms", "a replay has no own effect");

@@ -223,16 +223,14 @@ function plural(n, one, many) { return n.toLocaleString("en-US") + " " + (n === 
 
 // headDuration is the one duration the header shows, with a title that
 // says what it measures.
-export function headDuration(item, sinceText = (t) => t) {
+export function headDuration(item) {
   const a = item.action;
   const e = item.effect;
-  if (e && e.state === "in_flight") {
-    const t = e.start && e.start.time;
-    return t ? { text: "since " + sinceText(t), title: "Still running" } : { text: "", title: "" };
-  }
-  if (a && a.tool === "terminal_start" && e && e.state === "finished" && durationText(e.duration)) {
-    return { text: "started in " + durationText(e.duration), title: "The process launch; the program's runtime is not recorded" };
-  }
+  // An action in flight has no duration yet; the header's time is when the
+  // call started, and Details says it is still running.
+  if (e && e.state === "in_flight") { return { text: "", title: "" }; }
+  // A launch's duration says little at a glance: it is in Details.
+  if (a && a.tool === "terminal_start" && e && e.state === "finished") { return { text: "", title: "" }; }
   if (e && e.state === "finished" && !(a && a.replayed) && durationText(e.duration)) {
     return { text: durationText(e.duration), title: "The action itself" };
   }

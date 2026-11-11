@@ -344,6 +344,13 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		// Ended by the runtime limit: a signal, not a success.
 		call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("killed"), "argv": []string{"sleep", "5"},
 			"max_runtime_ms": 200, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
+		// A multi-line script in a long working directory: both in full.
+		deep := filepath.Join(root, strings.Repeat("a-long-directory-name/", 6))
+		if err := os.MkdirAll(deep, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("multi"), "argv": []string{"/bin/sh", "-c", "set -e\necho first-line\necho second-line"},
+			"cwd": deep, "close_on_exit": true, "wait_for": "completion", "wait_ms": 5000})
 		// Running at launch, its exit seen later by a read.
 		late := call(t, cs, "chat-a", "terminal_start", map[string]any{"server_id": sid, "operation_id": op("late"), "argv": []string{"sleep", "0.3"}, "wait_ms": 0})
 		var lateResult struct {
@@ -492,7 +499,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 
 	cardsA := 11
 	if runtime.GOOS != "windows" {
-		cardsA += 3 // The killed command, and a command with a later read.
+		cardsA += 4 // The killed and multi-line commands, and a command with a later read.
 	}
 	d.waitLane(chatIdentity("chat-a"), cardsA)
 	a := d.cards(chatIdentity("chat-a"))
@@ -512,7 +519,7 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 			t.Error("a Windows command offers a POSIX copy")
 		}
 	} else {
-		expect(start, "GOFLAGS=-count=1 go test -race ./...\n", "not a shell invocation", "Working directory "+root)
+		expect(start, "GOFLAGS=-count=1 go test -race ./...\n", "not a shell invocation", "in "+root)
 		if !hasAction(start, "copy-command") {
 			t.Error("an exact command is not copyable")
 		}
@@ -540,20 +547,28 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 		}
 		checkRecords(script, op("script"))
 	}
-	// The outcome says how the program ended, never "running now".
-	if !strings.Contains(start.Head, "Run command Exited · 1 exit seen ") {
+	// The outcome says how the program ended, never "running now". A
+	// header reads as one line: verb, outcome, note, time.
+	glance := func(c journeyCard) string { return strings.Join(strings.Fields(c.Head), " ") }
+	if !strings.Contains(glance(start), "Run command Exited · 1 exit seen ") {
 		t.Errorf("a failing command does not read as its exit:\n%s", start.Head)
 	}
 	if runtime.GOOS != "windows" {
-		if script := byOp(a, op("script")); !strings.Contains(script.Head, "Run command Exited · 0 exit seen ") {
+		if script := byOp(a, op("script")); !strings.Contains(glance(script), "Run command Exited · 0 exit seen ") {
 			t.Errorf("a successful command does not read as exit 0:\n%s", script.Head)
 		}
-		if late := byOp(a, op("late")); !strings.Contains(late.Head, "Run command Exited · 0 exit seen ") || strings.Contains(late.Head, "Last seen running") {
+		if late := byOp(a, op("late")); !strings.Contains(glance(late), "Run command Exited · 0 exit seen ") || strings.Contains(glance(late), "Last seen running") {
 			t.Errorf("a command whose exit a later read saw does not read as that exit:\n%s", late.Head)
 		}
+		multi := byOp(a, op("multi"))
+		for _, want := range []string{"set -e\necho first-line\necho second-line", "in " + filepath.Join(root, strings.Repeat("a-long-directory-name/", 6))} {
+			if !strings.Contains(multi.Head, want) {
+				t.Errorf("multi-line command card lacks %q at a glance:\n%s", want, multi.Head)
+			}
+		}
 		// The limit terminates first and kills only a program that stays.
-		if killed := byOp(a, op("killed")); !strings.Contains(killed.Head, "Run command Terminated · SIGTERM exit seen ") &&
-			!strings.Contains(killed.Head, "Run command Killed · SIGKILL exit seen ") {
+		if killed := byOp(a, op("killed")); !strings.Contains(glance(killed), "Run command Terminated · SIGTERM exit seen ") &&
+			!strings.Contains(glance(killed), "Run command Killed · SIGKILL exit seen ") {
 			t.Errorf("a killed command does not read as its signal:\n%s", killed.Head)
 		}
 	}
@@ -562,7 +577,10 @@ func TestPageShowsWhatTheModelAskedFor(t *testing.T) {
 
 	// Schema-rejected input stays visible field by field and never ran.
 	bad := byOp(a, op("bad-argv"))
-	expect(bad, "Run command Not run", "the arguments did not match the tool's schema", "Supplied fields\nserver_id", "argv\nls -la\n", "schema_validation")
+	if !strings.HasPrefix(glance(bad), "Run command Not run ") {
+		t.Errorf("a rejected command does not read Not run at a glance:\n%s", bad.Head)
+	}
+	expect(bad, "the arguments did not match the tool's schema", "Supplied fields\nserver_id", "argv\nls -la\n", "schema_validation")
 	reject(bad, "The action took", "Started")
 	if !strings.Contains(bad.Head, sid) || !strings.Contains(bad.Head, op("bad-argv")) {
 		t.Errorf("a rejected call folded its protocol fields:\n%s", bad.Head)

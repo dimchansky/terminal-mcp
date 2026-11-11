@@ -83,6 +83,13 @@ function nestedFields(tool, path, node, shown, title) {
   return [known.length ? fieldList(known, title) : null, unknown.length ? fieldList(unknown, "Not in this server version's schema", "undefined-fields") : null];
 }
 
+// block is a content block with its tools (a note, Copy) floated in its
+// top-right corner: the text flows around them, never under them.
+function block(tools, content) {
+  const t = tools.filter(Boolean);
+  return h("div", { class: "block" }, t.length ? h("div", { class: "corner" }, t) : null, content);
+}
+
 // info is a small note behind an "i" the owner can open (on touch too);
 // its text stays in the card.
 function info(note, ctx, n) {
@@ -116,52 +123,55 @@ const INPUT = {
     const used = ["argv", "env", "cwd"];
     const out = [];
     let details = null;
+    const cwd = field(args, "cwd");
+    // The working directory, in full, as recorded (a rejected call may hold
+    // a value that is not a string).
+    const where = cwd ? [h("span", { class: "ctx-word" }, "in"), " ", value(cwd)] : null;
     if (ctx.serverOS === "windows") {
+      if (where) { out.push(h("div", { class: "context" }, where)); }
       out.push(h("div", { class: "label" }, "Program and arguments (Windows; exact tokens, no shell notation)"));
       out.push(h("ol", { class: "tokens" }, argv.map((a) => h("li", {}, h("code", {}, text(a))))));
       if (env.length) {
         out.push(h("div", { class: "label" }, "Environment overrides"));
         out.push(h("dl", { class: "obj" }, env.map(([k, v]) => [h("dt", {}, text(k)), h("dd", {}, h("code", {}, text(v)))])));
       }
-    } else {
-      const cmd = commandLine(env, argv);
-      const script = interpreterScript(argv);
-      const copy = h("button", { type: "button", class: "copy", "data-action": "copy-command", "data-key": ctx.key, title: "Copy the full command line" }, "Copy command line");
-      if (cmd.exact && script) {
-        // A shell script: the script itself, with every other token of the
-        // command (env overrides, the interpreter and its options, the
-        // operands after the script) shown around it; the full line, which
-        // they rebuild exactly, is in Details.
-        const via = commandLine(env, argv.slice(0, script.scriptIndex));
-        out.push(h("div", { class: "via" }, "via ", h("code", {}, text(via.line))));
-        out.push(script.script === "" ? h("div", { class: "warning" }, "(empty script)")
-          : h("pre", { class: "command script" }, h("code", {}, text(script.script, true))));
-        const operands = argv.slice(script.scriptIndex + 1);
-        if (operands.length) {
-          // Quoted as in the full line, so empty and space-padded tokens show.
-          out.push(h("div", { class: "label" }, "Arguments after the script ($0 first)"));
-          out.push(h("ol", { class: "tokens" }, operands.map((a) => h("li", {}, h("code", {}, text(quote(a)))))));
-        }
-        out.push(copy, info("The script and the tokens around it are argv and environment overrides in display notation, not proof that a shell ran.", ctx, 1));
-        details = [h("div", { class: "label" }, "Full command line"), h("pre", { class: "command" }, h("code", {}, text(cmd.line)))];
-      } else {
-        out.push(h("pre", { class: "command" }, h("code", {}, text(cmd.line)))); // Tabs and newlines visible.
-        if (cmd.exact) {
-          out.push(copy, info("Display notation of argv and environment overrides, not a shell invocation.", ctx, 1));
-        } else {
-          out.push(info("Display notation of argv and environment overrides, not a shell invocation.", ctx, 1));
-          out.push(h("div", { class: "warning" }, "Not copyable: ", text(cmd.problems.join("; ")), ". Exact tokens:"));
-          out.push(h("ol", { class: "tokens" }, argv.map((a) => h("li", {}, h("code", {}, text(a))))));
-          if (env.length) { out.push(h("dl", { class: "obj" }, env.map(([k, v]) => [h("dt", {}, text(k)), h("dd", {}, h("code", {}, text(v)))]))); }
-          if (script) {
-            out.push(h("div", { class: "label" }, "Script passed to ", text(argv[0]), " ", text(argv[script.flagIndex])));
-            out.push(h("pre", { class: "script" }, h("code", {}, text(script.script, true))));
-          }
-        }
+      return [h("div", { class: "launch" }, out), used, details];
+    }
+    const cmd = commandLine(env, argv);
+    const script = interpreterScript(argv);
+    const copy = cmd.exact ? h("button", { type: "button", class: "copy", "data-action": "copy-command", "data-key": ctx.key, title: "Copy the full command line" }, "Copy command line") : null;
+    if (cmd.exact && script) {
+      // A shell script: the script itself, with every other token of the
+      // command (env overrides, the interpreter and its options, the
+      // operands after the script) shown around it; the full line, which
+      // they rebuild exactly, is in Details. Copy copies that full line.
+      const via = commandLine(env, argv.slice(0, script.scriptIndex));
+      out.push(h("div", { class: "context" }, h("span", { class: "ctx-word" }, "via"), " ", h("code", {}, text(via.line)),
+        where ? [" ", where] : null));
+      out.push(block([info("The script and the tokens around it are argv and environment overrides in display notation, not proof that a shell ran.", ctx, 1), copy], script.script === "" ? h("div", { class: "warning" }, "(empty script)")
+        : h("pre", { class: "command script" }, h("code", {}, text(script.script, true)))));
+      const operands = argv.slice(script.scriptIndex + 1);
+      if (operands.length) {
+        // Quoted as in the full line, so empty and space-padded tokens show.
+        out.push(h("div", { class: "label" }, "Arguments after the script ($0 first)"));
+        out.push(h("ol", { class: "tokens" }, operands.map((a) => h("li", {}, h("code", {}, text(quote(a)))))));
+      }
+      details = [h("div", { class: "label" }, "Full command line"), h("pre", { class: "command" }, h("code", {}, text(cmd.line)))];
+      return [h("div", { class: "launch" }, out), used, details];
+    }
+    if (where) { out.push(h("div", { class: "context" }, where)); }
+    // Tabs and newlines visible.
+    out.push(block([info("Display notation of argv and environment overrides, not a shell invocation.", ctx, 1), copy],
+      h("pre", { class: "command" }, h("code", {}, text(cmd.line)))));
+    if (!cmd.exact) {
+      out.push(h("div", { class: "warning" }, "Not copyable: ", text(cmd.problems.join("; ")), ". Exact tokens:"));
+      out.push(h("ol", { class: "tokens" }, argv.map((a) => h("li", {}, h("code", {}, text(a))))));
+      if (env.length) { out.push(h("dl", { class: "obj" }, env.map(([k, v]) => [h("dt", {}, text(k)), h("dd", {}, h("code", {}, text(v)))]))); }
+      if (script) {
+        out.push(h("div", { class: "label" }, "Script passed to ", text(argv[0]), " ", text(argv[script.flagIndex])));
+        out.push(h("pre", { class: "script" }, h("code", {}, text(script.script, true))));
       }
     }
-    const cwd = field(args, "cwd");
-    if (cwd) { out.push(line("Working directory", cwd)); }
     return [h("div", { class: "launch" }, out), used, details];
   },
 
@@ -186,7 +196,10 @@ const INPUT = {
   file_edit(args, ctx) {
     const edits = field(args, "edits");
     if (!edits || edits.kind !== "array") { return [null, []]; }
-    const out = [line("File", field(args, "path"))];
+    // The note sits with the file it is about, not on a line of its own.
+    const note = info("The requested change, not the file's result; no file line numbers are recorded.", ctx, 1);
+    const path = field(args, "path");
+    const out = [path ? h("div", { class: "kv" }, h("span", { class: "label" }, "File"), " ", value(path), " ", note) : note];
     edits.items.forEach((e, i) => {
       const o = str(field(e, "old_text"));
       const n = str(field(e, "new_text"));
@@ -205,7 +218,6 @@ const INPUT = {
       }
       out.push(nestedFields("file_edit", "edits[]", e, ["old_text", "new_text"], "Other fields of this replacement"));
     });
-    out.push(info("The requested change, not the file's result; no file line numbers are recorded.", ctx, 1));
     return [h("div", { class: "edit" }, out), ["edits", "path"]];
   },
 
@@ -268,7 +280,6 @@ function inputView(item, ctx) {
   }
   const args = field(p.value, "args");
   const out = [legacy];
-  if (Object.hasOwn(NOT_RECORDED_OUTPUT, a.tool)) { out.push(info(NOT_RECORDED_OUTPUT[a.tool], ctx, 0)); }
   const render = Object.hasOwn(INPUT, a.tool) ? INPUT[a.tool] : null;
   let used = [];
   let rendered = !render;
@@ -337,12 +348,27 @@ function duration(d) {
   return d.milliseconds.toLocaleString("en") + " ms";
 }
 
-// localTime renders a recorded time in local time, with UTC on hover.
+// localTime renders a recorded time compactly (14:53:51); the full local
+// date, time and zone, and the recorded text, are in its title.
 export function localTime(t) {
   if (!t) { return null; }
   const d = new Date(t);
   if (Number.isNaN(d.getTime())) { return h("time", {}, text(t)); }
-  return h("time", { title: d.toISOString() + " (writer clock)" }, d.toLocaleString());
+  return h("time", { title: fullTime(t) }, shortTime(t));
+}
+
+// fullTime is a recorded time in words: the full local date, time and zone,
+// then the recorded text as written (by the writer's clock).
+export function fullTime(t) {
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) { return t + " (not a valid time)"; }
+  return d.toLocaleString(undefined, { dateStyle: "full", timeStyle: "long", hourCycle: "h23" }) + " · recorded " + t + " (writer clock)";
+}
+
+// recordedAt says, in Details, when the call was recorded, also for touch
+// screens where a title cannot be read.
+function recordedAt(t) {
+  return t ? h("div", { class: "recorded-at note" }, "Recorded at ", text(fullTime(t))) : null;
 }
 
 // recordsOf lists an item's records with their roles.
@@ -515,11 +541,6 @@ function factsOf(item, ctx) {
   return f;
 }
 
-function localTimeText(t) {
-  const d = new Date(t);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
-}
-
 // shortTime is the page's compact local time: 14:53:51.
 export function shortTime(t) {
   const d = new Date(t);
@@ -568,12 +589,11 @@ function actionHeader(item, ctx, f) {
   const start = recorded(ctx, a.start);
   const args = start && start.args && typeof start.args === "object" ? start.args : null;
   const o = outcome(item, f);
-  const dur = headDuration(item, localTimeText);
+  const dur = headDuration(item);
   // The server treats an empty expected_version as "create".
   const replaces = !!args && typeof args.expected_version === "string" && args.expected_version !== "";
   const parts = [h("strong", { class: "verb", title: a.tool || "" }, text(verb(a.tool, { inputRecorded: !!args && !a.legacy, hasExpectedVersion: replaces }))),
-    " ", chip(o), " ", localTime(time)];
-  if (dur.text) { parts.push(" ", h("span", { class: "dur", title: dur.title }, text(dur.text))); }
+    Object.hasOwn(NOT_RECORDED_OUTPUT, a.tool) ? [" ", info(NOT_RECORDED_OUTPUT[a.tool], ctx, 0)] : null, " ", chip(o)];
   if (a.replayed) {
     parts.push(" ", h("span", { class: "badge replay" }, "of operation ", text(a.effect ? a.effect.effect.operation_id : "?"),
       a.effect && !a.effect.loaded ? " (its effect is outside the loaded history)" : ""));
@@ -589,6 +609,7 @@ function actionHeader(item, ctx, f) {
   if (phases.some((p) => (p.occurrences || [p.primary]).some((id) => id.startsWith("p:")))) { parts.push(" ", badge("warn", "pending row identity")); }
   if (a.identity && a.identity.metadataInvalid) { parts.push(" ", badge("warn", "unusable client metadata")); }
   if (a.effect && a.effect.kind === "observe") { parts.push(" ", h("span", { class: "note" }, "checks operation ", text(a.effect.effect.operation_id))); }
+  parts.push(when(localTime(time), dur.text ? h("span", { class: "dur", title: dur.title }, text(dur.text)) : null));
   const out = [h("div", { class: "card-head" }, parts)];
   // The outcome's detail: an error in full, counts, or why it did not run.
   if (o.detail) { out.push(h("div", { class: o.kind === "failed" || o.kind === "not_run" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true))); }
@@ -596,6 +617,9 @@ function actionHeader(item, ctx, f) {
   if (ess) { out.push(ess); }
   return out;
 }
+
+// when is the right-hand end of a header: the time, then a duration.
+function when(...parts) { return [" ", h("span", { class: "when" }, parts.filter(Boolean).flatMap((p, i) => (i ? [" ", p] : [p])))]; }
 
 // timingLine spells out every recorded duration and status, for Details.
 function timingLine(item) {
@@ -636,15 +660,14 @@ export function card(item, ctx) {
     const o = outcome(item, factsOf(item, c));
     return h("div", { class: "card effect-only", "data-key": item.key },
       h("div", { class: "card-head" }, h("strong", { class: "verb", title: e.tool || "" }, text(verb(e.tool))), " ",
-        chip(o), " ", localTime((e.start || e.finish || {}).time),
-        " operation ", text(e.key.operation_id)),
+        chip(o), " operation ", text(e.key.operation_id), when(localTime((e.start || e.finish || {}).time))),
       o.detail ? h("div", { class: o.kind === "failed" ? "outcome-detail bad" : "outcome-detail" }, text(o.detail, true)) : null,
       h("div", { class: "note" }, "The request that admitted this effect is outside the loaded history."),
-      moreDetails(item, c, [timingLine(item), receipt(item, c), originals(item, c)]));
+      moreDetails(item, c, [recordedAt((e.start || e.finish || {}).time), timingLine(item), receipt(item, c), originals(item, c)]));
   }
   const [input, protocol] = inputView(item, c);
   const full = [actionHeader(item, c, factsOf(item, c)), input,
-    moreDetails(item, c, [protocol, timingLine(item), callMeta(item, c), receipt(item, c), originals(item, c)])];
+    moreDetails(item, c, [protocol, recordedAt((item.action.start || item.action.rejected || item.action.finish || {}).time), timingLine(item), callMeta(item, c), receipt(item, c), originals(item, c)])];
   const row = compactable(item, c);
   if (row) { return compactRow(item, c, row, full); }
   return h("div", { class: "card", "data-key": item.key }, full);
@@ -737,7 +760,7 @@ function compactRow(item, ctx, row, full) {
     h("button", { type: "button", class: "row-head", "data-action": "toggle-row", "data-key": key, "aria-expanded": open },
       h("strong", { class: "verb" }, text(verb(a.tool))), " ",
       chip(row.o, row.o.detail || ""), " ",
-      h("span", { class: "row-main" }, row.summary), " ", localTime((a.start || {}).time)),
+      h("span", { class: "row-main" }, row.summary), when(localTime((a.start || {}).time))),
     open ? h("div", { class: "full" }, full) : h("div", { class: "full", hidden: true }, full));
 }
 
@@ -798,7 +821,7 @@ export function entry(e, ctx) {
     h("button", { type: "button", class: "group-head", "data-action": "toggle-group", "data-key": key, "aria-expanded": !!open },
       h("strong", { class: "verb" }, text(verb(last.action.tool))), " × " + e.items.length, " ",
       row ? chip(row.o) : null, " ",
-      h("span", { class: "row-main" }, row ? row.summary : null), " · last ", localTime((last.action.start || {}).time)),
+      h("span", { class: "row-main" }, row ? row.summary : null), when("last", localTime((last.action.start || {}).time))),
     // Always built: collapsed, the polls are hidden but complete.
     open ? h("div", { class: "members" }, e.items.map((it) => card(it, ctx))) : h("div", { class: "members", hidden: true }, e.items.map((it) => card(it, ctx))));
 }

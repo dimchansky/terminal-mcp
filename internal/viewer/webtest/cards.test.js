@@ -1,8 +1,17 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime } from "../static/cards.js";
+import { card, timeline, entry, entryKey, compactable, groupTarget, chipClass, seenText, shortTime, localTime, fullTime } from "../static/cards.js";
 import { textOf, find, materialize } from "../static/view.js";
+
+// glance is the text of a view as first seen: closed notes show only their
+// "i" (their text is an accessible description), Details is folded.
+function glance(node) {
+  if (typeof node === "string" || typeof node === "number") { return String(node); }
+  const cls = (node.attrs.class || "").split(" ");
+  if ((cls.includes("info") && !node.attrs.open) || cls.includes("more")) { return ""; }
+  return node.children.map(glance).join("").replace(/\s+/g, " ");
+}
 
 const enc = (s) => new TextEncoder().encode(s);
 const startRecord = (tool, args, extra = {}) => enc(JSON.stringify({ schema_version: 2, time: "2026-11-10T10:00:00Z", server_id: "s",
@@ -23,7 +32,7 @@ test("terminal_start: the acceptance example is one readable command", () => {
   assert.equal(find(v, "copy").length, 1, "copy command; the record's copy is in the closed originals");
   ctx.open = new Set(["a:s/r:originals"]);
   assert.equal(find(card(it, ctx), "copy").length, 2, "copy command and copy record");
-  assert.match(textOf(v), /Working directory\s*\/src/);
+  assert.match(textOf(find(v, "context")[0]), /^in \/src$/, "the working directory in the context line");
   assert.doesNotMatch(textOf(find(v, "input")[0]), /argv\[|env\.GOFLAGS/, "no field names as the main view");
 });
 
@@ -98,7 +107,7 @@ test("consecutive polls of one target collapse into a group", () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0].items.length, 3);
   const collapsed = entry(groups[0], { records, expanded: new Set() });
-  assert.match(textOf(collapsed), /^Read output × 3 Checked: output read session_id sess-1 · last /);
+  assert.match(glance(collapsed), /^Read output × 3 Checked: output read session_id sess-1 last /);
   assert.equal(find(collapsed, "members")[0].attrs.hidden, true, "collapsed: one row, the polls hidden but complete");
   assert.equal(find(find(collapsed, "members")[0], "compact").length, 3);
   assert.equal(find(entry(groups[0], { records, expanded: new Set([entryKey(groups[0])]) }), "compact").length, 3, "expanded: every poll, as a row");
@@ -113,7 +122,7 @@ test("listing calls fold to one row that expands to the full card", () => {
   it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"] };
   ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", search_matches: 2, outcome: "ok" }) + "\n") });
   let v = card(it, ctx);
-  assert.match(textOf(find(v, "row-head")[0]), /^Search files Done path \/src pattern TODO /);
+  assert.match(glance(find(v, "row-head")[0]), /^Search files Done path \/src pattern TODO /);
   assert.equal(find(v, "full")[0].attrs.hidden, true, "collapsed, the card is hidden but complete");
   assert.match(textOf(find(v, "full")[0]), /max_results/);
   ctx.open = new Set([it.key + ":row"]);
@@ -172,10 +181,10 @@ test("rejections with a start show their reason; finish diagnostics are shown", 
   it.action.rejected = { primary: "ref-rej", occurrences: ["ref-rej"] };
   it.action.reason = "schema_validation";
   ctx.records.set("ref-rej", { bytes: enc(JSON.stringify({ phase: "request_rejected", status: "rejected", reason: "schema_validation", error: "invalid tool arguments" }) + "\n") });
-  const v = textOf(card(it, ctx));
+  const v = glance(card(it, ctx));
   assert.match(v, /^Read files Not run /);
   assert.match(v, /the arguments did not match the tool's schema/);
-  assert.match(v, /Recorded rejection[\s\S]*invalid tool arguments/);
+  assert.match(textOf(card(it, ctx)), /Recorded rejection[\s\S]*invalid tool arguments/);
   const f = item("file_search", { pattern: "x" });
   f.it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"] };
   f.ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", search_matches: 3, truncated: true }) + "\n") });
@@ -215,7 +224,7 @@ test("a command's card shows the exit a later call saw, with when", () => {
   it.effect = { tool: "terminal_start", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 15 } };
   it.action.finish = { primary: "ref-fin", occurrences: ["ref-fin"], time: "2026-11-10T10:00:01Z" };
   ctx.records.set("ref-fin", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "applied", process: { state: "running" } }) + "\n") });
-  let head = textOf(card(it, { ...ctx, processes: undefined }));
+  let head = glance(card(it, { ...ctx, processes: undefined }));
   assert.ok(head.startsWith("Run command Last seen running seen " + shortTime("2026-11-10T10:00:01Z") + " "), head);
   assert.match(head, /^Run command Last seen running /, "only what the launch saw, with its time");
   assert.equal(find(card(it, { ...ctx, processes: undefined }), "outcome-chip")[0].attrs.class, "outcome-chip seen", "a historic observation is not a success");
@@ -226,11 +235,12 @@ test("a command's card shows the exit a later call saw, with when", () => {
       finish: { primary: "ref-read", occurrences: ["ref-read"], time: "2026-11-10T10:05:00Z" } } };
   ctx.records.set("ref-read", { bytes: enc(JSON.stringify({ phase: "request_finish", status: "ok", process: { state: "exited", exit: { code: 2 } } }) + "\n") });
   const entries = timeline([it, read], ctx);
-  head = textOf(entry(entries[0], ctx));
+  head = glance(entry(entries[0], ctx));
   assert.ok(head.startsWith("Run command Exited · 2 exit seen " + shortTime("2026-11-10T10:05:00Z") + " "), head);
-  assert.match(textOf(entry(entries[1], ctx)), /^Read output Checked: exited · 2 /);
+  assert.match(glance(entry(entries[1], ctx)), /^Read output Checked: exited · 2 /);
   assert.match(find(entry(entries[1], ctx), "outcome-chip")[0].attrs.class, /warn/, "a poll that saw a bad exit is a warning");
-  assert.match(head, /started in 15 ms/);
+  assert.doesNotMatch(head, /started in|15 ms/, "the launch time is in Details");
+  assert.match(textOf(entry(entries[0], ctx)), /The process launched in 15 ms/);
 });
 
 test("results that matter are inline: version and size of a written file", () => {
@@ -240,7 +250,7 @@ test("results that matter are inline: version and size of a written file", () =>
     finish: { primary: "ref-op", occurrences: ["ref-op"] } };
   ctx.records.set("ref-op", { bytes: enc(JSON.stringify({ phase: "operation_finish", status: "applied",
     receipt: { operation_id: "o", status: "applied", data: { path: "/a", version: "sha256:new", bytes: 1 } } }) + "\n") });
-  const v = textOf(card(it, ctx));
+  const v = glance(card(it, ctx));
   assert.match(v, /^Replace file Done /);
   assert.match(v, /version sha256:new · 1 byte/);
 });
@@ -252,12 +262,12 @@ test("a failed action shows no result values; an empty expected_version creates"
     finish: { primary: "ref-op", occurrences: ["ref-op"] } };
   ctx.records.set("ref-op", { bytes: enc(JSON.stringify({ phase: "operation_finish", status: "failed", error: "HTTP 404",
     receipt: { operation_id: "o", status: "failed", error: "HTTP 404", data: { path: "/x", bytes: 0 } } }) + "\n") });
-  const v = textOf(card(it, ctx));
+  const v = glance(card(it, ctx));
   assert.match(v, /^Download file Failed /);
   assert.match(v, /HTTP 404/);
   assert.doesNotMatch(v, /Saved to|0 bytes/);
   const w = item("file_write", { path: "/a", content: "x", expected_version: "" });
-  assert.match(textOf(card(w.it, w.ctx)), /^Create file /);
+  assert.match(glance(card(w.it, w.ctx)), /^Create file /);
 });
 
 test("a command that exited non-zero is a warning, not a success; recorded statuses stay visible", () => {
@@ -277,7 +287,7 @@ test("keys the schema does not define are marked at any depth", () => {
   const r = item("file_receive", { path: "/x", file: { download_url: "http://h/f", file_id: "f", sneaky: "S" }, operation_id: "o", server_id: "s" });
   r.it.action.status = "running";
   let body = find(card(r.it, r.ctx), "input")[0];
-  assert.match(textOf(find(body, "undefined-key")[0]), /^sneaky \(not in schema\)$/);
+  assert.match(glance(find(body, "undefined-key")[0]), /^sneaky \(not in schema\)$/);
   const e = item("file_edit", { path: "/a", edits: [{ old_text: "a", new_text: "b", zzz: "Z" }], operation_id: "o", server_id: "s" });
   body = find(card(e.it, e.ctx), "input")[0];
   assert.match(textOf(find(body, "undefined-fields")[0]), /Not in this server version's schema\s*zzz\s*Z/);
@@ -417,4 +427,88 @@ test("every outcome look has a glyph, with a fallback for older browsers", () =>
   for (const cls of ["ok", "bad", "warn", "unknown", "live", "seen", "neutral"]) {
     assert.match(css, new RegExp("\\.outcome-chip\\." + cls + "::before \\{ content: \"[^\"]+\"; content: \"[^\"]+\" / \"\"; \\}"), cls);
   }
+});
+
+test("the header ends with the time; the command block carries Copy; notes sit by their labels", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["/bin/sh", "-c", "make check"], env: { GOFLAGS: "-count=1", TOKEN: "s3cret" }, cwd: "/src/a very/long path" });
+  const v = card(it, ctx);
+  const head = find(v, "card-head")[0];
+  const last = head.children[head.children.length - 1];
+  assert.equal(last.attrs.class, "when", "the time is the header's right-hand end");
+  assert.equal(find(last, "dur").length, 1, "an ordinary call keeps its duration by the time");
+  // Every env override and the full cwd are in the context line, in full.
+  assert.equal(textOf(find(v, "context")[0]).replace(/\s+/g, " "), "via GOFLAGS=-count=1 TOKEN=s3cret /bin/sh -c in /src/a very/long path");
+  const blk = find(v, "block")[0];
+  assert.equal(find(find(blk, "corner")[0], "copy").length, 1, "Copy in the block's corner");
+  assert.equal(textOf(find(blk, "copy")[0]), "Copy command line", "a visible label");
+  assert.match(textOf(find(v, "more")[0]), /Full command line[\s\S]*GOFLAGS=-count=1 TOKEN=s3cret \/bin\/sh -c 'make check'/);
+  assert.match(textOf(find(v, "more")[0]), /Recorded at .*recorded 2026-11-10T10:00:00Z \(writer clock\)/, "the full time is reachable on touch");
+  // A note is never a line of its own: it sits in the header, a block's
+  // corner or a labelled line, beside something else.
+  const homes = (node, parent, out = []) => {
+    if (typeof node !== "object") { return out; }
+    if ((node.attrs.class || "").split(" ").includes("info")) { out.push(parent); }
+    for (const c of node.children) { homes(c, node, out); }
+    return out;
+  };
+  for (const v2 of [v, card(item("terminal_start", { argv: ["ls"], env: {} }).it, item("terminal_start", { argv: ["ls"], env: {} }).ctx)]) {
+    for (const p of homes(v2, null)) {
+      assert.ok(["card-head", "corner", "kv"].some((c) => (p.attrs.class || "").split(" ").includes(c)), p.attrs.class);
+      assert.ok(p.children.filter((c) => typeof c === "object" && !(c.attrs.class || "").includes("info")).length > 0, "a note shares its line");
+    }
+  }
+  const e = item("file_edit", { path: "/a", edits: [{ old_text: "a", new_text: "b" }] });
+  const kv = find(find(card(e.it, e.ctx), "edit")[0], "kv")[0];
+  assert.equal(find(kv, "info").length, 1, "the edit note sits with its file");
+});
+
+test("a cwd that is not a string still shows as recorded; a launch has no header duration", () => {
+  const { it, ctx } = item("terminal_start", { argv: ["ls"], env: {}, cwd: 42 });
+  it.action.status = "rejected";
+  it.action.reason = "schema_validation";
+  const v = card(it, ctx);
+  assert.match(textOf(find(v, "context")[0]), /^in 42$/);
+  const s = item("terminal_start", { argv: ["ls"], env: {} });
+  s.it.action.status = "applied";
+  s.it.effect = { tool: "terminal_start", state: "finished", status: "applied", duration: { state: "measured", milliseconds: 7 } };
+  assert.equal(find(find(card(s.it, s.ctx), "card-head")[0], "dur").length, 0);
+});
+
+test("a compact row's button holds no note; its card's header does", () => {
+  const { it, ctx } = item("terminal_read", { session_id: "S" });
+  const v = card(it, ctx);
+  assert.match(v.attrs.class, /compact/);
+  const button = find(v, "row-head")[0];
+  assert.equal(find(button, "info").length, 0, "no details inside a button");
+  assert.equal(find(find(v, "full")[0], "info").length, 1);
+});
+
+test("each branch keeps its layout: Windows, a line that cannot be copied, an empty script", () => {
+  let r = item("terminal_start", { argv: ["cmd.exe", "/c", "dir"], env: { A: "1" }, cwd: "C:\\src" });
+  r.ctx.serverOS = "windows";
+  let v = card(r.it, r.ctx);
+  assert.match(textOf(find(v, "context")[0]), /^in C:\\src$/);
+  r = item("terminal_start", { argv: ["echo", "a\u202eb"], env: {} });
+  v = card(r.it, r.ctx);
+  const corner = find(find(v, "block")[0], "corner")[0];
+  assert.equal(find(corner, "copy").length, 0, "no Copy for a line that does not parse back");
+  assert.equal(find(corner, "info").length, 1);
+  r = item("terminal_start", { argv: ["/bin/sh", "-c", ""], env: {} });
+  v = card(r.it, r.ctx);
+  assert.match(textOf(find(v, "block")[0]), /\(empty script\)/);
+});
+
+test("in flight there is no header duration; an effect-only card and a group keep the time at the right", () => {
+  const { it, ctx } = item("file_receive", { path: "/x", file: { download_url: "http://h/f", file_id: "f" } });
+  it.action.status = "running";
+  it.effect = { tool: "file_receive", state: "in_flight", status: "", start: { primary: "ref-op", occurrences: ["ref-op"], time: "2026-11-10T10:00:00Z" } };
+  const head = find(card(it, ctx), "card-head")[0];
+  assert.equal(find(head, "dur").length, 0);
+  assert.equal(find(head, "when").length, 1);
+  const eo = { kind: "effect", key: "e:s/o", lane: "L", order: { live: true, rank: 1 },
+    effect: { key: { server_id: "s", operation_id: "o" }, tool: "file_write", state: "finished", status: "applied", start: { primary: "ref-op", occurrences: ["ref-op"], time: "2026-11-10T10:00:00Z" } } };
+  const eh = find(card(eo, { records: new Map() }), "card-head")[0];
+  assert.equal(eh.children[eh.children.length - 1].attrs.class, "when");
+  assert.equal(textOf(localTime("not a time")), "not a time", "an invalid time shows as recorded");
+  assert.equal(fullTime("not a time"), "not a time (not a valid time)");
 });

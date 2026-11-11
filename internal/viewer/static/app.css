@@ -86,7 +86,6 @@ details.info { display: inline-block; vertical-align: middle; margin-left: 0.3re
 details.info > summary { list-style: none; cursor: help; width: 1.1em; height: 1.1em; line-height: 1.1em; text-align: center; border: 1px solid var(--muted); border-radius: 50%; font-style: italic; }
 details.info > summary::-webkit-details-marker { display: none; }
 details.info[open] { display: block; }
-.via { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.2rem; }
 .card.compact { padding-top: 0.25rem; padding-bottom: 0.25rem; }
 .row-head, .group-head { display: flex; gap: 0.4rem; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0.15rem 0; }
 .row-head::before, .group-head::before { content: "▸"; color: var(--muted); }
@@ -107,3 +106,16 @@ details.conv-id code { overflow-wrap: anywhere; }
 .outcome-chip.seen::before { content: "\25f7"; content: "\25f7" / ""; }
 .outcome-chip.neutral::before { content: "\25cb"; content: "\25cb" / ""; }
 .secondary { color: var(--muted); font-size: 0.8rem; }
+.card-head .when, .row-head .when, .group-head .when { margin-left: auto; color: var(--muted); white-space: nowrap; font-size: 0.8rem; }
+.card-head details.info[open] { flex-basis: 100%; order: 99; margin-left: 0; }
+.context { color: inherit; font-size: 0.85rem; margin: 0.1rem 0 0.2rem; overflow-wrap: anywhere; }
+.context .ctx-word { color: var(--muted); }
+.context code, .context .str { font-family: ui-monospace, monospace; }
+.block { margin: 0.25rem 0; display: flow-root; }
+.block > .corner { float: right; display: flex; gap: 0.3rem; align-items: center; margin: 0.15rem 0 0.15rem 0.5rem; position: relative; z-index: 1; }
+.block > .corner .copy { margin-top: 0; }
+.block > pre { margin: 0; }
+.recorded-at { margin: 0.1rem 0; }
+@media (max-width: 30rem) {
+  .block > .corner { float: none; justify-content: flex-end; margin: 0 0 0.2rem; }
+}
