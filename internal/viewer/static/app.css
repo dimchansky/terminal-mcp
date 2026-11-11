@@ -68,9 +68,17 @@ button { min-height: 24px; }
 .lanes ul { list-style: none; margin: 0.5rem 0; padding: 0; }
 .lanes li { display: grid; grid-template-columns: 20px 1fr auto; gap: 0.4rem; padding: 0.35rem; border-radius: 4px; cursor: pointer; align-items: center; }
 .lanes li[aria-selected="true"] { background: var(--selected-bg); box-shadow: inset 3px 0 0 var(--selected-bar); }
-.lane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lane-sub { grid-column: 2 / 4; color: var(--muted); font-size: 0.8rem; }
-.claimed { color: var(--muted); font-size: 0.75rem; }
+.lane-sub { grid-column: 2 / 4; color: var(--muted); font-size: 0.8rem; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-sub .preview-label { font-style: normal; }
+.lane-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 0.1rem; color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
+.lane-label { display: flex; min-width: 0; overflow: hidden; align-items: baseline; gap: 0.3rem; }
+.lane-client { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lane-id { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-client { flex: 0 100 auto; }
+.lane-label .more { flex: none; color: var(--muted); font-size: 0.8rem; }
+.rename-editor { display: inline-flex; gap: 0.3rem; align-items: center; flex-wrap: wrap; }
+.rename-editor input { font: inherit; min-width: 12rem; }
+details.conv-id dl.obj { margin-top: 0.3rem; }
 .unread { background: var(--unread-bg); color: var(--unread-fg); font-weight: 600; border-radius: 999px; padding: 0 0.45rem; font-size: 0.75rem; }
 .hint { color: var(--muted); font-size: 0.75rem; }
 .identicon { display: block; }

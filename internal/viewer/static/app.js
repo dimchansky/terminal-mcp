@@ -6,11 +6,12 @@
 
 import { Client, checkSession, signIn, renewSession, signOut } from "./net.js";
 import { h, materialize } from "./view.js";
-import { entry, entryKey, timeline, withDays, jumpTarget, text, localTime, processKey } from "./cards.js";
+import { entry, entryKey, timeline, withDays, jumpTarget, text, fullTime, processKey } from "./cards.js";
+import { laneName, laneTime, newestActions, lanePreview, rename, shortIds } from "./lanes.js";
 import { attentionFor } from "./attention.js";
 import { describeStatus, loadErrorText } from "./status.js";
 import { reconcile } from "./reconcile.js";
-import { icon, conversationKey, shortLabels } from "./identicon.js";
+import { icon, conversationKey } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
 import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper, earlierCursor } from "./model.js";
 import { commandLine } from "./shell.js";
@@ -158,9 +159,9 @@ const view = {
   follow: true, // Following the live tail while the owner is at the bottom.
   programmatic: null, // scrollTop set by the page itself (its scroll event is ignored).
   scheduled: false,
+  renaming: rename.cancel(), // The alias editor in the chat's title.
 };
 
-const LANE_NAMES = { unattributed: "Unattributed", invalid_metadata: "Invalid metadata", origin_not_loaded: "Pending origin", journal: "Journal" };
 
 // resetView forgets everything shown, including recorded text in the DOM.
 function resetView() {
@@ -174,6 +175,9 @@ function resetView() {
   view.loading = view.loadError = view.renewNote = "";
   view.controls = null;
   view.shown = null;
+  view.renaming = rename.cancel();
+  view.newest = null;
+  if (view.midnight) { clearInterval(view.midnight); view.midnight = null; }
   view.archive = null;
   view.visible.clear();
   if (view.observer) { view.observer.disconnect(); view.observer = null; }
@@ -232,7 +236,8 @@ function deferred() {
     [...box.querySelectorAll(".group-head[aria-expanded=\"true\"], .row-head[aria-expanded=\"true\"]")].some((b) => !b.closest("[hidden]"));
   const active = document.activeElement;
   const working = active !== box && box.contains(active); // A focused card control, not the box itself.
-  return !view.follow || selecting || reading || working || !!view.archive;
+  // Naming a chat is reading too: a switch would move the title away.
+  return !view.follow || selecting || reading || working || !!view.archive || view.renaming.editing;
 }
 
 function startView() {
@@ -334,32 +339,45 @@ function renderLanes() {
   // Replace the list only when it changed: replacing it under the pointer
   // would lose a click between press and release.
   const counts = lanes.map((l) => view.attention.count(laneIdentity(l)));
-  const signature = JSON.stringify([lanes, laneIdentity(sel), [...view.digests.values()].filter(Boolean).length, counts, [...view.aliases]]);
+  const store = source();
+  if (!view.newest || view.newest.store !== store || view.newest.version !== store.version) {
+    view.newest = { store, version: store.version, map: newestActions(store.items.values()) };
+  }
+  const newest = view.newest.map;
+  const previews = lanes.map((l) => lanePreview(l, newest.get(l.id)));
+  const now = new Date();
+  // Today's date is part of it, so "Yesterday" and times update after midnight.
+  const signature = JSON.stringify([lanes, laneIdentity(sel), [...view.digests.values()].filter(Boolean).length, counts, [...view.aliases],
+    previews, now.toDateString()]);
   if (signature === view.lanesSignature) { return; }
   view.lanesSignature = signature;
-  const conv = lanes.filter((l) => l.kind === "conversation");
-  const labels = shortLabels(conv.map((l) => l.conversationId || ""), 16);
-  const uses = new Map();
-  for (const l of conv) { uses.set(l.conversationId || "", (uses.get(l.conversationId || "") || 0) + 1); }
-  const laneName = (l) => {
-    const id = l.conversationId || "";
-    const base = id ? labels.get(id) : "(empty conversation ID)";
-    return uses.get(id) > 1 ? base + " (" + (l.identitySource || "?") + ")" : base;
-  };
-  view.laneNames = new Map(conv.map((l) => [laneIdentity(l), laneName(l)])); // The chat's title uses the same short name.
+  armMidnight();
+  const ids = shortIds(lanes);
+  const names = new Map(lanes.map((l) => [laneIdentity(l), laneName(l, { alias: aliasOf(l), shortId: ids.get(laneIdentity(l)) || "" })]));
+  view.laneNames = new Map([...names].map(([k, n]) => [k, n.name])); // The chat's title uses the same name.
   const list = $("lane-list");
   const focused = document.activeElement && document.activeElement.parentElement === list ? document.activeElement.dataset.lane : null;
   const existing = new Map([...list.children].map((li) => [li.dataset.lane, li]));
-  const fresh = lanes.map((l) => {
-    const name = l.kind === "conversation" ? (aliasOf(l) || laneName(l)) : LANE_NAMES[l.kind] || l.kind;
-    const unread = view.attention.count(laneIdentity(l));
+  const fresh = lanes.map((l, i) => {
+    const n = names.get(laneIdentity(l));
+    const unread = counts[i];
+    const p = previews[i];
+    const when = laneTime(l.last_time, now);
     const node = h("li", { role: "option", tabindex: l === sel ? 0 : -1, "aria-selected": l === sel, "data-lane": laneIdentity(l) },
-    icon(l.kind === "conversation" ? digestFor(l) : null),
-    h("span", { class: "lane-name" }, text(name)),
-    h("span", {}, unread ? h("span", { class: "unread" }, unread + " new") : null,
-      l.kind === "conversation" ? h("span", { class: "claimed" }, " client-claimed") : null),
-    h("span", { class: "lane-sub" }, aliasOf(l) ? [text(laneName(l)), " · "] : null, l.items + " item(s)", l.client_names && l.client_names.length ? [" · ", text(l.client_names.join(", "))] : null,
-      l.last_time ? [" · ", localTime(l.last_time)] : null));
+      icon(l.kind === "conversation" ? digestFor(l) : null),
+      // The short ID tells chats apart, so a long client name gives way
+      // to it; other client names are counted after the name.
+      h("span", { class: "lane-label" },
+        n.client ? [h("span", { class: "lane-client" }, text(n.client)), h("span", { class: "lane-id" }, " · ", text(n.shortId))]
+          : h("span", { class: "lane-client" }, text(n.name)),
+        n.more ? h("span", { class: "more" }, "+" + n.more) : null),
+      h("span", { class: "lane-meta" }, when ? h("time", { title: fullTime(l.last_time) }, when) : null,
+        unread ? h("span", { class: "unread" }, unread + " new") : null),
+      // A preview of the last loaded action, labelled so it never reads
+      // as the chat's name; it is the server's hint, not exact input.
+      h("span", { class: "lane-sub" }, p
+        ? [h("span", { class: "preview-label" }, "Last: "), p.time ? [h("time", { title: fullTime(p.time) }, laneTime(p.time, now)), " "] : null, text(p.verb), p.text ? [": ", text(p.text), p.cut ? "…" : ""] : null]
+        : l.items + " item(s)"));
     const li = materialize(document, node);
     // Keep the element of a lane and change only its content, so a click
     // that is in progress still lands on the same element.
@@ -374,10 +392,21 @@ function renderLanes() {
   list.replaceChildren(...fresh);
   if (focused) {
     const again = [...list.children].find((li) => li.dataset.lane === focused);
-    const sameEntry = !again && focusEntry ? [...box.children].find((x) => x.dataset.entry === focusEntry) : null;
-    const fallback = sameEntry ? sameEntry.querySelector("[data-action=\"jump\"]") : null;
-    if (again || fallback) { (again || fallback).focus(); }
+    if (again) { again.focus(); }
   }
+}
+
+// armMidnight renders the list again at the next local midnight, so
+// "14:53" becomes "Yesterday" without new activity.
+function armMidnight() {
+  if (view.midnight) { return; }
+  let day = new Date().toDateString();
+  // A minute's check, not a timer to midnight: it follows clock changes
+  // and sleep, and never holds anything open longer than the page.
+  view.midnight = setInterval(() => {
+    const today = new Date().toDateString();
+    if (today !== day) { day = today; view.lanesSignature = ""; schedule(); }
+  }, 60 * 1000);
 }
 
 function coverageText(c) {
@@ -430,25 +459,47 @@ function renderTimeline() {
   const items = laneTimeline(store, shown.id);
   const ctx = { records: store.records, serverOS: client.status.serverOS, expanded: view.expanded, open: view.open };
   const alias = aliasOf(lane);
-  // The title changes only with its own inputs, so an open Conversation ID
-  // (and a selection in it) survives new records.
-  const titleSig = [laneIdentity(lane), alias, (view.laneNames && view.laneNames.get(laneIdentity(lane))) || "", !!view.digests.get(laneIdentity(lane)),
-    !!view.archive, !!view.attention.pending, lane.conversationId || "", lane.identitySource || ""].join("\u0000");
-  if (titleSig !== view.titleSignature) {
-  view.titleSignature = titleSig;
-  $("lane-title").replaceChildren(materialize(document, h("div", {},
-    lane.kind === "conversation" ? [
-      h("strong", { title: lane.conversationId || "" }, text(alias || (view.laneNames && view.laneNames.get(laneIdentity(lane))) || lane.conversationId || "")), " ",
-      h("span", { class: "badge claimed", tabindex: 0, title: "Named by the client's own metadata (" + (lane.identitySource || "?") + "); not verified",
-        "aria-label": "client-claimed: named by the client's own metadata (" + (lane.identitySource || "?") + "), not verified" }, "client-claimed"), " ",
-      view.digests.get(laneIdentity(lane)) ? h("button", { type: "button", "data-action": "rename" }, alias ? "Rename or remove alias" : "Set alias") : null, " ",
-      h("details", { class: "conv-id" }, h("summary", {}, "Conversation ID"), h("code", {}, text(lane.conversationId || "")),
-        " via ", text(lane.identitySource || ""))]
-      : h("strong", {}, LANE_NAMES[lane.kind] || lane.kind),
-    view.archive ? h("div", { class: "warning" }, "Older history (archive view, separate from the live view). ",
-      h("button", { type: "button", "data-action": "close-archive" }, "Back to the live view")) : null,
-    view.attention.pending ? h("div", { class: "note" }, "New activity in another chat; auto-switch waits while you read.") : null,
-    h("div", { class: "note" }, "The audit records what was asked for and the outcome, not file contents read or process output."))));
+  // The title changes only with its own inputs (not with new records), so
+  // an open "About this chat" and a selection in it survive new activity.
+  const d = lane.kind === "conversation" ? view.digests.get(laneIdentity(lane)) : null;
+  const editing = !!(view.renaming.editing && d && view.renaming.digest === hex(d));
+  // An editor whose chat is no longer shown is closed, so it never holds
+  // auto-switch back on its own.
+  if (view.renaming.editing && !editing) { view.renaming = rename.cancel(); }
+  const clientNames = [...(lane.client_names || [])].sort();
+  const titleSig = [laneIdentity(lane), alias, (view.laneNames && view.laneNames.get(laneIdentity(lane))) || "", !!d,
+    !!view.archive, !!view.attention.pending, lane.conversationId || "", lane.identitySource || "", JSON.stringify(clientNames),
+    editing].join("\u0000");
+  // While the owner types an alias, the title is not rebuilt under them.
+  if (titleSig !== view.titleSignature && !(editing && $("lane-title").querySelector("input"))) {
+    view.titleSignature = titleSig;
+    const source = lane.identitySource || "?";
+    $("lane-title").replaceChildren(materialize(document, h("div", {},
+      lane.kind === "conversation" ? [
+        h("strong", { title: lane.conversationId || "" }, text((view.laneNames && view.laneNames.get(laneIdentity(lane))) || lane.conversationId || "")), " ",
+        h("span", { class: "badge claimed", tabindex: 0, title: "Named by the client's own metadata (" + source + "); not verified",
+          "aria-label": "client-claimed: named by the client's own metadata (" + source + "), not verified" }, "client-claimed"), " ",
+        editing
+          ? h("span", { class: "rename-editor" }, h("label", { for: "tm-alias" }, "Alias "),
+            h("input", { id: "tm-alias", type: "text", "aria-label": "Alias for this chat (empty removes it)" }),
+            h("button", { type: "button", "data-action": "rename-save" }, "Save"), h("button", { type: "button", "data-action": "rename-cancel" }, "Cancel"))
+          : d ? h("button", { type: "button", "data-action": "rename", title: "Name this chat in this browser" }, "✎ Rename") : null, " ",
+        h("details", { class: "conv-id" }, h("summary", {}, "About this chat"),
+          h("dl", { class: "obj" },
+            h("dt", {}, "Conversation ID"), h("dd", {}, h("code", {}, text(lane.conversationId || ""))),
+            h("dt", {}, "Identity source"), h("dd", {}, text(source)),
+            h("dt", {}, "Client names"), h("dd", {}, text(clientNames.join(", ") || "none recorded"))))]
+        : h("strong", {}, text((view.laneNames && view.laneNames.get(laneIdentity(lane))) || lane.kind)),
+      view.archive ? h("div", { class: "warning" }, "Older history (archive view, separate from the live view). ",
+        h("button", { type: "button", "data-action": "close-archive" }, "Back to the live view")) : null,
+      view.attention.pending ? h("div", { class: "note" }, "New activity in another chat; auto-switch waits while you read.") : null,
+      h("div", { class: "note" }, "The audit records what was asked for and the outcome, not file contents read or process output."))));
+    const input = $("lane-title").querySelector("input");
+    if (input) {
+      input.value = view.renaming.value;
+      input.focus();
+      input.select();
+    }
   }
 
   // Keep the reader's place: remember the first visible entry and its offset.
@@ -643,6 +694,7 @@ async function onTimelineClick(ev) {
       break;
     }
     case "open-archive": {
+      view.renaming = rename.cancel(); // Another view: the title is rebuilt.
       if (view.loading) { break; }
       view.loading = "archive";
       render();
@@ -657,6 +709,7 @@ async function onTimelineClick(ev) {
       break;
     }
     case "close-archive":
+      view.renaming = rename.cancel();
       view.archive = null;
       await client.closeArchive();
       view.lanesSignature = "";
@@ -669,16 +722,42 @@ async function onTimelineClick(ev) {
       const d = view.digests.get(laneIdentity(lane));
       if (!d) { break; }
       // The alias stays in this browser, keyed by a hash of the conversation key.
-      const next = window.prompt("Alias for this chat (empty removes it):", view.aliases.get(hex(d)) || "");
-      if (next === null) { break; }
-      if (next.trim()) { view.aliases.set(hex(d), next.trim().slice(0, 80)); } else { view.aliases.delete(hex(d)); }
-      saveAliases();
-      view.lanesSignature = "";
+      view.renaming = rename.open(hex(d), view.aliases.get(hex(d)) || "");
       view.renderNonce++;
       render();
       break;
     }
+    case "rename-save":
+      finishRename(true);
+      break;
+    case "rename-cancel":
+      finishRename(false);
+      break;
   }
+}
+
+// finishRename closes the alias editor; saving names the chat it was
+// opened for, whatever is selected now.
+function finishRename(save) {
+  const input = $("lane-title").querySelector("input");
+  if (save && input) {
+    const [closed, change] = rename.save(view.renaming, input.value);
+    view.renaming = closed;
+    if (change) {
+      if (change.alias) { view.aliases.set(change.digest, change.alias); } else { view.aliases.delete(change.digest); }
+      saveAliases();
+    }
+  } else {
+    view.renaming = rename.cancel();
+  }
+  view.lanesSignature = "";
+  view.titleSignature = "";
+  view.renderNonce++;
+  render();
+  // Focus returns to Rename; a waiting switch resumes on the next scroll,
+  // selection or focus change, not under the owner's hand.
+  const again = $("lane-title").querySelector("[data-action=\"rename\"]");
+  if (again) { again.focus(); }
 }
 
 function base64(bytes) {
@@ -701,6 +780,11 @@ async function copy(button, s) {
 
 // selectLane selects a lane; an automatic switch never moves keyboard focus.
 function selectLane(identity, auto = false) {
+  // Choosing another chat by hand closes an open alias editor unsaved.
+  if (!auto && view.renaming.editing && identity !== (view.archive ? view.archive.selected : view.selected)) {
+    view.renaming = rename.cancel();
+    view.titleSignature = "";
+  }
   if (view.archive) {
     view.archive.selected = identity; // The live selection and a deferred switch stay as they are.
   } else {
@@ -763,6 +847,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("again").addEventListener("click", () => { $("login-error").textContent = ""; show("login"); });
   $("timeline").addEventListener("click", onTimelineClick);
   $("lane-title").addEventListener("click", onTimelineClick); // Alias and archive controls.
+  $("lane-title").addEventListener("keydown", (e) => {
+    if (e.target.id !== "tm-alias" || e.isComposing || e.keyCode === 229) { return; }
+    if (e.key === "Enter") { e.preventDefault(); finishRename(true); }
+    if (e.key === "Escape") { e.preventDefault(); finishRename(false); }
+  });
+  $("lane-title").addEventListener("input", (e) => { if (e.target.id === "tm-alias") { view.renaming.value = e.target.value; } });
   // Leaving a card control may end reading; focus moves after focusout.
   $("timeline").addEventListener("focusout", () => setTimeout(tryResume, 0));
   $("timeline").addEventListener("toggle", (e) => {
