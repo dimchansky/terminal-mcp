@@ -106,6 +106,15 @@ Sources                    Build work · claimed OpenAI 7fa2… · history
 [Discover older conversations] [Earlier in this conversation] [Jump to latest]
 ```
 
+The sketch is the original design. As built after #11 and #12 (SPEC §10 is the contract):
+
+- **Outcomes say how a command ended:** `Exited · 0`, `Exited · 1`, `Terminated · SIGTERM`, `Last seen running` (with when) or `Started` with no exit in the loaded history. Only a confirmed success is green; seven looks with glyphs keep a launch, a historic observation, a live call, a warning, an error and an unknown outcome apart.
+- **Cards read left to right:** verb, note, outcome and its muted note on the left; the compact time (`14:53:51`) on the right, with the full date, zone and recorded text in its tooltip and in Details. Day separators mark local days without re-sorting. A command's working directory and the tokens before a script sit on one context line; Copy sits in the command block's corner. A command's launch duration is in Details.
+- **Details name their moments:** "Result when this call returned", "Action result", and for a command the "Latest recorded process observation" from another call, with Show that call.
+- **Chats are recognisable:** an alias, or a client name and a short ID that stays visible; the last activity and unread count on the right; "Last: <verb>: <hint>" from the newest loaded action, never a title. Rename is inline; About this chat holds the full ID and the metadata's source.
+- **The top bar keeps things apart:** the connection (Connected), one chip per audit or history warning, auto-switch with a held-back switch and Show, and the session's end.
+- **Colours are tokens per theme,** checked for contrast by a test; keyboard focus is always visible.
+
 **Human-readable presentation is the default, forensic source is always available:**
 
 - **Process launch:** show **one readable command line with all supplied environment overrides placed before the executable and arguments**, with the working directory plainly visible. On Unix-like systems render a faithfully POSIX-shell-quoted *display equivalent* such as `GOFLAGS=-count=1 go test -race ./...` (quote spaces, quotes, dollars and other special characters correctly). This represents the direct `argv`/`env` invocation for human inspection; it **does not assert that the server ran a shell**. If an argument is itself a shell script (`sh -c`, `zsh -lc`, etc.), show that supplied script readably while retaining the real interpreter invocation. On Windows, render a deliberately labelled platform-appropriate form, not a fabricated POSIX command. If faithful command notation is impossible or ambiguous, fall back to visibly labelled individual arguments/env values with a warning — never silently change their meaning. Exact `argv`, `cwd`, env and options remain available in the original JSONL. A copyable command is offered only when its quoting/encoding is correct for the labelled shell.

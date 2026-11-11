@@ -217,8 +217,54 @@ func (f *fixture) history() {
 	f.write(audit.Event{RequestID: replay, Tool: "file_write", Phase: "request_start", OperationID: written,
 		Args: map[string]any{"operation_id": written, "path": "README.md", "content": "replayed"}, CallMeta: meta("alpha")})
 	f.write(audit.Event{RequestID: replay, Tool: "file_write", Phase: "request_finish", OperationID: written, Status: "applied", Replayed: true})
+	f.outcomes()
 	// A large record (about 3 MiB), deferred in pages.
 	f.chat("beta", "file_write", map[string]any{"path": "big.txt", "content": strings.Repeat("0123456789abcdef\n", 3<<20/17)}, true)
+}
+
+// command writes a launch whose finish saw the process as given, as the
+// server records it: a session ID and the process state.
+func (f *fixture) command(chat string, argv []string, process map[string]any) string {
+	f.n++
+	id := fmt.Sprintf("req-%04d", f.n)
+	op := fmt.Sprintf("op-%04d", f.n)
+	f.write(audit.Event{RequestID: id, Tool: "terminal_start", Phase: "request_start", OperationID: op,
+		Args: map[string]any{"argv": argv, "cwd": "/src/tools", "operation_id": op, "wait_for": "completion", "wait_ms": 5000}, CallMeta: meta(chat)})
+	f.write(audit.Event{RequestID: id, OperationID: op, Tool: "terminal_start", Phase: "operation_start"})
+	f.write(audit.Event{RequestID: id, OperationID: op, Tool: "terminal_start", Phase: "operation_finish", Status: "applied", DurationMS: 9,
+		Receipt: map[string]any{"operation_id": op, "status": "applied", "data": map[string]any{"session_id": "sess-" + id}}})
+	f.write(audit.Event{RequestID: id, OperationID: op, Tool: "terminal_start", Phase: "request_finish", Status: "applied", DurationMS: 120,
+		SessionID: "sess-" + id, Process: process})
+	return "sess-" + id
+}
+
+// outcomes covers how commands end and other results, in chat "epsilon".
+func (f *fixture) outcomes() {
+	f.command("epsilon", []string{"go", "vet", "./..."}, map[string]any{"state": "exited", "exit": map[string]any{"code": 0}})
+	f.command("epsilon", []string{"go", "test", "./broken/..."}, map[string]any{"state": "exited", "exit": map[string]any{"code": 1}})
+	f.command("epsilon", []string{"sleep", "600"}, map[string]any{"state": "exited", "exit": map[string]any{"signal": "terminated"}})
+	f.command("epsilon", []string{"tail", "-f", "server.log"}, map[string]any{"state": "running"})
+	// Running at launch; a later read saw it exit.
+	sess := f.command("epsilon", []string{"make", "build"}, map[string]any{"state": "running"})
+	f.n++
+	id := fmt.Sprintf("req-%04d", f.n)
+	f.write(audit.Event{RequestID: id, Tool: "terminal_read", Phase: "request_start", Args: map[string]any{"session_id": sess, "wait_for": "completion", "wait_ms": 5000}, CallMeta: meta("epsilon")})
+	f.write(audit.Event{RequestID: id, Tool: "terminal_read", Phase: "request_finish", Status: "ok", DurationMS: 800, SessionID: sess,
+		Process: map[string]any{"state": "exited", "exit": map[string]any{"code": 0}}})
+	// A write that was partly done, and a request the model gave up on.
+	f.n++
+	id = fmt.Sprintf("req-%04d", f.n)
+	op := fmt.Sprintf("op-%04d", f.n)
+	f.write(audit.Event{RequestID: id, Tool: "terminal_write", Phase: "request_start", OperationID: op,
+		Args: map[string]any{"session_id": sess, "operation_id": op, "input": []map[string]any{{"text": "yes\n"}}}, CallMeta: meta("epsilon")})
+	f.write(audit.Event{RequestID: id, OperationID: op, Tool: "terminal_write", Phase: "operation_start"})
+	f.write(audit.Event{RequestID: id, OperationID: op, Tool: "terminal_write", Phase: "operation_finish", Status: "partial", DurationMS: 3,
+		Receipt: map[string]any{"operation_id": op, "status": "partial", "data": map[string]any{"bytes_written": 2}}})
+	f.write(audit.Event{RequestID: id, OperationID: op, Tool: "terminal_write", Phase: "request_finish", Status: "partial", DurationMS: 5})
+	f.n++
+	id = fmt.Sprintf("req-%04d", f.n)
+	f.write(audit.Event{RequestID: id, Tool: "file_read", Phase: "request_start", Args: map[string]any{"files": []map[string]any{{"path": "huge.log"}}}, CallMeta: meta("epsilon")})
+	f.write(audit.Event{RequestID: id, Tool: "file_read", Phase: "request_finish", Status: "canceled", Outcome: "unknown", DurationMS: 30000})
 }
 
 // live appends activity until the test is interrupted.

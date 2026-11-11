@@ -399,7 +399,7 @@ In a source checkout, `make dashboard` runs `bin/terminal-mcp dashboard`; it bui
 
 The dashboard shows complete audit inputs, including any secrets a model supplied, so do not share the screen casually. It is local only: the embedded tunnel never forwards it. See SPEC §10 for the guard and lifetimes.
 
-Reading a card: its first line is a verb and one outcome.
+Reading a card: its first line is a verb and one short outcome, with a muted note after it (why an outcome is unknown, when an exit was seen) and the time on the right (hover for the full date; Details says it too). Green means only a confirmed success.
 - **Outcomes:** Done, Failed, Partly done, Running, Not run, Repeat of an earlier call, Canceled or Timed out (the model stopped waiting), or Outcome unknown.
 - **Commands:** they read how the program ended (`Exited · 0`, `Exited · 1`, `Terminated · SIGTERM`) with when the exit was seen, `Last seen running` with when, or `Started` when no exit is in the loaded history; a recorded exit error reads Outcome unknown. A running observation is history, never a claim that the program runs now.
 - **Polls:** they read "Checked: …", which is what the poll saw at that moment. A failed poll reads Failed.
@@ -409,11 +409,14 @@ Below that line come the outcome's detail (an error, counts) and the results tha
 If the page does not show what you expect:
 
 - **"does not support the dashboard"** from the command: the running server is older than the dashboard; update it first (`make update`).
+- The top bar reads **Connected** while new audit records arrive; it says nothing about running processes. Each problem is its own chip next to it.
 - **Offline** or **Reconnecting** with a reason: the page retries by itself. "The server is busy" and "cannot be reached" are temporary; "too many dashboard views are open" means the session's or the server's window limit is in use (close another tab or the archive view); "does not fit within one view's capacity" means a very large burst of recent activity; "kept failing to rebuild" means the server could not rebuild the view and opens a new one.
 - **"already open in another tab"**: each sign-in serves one tab. Sign in with a new code to view it in another tab too.
 - **"The server is stopping or restarting"**, **"Your session has ended"** or **"replaced by a newer sign-in"**: run `terminal-mcp dashboard` again for a new code; a restart ends every session.
 - **"Some activity may have been missed while the view was rebuilt"**: the server rebuilt the view; new activity during the rebuild is shown, but not counted as new.
 - A card shows **Large record (N bytes)** with **Load complete original**: the record's base64 form is over one page (1 MiB, about 768 KiB of JSONL); the button reads it in full.
+- **"New activity in <chat>. Auto-switch waits while you read."** beside Auto-switch: you are reading (scrolled up, selecting text, a block or row open, renaming); **Show** goes there now.
+- A command reads **Started** with "Exit not recorded in the loaded history": no call loaded in this chat recorded its exit (the program may still run, or another chat read it).
 - A chat is missing: use **Discover older conversations**; if older history was evicted from the live view, **Open older history** shows it separately.
 
 ## 5. Audit and diagnostics
