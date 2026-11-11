@@ -282,25 +282,18 @@ function inputView(item, ctx) {
   const out = [legacy];
   const render = Object.hasOwn(INPUT, a.tool) ? INPUT[a.tool] : null;
   let used = [];
-  let rendered = !render;
   let extra = null; // What a renderer moves to Details (a script's full command line).
   if (render && args) {
     const [view, u, more] = render(args, ctx);
-    if (view) { out.push(view); used = u; rendered = true; extra = more || null; }
+    if (view) { out.push(view); used = u; extra = more || null; }
   }
   let protocol = extra;
   if (args && args.kind === "object") {
     const rest = args.entries.filter((e) => !used.includes(e.key));
-    // Everything stays visible when the split could mislead: a rejected or
-    // failed call (the bad value may be a protocol field), input a
-    // renderer could not show, or a tool this page does not know.
-    const failed = ["rejected", "failed", "error"].includes(a.status) || a.outcome === "failed";
-    const split = rendered && knownTool(a.tool) && !a.rejected && !failed;
-    const cls = (e) => (split ? fieldClass(a.tool, e.key) : "main");
-    const zeroLimit = (e) => split && a.tool === "terminal_start" && e.key === "max_runtime_ms" && e.value.kind === "number" && e.value.value === 0;
-    const main = rest.filter((e) => cls(e) === "main" && !zeroLimit(e));
-    const undefinedFields = rest.filter((e) => cls(e) === "");
-    const folded = rest.filter((e) => cls(e) === "protocol" || (cls(e) === "main" && zeroLimit(e)));
+    const place = fieldPlacement(item, args);
+    const main = rest.filter((e) => place(e) === "main");
+    const undefinedFields = rest.filter((e) => place(e) === "undefined");
+    const folded = rest.filter((e) => place(e) === "details");
     if (main.length) { out.push(fieldList(main, used.length ? "Also supplied" : "Supplied fields", "other", knownTool(a.tool) ? a.tool : "")); }
     if (undefinedFields.length) { out.push(fieldList(undefinedFields, "Not in this server version's schema", "undefined-fields")); }
     if (folded.length) { protocol = [extra, fieldList(folded, "Retry identity, waits and limits")]; }
@@ -310,6 +303,41 @@ function inputView(item, ctx) {
     out.push(h("div", { class: "note" }, "No arguments were recorded."));
   }
   return [h("div", { class: "input" }, out), protocol];
+}
+
+// representable says whether a tool's input renderer can show its
+// arguments (the renderers above return nothing in exactly these cases).
+function representable(tool, args) {
+  if (!Object.hasOwn(INPUT, tool)) { return true; }
+  if (!args) { return false; }
+  const kindOf = (k) => { const n = field(args, k); return n ? n.kind : ""; };
+  switch (tool) {
+    case "terminal_start": return !!stringArray(field(args, "argv")) && stringMap(field(args, "env")) !== null;
+    case "terminal_write": return kindOf("input") === "array";
+    case "file_edit": return kindOf("edits") === "array";
+    case "file_write": return kindOf("content") === "string";
+  }
+  return true;
+}
+
+// fieldPlacement says where a card shows each top-level argument: "main",
+// "details" (what only steers the call) or "undefined" (not in the
+// schema, inline and marked). Everything stays inline when the split could
+// mislead: a rejected or failed call (the bad value may be a protocol
+// field), input a renderer could not show, or a tool this page does not
+// know. Search uses the same rule to say where a match is.
+export function fieldPlacement(item, args) {
+  const a = item.action;
+  const failed = ["rejected", "failed", "error"].includes(a.status) || a.outcome === "failed";
+  const split = representable(a.tool, args) && knownTool(a.tool) && !a.rejected && !failed;
+  return (e) => {
+    if (!split) { return "main"; }
+    const c = fieldClass(a.tool, e.key);
+    if (c === "") { return "undefined"; }
+    // A zero time limit means none: it is shown in Details.
+    if (c === "protocol" || (a.tool === "terminal_start" && e.key === "max_runtime_ms" && e.value.kind === "number" && e.value.value === 0)) { return "details"; }
+    return "main";
+  };
 }
 
 // fieldList lists fields; with a tool, keys inside them that its schema
@@ -683,11 +711,8 @@ const COMPACT = new Set(["terminal_list", "terminal_read", "file_list", "file_se
 // fail, run partly or end unknown. Otherwise null.
 export function compactable(item, ctx) {
   const a = item.action;
-  if (!a || !COMPACT.has(a.tool) || !a.start || a.input !== "recorded" || a.legacy || a.possibly_unrecorded) { return null; }
-  const e = item.effect;
-  const phases = [a.start, a.finish, a.rejected, e && e.start, e && e.finish].filter(Boolean);
-  if (phases.some((p) => p.conflict || p.more > 0 || (p.occurrences || [p.primary]).some((id) => id.startsWith("p:")))) { return null; }
-  if (a.identity && a.identity.metadataInvalid) { return null; }
+  if (!a || !COMPACT.has(a.tool) || !a.start || a.input !== "recorded" || a.legacy) { return null; }
+  if (hasWarning(item)) { return null; }
   const rs = recordState(ctx, a.start.primary);
   if (rs.state !== "loaded" || !rs.parsed.value || rs.parsed.issues.length) { return null; }
   const args = field(rs.parsed.value, "args");
@@ -696,6 +721,27 @@ export function compactable(item, ctx) {
   if (!["done", "checked", "running"].includes(o.kind)) { return null; }
   return { o, summary: mainSummary(a.tool, args) };
 }
+
+// hasWarning says whether an action carries a header warning: a finish
+// that may be unrecorded, journal copies that differ or are more than
+// shown, a pending row identity, or unusable client metadata.
+export function hasWarning(item) {
+  const a = item.action;
+  if (!a) { return false; }
+  const e = item.effect;
+  if (a.possibly_unrecorded || (e && e.possibly_unrecorded) || (e && e.origin_conflict)) { return true; }
+  const phases = [a.start, a.finish, a.rejected, e && e.start, e && e.finish].filter(Boolean);
+  if (phases.some((p) => p.conflict || p.more > 0 || (p.occurrences || [p.primary]).some((id) => typeof id === "string" && id.startsWith("p:")))) { return true; }
+  return !!(a.identity && a.identity.metadataInvalid);
+}
+
+// itemOutcome is an item's outcome with its facts, as its card shows it
+// (a command's later observation included when ctx.processes is set).
+export function itemOutcome(item, ctx) { return outcome(item, factsOf(item, ctx)); }
+
+// startState is the state of an action's start record (loaded with its
+// parsed value, loading, large, released or unavailable).
+export function startState(item, ctx) { return recordState(ctx, item.action.start.primary); }
 
 // groupTarget is the poll group an item joins on the timeline and counts
 // in for unread: polls of one target that need no attention. A poll that
@@ -734,6 +780,26 @@ function mainSummary(tool, args) {
       h("code", {}, text(v.length > 60 ? v.slice(0, 59).join("") + "…" : v.join("")))]);
   }
   return parts;
+}
+
+// rowText is the text a compact row shows (verb and its cut main values),
+// or null when the item is not shown as a row.
+export function rowText(item, ctx) {
+  const row = compactable(item, ctx);
+  if (!row) { return null; }
+  const a = item.action;
+  const args = field(startState(item, ctx).parsed.value, "args");
+  const parts = [verb(a.tool), row.o.label];
+  if (args && Object.hasOwn(FIELDS, a.tool)) {
+    for (const name of FIELDS[a.tool].main) {
+      if (name.includes(".") || name.includes("[]")) { continue; }
+      const node = field(args, name);
+      if (!node) { continue; }
+      const v = Array.from(shortValue(node));
+      parts.push(name, v.length > 60 ? v.slice(0, 59).join("") : v.join(""));
+    }
+  }
+  return parts.join(" ");
 }
 
 function shortValue(node) {
