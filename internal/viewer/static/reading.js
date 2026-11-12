@@ -42,3 +42,16 @@ export function seenEntries(entries, isShown) {
   if (!entries.length) { return []; }
   return isShown(entries[entries.length - 1]) ? entries : entries.filter(isShown);
 }
+
+// settleStep advances holding the view at the timeline's tail by one
+// animation frame, given the scroll height and the frame's time (ms): the
+// hold ends once the height has stayed the same for two frames (cards near
+// the tail have their real size), or two seconds after its first frame, so
+// it never runs on.
+export const settleStart = Object.freeze({ last: -1, stable: 0, since: -1, done: false });
+
+export function settleStep(s, height, now) {
+  const since = s.since < 0 ? now : s.since;
+  const stable = height === s.last ? s.stable + 1 : 0;
+  return { last: height, stable, since, done: stable >= 2 || now - since >= 2000 };
+}

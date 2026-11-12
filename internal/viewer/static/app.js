@@ -15,7 +15,7 @@ import { icon, conversationKey } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
 import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper, earlierCursor } from "./model.js";
 import { commandLine } from "./shell.js";
-import { isReading, canSee, closeEffects, seenEntries } from "./reading.js";
+import { isReading, canSee, closeEffects, seenEntries, settleStart, settleStep } from "./reading.js";
 import { active as filtersActive, apply as applyFilters } from "./filter.js";
 import { verb } from "./outcome.js";
 
@@ -164,6 +164,7 @@ const view = {
   itemsOf: new WeakMap(), // Entry element → its items.
   follow: true, // Following the live tail while the owner is at the bottom.
   programmatic: null, // scrollTop set by the page itself (its scroll event is ignored).
+  settling: null, // The run while toTail holds the view at the tail as cards take their sizes.
   scheduled: false,
   renaming: rename.cancel(), // The alias editor in the chat's title.
   panelOpen: false, // The conversation list is open over the timeline (narrow windows).
@@ -190,6 +191,7 @@ function resetView() {
   setPanel(false, "reset");
   if (view.midnight) { clearInterval(view.midnight); view.midnight = null; }
   view.archive = null;
+  view.settling = null;
   view.visible.clear();
   if (view.observer) { view.observer.disconnect(); view.observer = null; }
   for (const id of ["lane-list", "timeline", "lane-title", "connection", "warnings", "pending", "chats-unread"]) { $(id).replaceChildren(); }
@@ -529,7 +531,7 @@ function setFilters(change) {
   view.renderNonce++;
   render();
   if (was && !filtersActive(view.filters)) {
-    if (view.follow) { toTail(); }
+    if (view.follow) { toTail(true); }
     tryResume();
   }
 }
@@ -857,7 +859,7 @@ async function onTimelineClick(ev) {
       view.lanesSignature = "";
       view.renderNonce++;
       render();
-      toTail(); // The live view opens at its tail, following it.
+      toTail(true); // The live view opens at its tail, following it.
       tryResume();
       break;
     case "rename": {
@@ -966,20 +968,40 @@ function selectLane(identity, auto = false) {
   view.follow = true;
   if (!auto) { view.lanesSignature = ""; }
   render();
-  toTail();
+  toTail(true);
   // Choosing the chat already shown re-renders nothing, so what is in view
   // (perhaps hidden under the list until now) is marked seen here.
   markSeen();
 }
 
-// toTail shows the newest entries and keeps following them; card sizes are
-// estimated until shown, so the position is corrected once more after layout.
-function toTail() {
+// toTail shows the newest entries and keeps following them. Card sizes are
+// estimated until shown, so the tail moves as cards near it take their real
+// size. A live render corrects the position once more after layout; opening
+// a chat, Jump to latest, leaving the archive or clearing the filters
+// (hold) keeps the view at the tail until its height settles, unless the
+// owner scrolls first. A render during a hold leaves it running.
+function toTail(hold = false) {
   const box = $("timeline");
   view.follow = true;
   scrollTo(box.scrollHeight);
-  requestAnimationFrame(() => { if (view.follow) { scrollTo(box.scrollHeight); } });
+  if (!hold) {
+    if (!view.settling) { requestAnimationFrame(() => { if (view.follow) { scrollTo(box.scrollHeight); } }); }
+    return;
+  }
+  const run = { ...settleStart };
+  view.settling = run;
+  const step = (now) => {
+    if (view.settling !== run) { return; }
+    if (!view.follow) { view.settling = null; return; }
+    scrollTo(box.scrollHeight);
+    Object.assign(run, settleStep(run, box.scrollHeight, now));
+    if (run.done) { view.settling = null; } else { requestAnimationFrame(step); }
+  };
+  requestAnimationFrame(step);
 }
+
+// stopSettling: the owner's own scrolling input ends the hold at the tail.
+function stopSettling() { view.settling = null; }
 
 // scrollTo moves the timeline; the scroll event it causes is not the
 // owner's and must not change following.
@@ -995,6 +1017,9 @@ function onScroll() {
   const box = $("timeline");
   if (view.programmatic !== null && Math.abs(box.scrollTop - view.programmatic) < 2) { view.programmatic = null; return; }
   view.programmatic = null;
+  // While the view is held at the tail, a scroll is the layout settling
+  // (cards taking their size), not the owner: following stays on.
+  if (view.settling) { return; }
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   view.follow = atBottom;
   $("jump").hidden = view.follow;
@@ -1068,7 +1093,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("lane-list").addEventListener("pointerenter", () => { view.pointerInLanes = true; });
   $("lane-list").addEventListener("pointerleave", () => { view.pointerInLanes = false; schedule(); });
   $("timeline").addEventListener("scroll", onScroll);
-  $("jump").addEventListener("click", () => { toTail(); tryResume(); });
+  for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) { $("timeline").addEventListener(type, stopSettling); }
+  $("jump").addEventListener("click", () => { toTail(true); tryResume(); });
   document.addEventListener("selectionchange", () => { const s = window.getSelection(); if (s && s.isCollapsed) { tryResume(); } });
   $("lane-list").addEventListener("click", (e) => { const li = e.target.closest("li[data-lane]"); if (li) { selectLane(li.dataset.lane); } });
   $("lane-list").addEventListener("keydown", onLaneKey);
@@ -1079,7 +1105,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     view.filters.query = e.target.value;
     view.renderNonce++;
     schedule();
-    if (was && !filtersActive(view.filters)) { requestAnimationFrame(() => { if (view.follow) { toTail(); } tryResume(); }); }
+    if (was && !filtersActive(view.filters)) { requestAnimationFrame(() => { if (view.follow) { toTail(true); } tryResume(); }); }
   });
   $("filter-tools").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-key]");

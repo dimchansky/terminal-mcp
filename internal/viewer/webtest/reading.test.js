@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isReading, canSee, closeEffects, seenEntries } from "../static/reading.js";
+import { isReading, canSee, closeEffects, seenEntries, settleStart, settleStep } from "../static/reading.js";
 
 const idle = { follow: true, selecting: false, reading: false, working: false, archive: false, renaming: false, panel: false };
 
@@ -36,4 +36,17 @@ test("reaching the end of the timeline marks every entry it shows seen", () => {
   shown.delete("d");
   assert.deepEqual(seenEntries(["a", "b", "c", "d"], isShown), ["c"], "scrolled up: only what is shown");
   assert.deepEqual(seenEntries([], isShown), []);
+});
+
+test("the view is held at the tail until its height settles, never for long", () => {
+  let s = settleStart;
+  let t = 1000;
+  for (const h of [1000, 3000, 3400]) { s = settleStep(s, h, t += 16); assert.equal(s.done, false, "still growing at " + h); }
+  s = settleStep(s, 3400, t += 16);
+  assert.equal(s.done, false, "one unchanged frame is not enough");
+  s = settleStep(s, 3400, t += 16);
+  assert.equal(s.done, true, "two unchanged frames: settled");
+  s = settleStart;
+  for (t = 5000; t < 7000; t += 33) { s = settleStep(s, t, t); assert.equal(s.done, false, "still growing at " + t); }
+  assert.equal(settleStep(s, 1, 7000).done, true, "it gives up two seconds after its first frame, at any frame rate");
 });
