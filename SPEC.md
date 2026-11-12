@@ -618,7 +618,7 @@ The page at `/dashboard/` is a set of plain ES modules embedded in the binary. T
   - Only live changes count: a new action (an operation replay included), a change of request state, status, outcome, rejection or possibly-unrecorded mark, or an effect finishing or changing status.
   - Snapshots, history pages, rows delivered again after a reconnect, and lane moves never count. A generation change keeps unread by lane identity. Activity that arrives only through a new snapshot is not marked unread; the possible-unseen indicator covers it.
   - While unseen, a start and its finish count once, and polls of one process or download that need no attention count once together; a poll that cannot fold counts on its own.
-  - An item is seen when at least half of its card, or half of the view, is shown while the tab is visible. The archive view marks nothing seen.
+  - An item is seen when at least half of its card, or half of the view, is shown while the tab is visible. Once the timeline's last entry is shown that way, under the same conditions (a chat opens at its tail, the owner scrolls to the bottom or uses Jump to latest), every entry the timeline shows is seen, including new activity above the view; items hidden by a filter stay unread. The archive view marks nothing seen.
   - Each lane shows "N new" as text.
 - **Auto-switch.** Auto-switch is off by default.
   - When on, it moves the selection only to a claimed conversation that starts a new live call of a known non-polling tool.

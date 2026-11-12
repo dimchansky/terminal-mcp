@@ -18,10 +18,11 @@ export function canSee(f) {
 
 // closeEffects says what closing the conversation list does, by why it
 // closes: {focus, seen, resume}. focus returns keyboard focus to Chats;
-// seen marks what is now in view as seen; resume lets a waiting switch go
-// ahead. Choosing a chat does neither (the chosen chat is marked seen once
-// shown); a click on a header control lets that control decide, so no
-// switch goes first; a reset (sign-out, an ended session) only clears state.
+// seen marks what is now in view (the whole timeline, at its end) as seen;
+// resume lets a waiting switch go ahead. Choosing a chat does neither (the
+// chosen chat is marked seen once shown); a click on a header control lets
+// that control decide, so no switch goes first; a reset (sign-out, an
+// ended session) only clears state.
 export function closeEffects(reason) {
   switch (reason) {
     case "escape": case "toggle": return { focus: true, seen: true, resume: true };
@@ -30,4 +31,14 @@ export function closeEffects(reason) {
     case "bar": return { focus: false, seen: true, resume: false };
     default: return { focus: false, seen: false, resume: false }; // "reset"
   }
+}
+
+// seenEntries picks the timeline entries (in order, day separators left
+// out) that count as seen now: those shown, or every entry once the last
+// one is shown, because the owner has reached the end of the timeline. New
+// activity above the view (a chat opens at its tail) is then not left
+// unread. Items a filter hides are not entries, so they stay unread.
+export function seenEntries(entries, isShown) {
+  if (!entries.length) { return []; }
+  return isShown(entries[entries.length - 1]) ? entries : entries.filter(isShown);
 }

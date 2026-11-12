@@ -119,3 +119,15 @@ test("attentionFor counts by lane identity and poll target of the store", async 
   assert.equal(att.count("c\u0000openai/session\u0000c-1"), 1, "counted in the lane identity");
   assert.equal(att.count("g1-l1"), 0, "never in the per-generation lane ID");
 });
+
+test("marking an older copy of an item seen never makes a repeated delivery count", () => {
+  const { att } = setup();
+  const it = act("s", "chat-b", "file_receive");
+  att.observe([{ type: "added", item: it }], { live: true }, ctx({ autoSwitch: false }));
+  const done = { ...it, effect: { state: "finished", status: "ok" } };
+  att.observe([{ type: "changed", item: done }], { live: true }, ctx({ autoSwitch: false }));
+  att.seen([it]); // The card on screen was rendered before the finish arrived.
+  assert.equal(att.count("chat-b"), 0);
+  att.observe([{ type: "changed", item: done }], { live: true }, ctx({ autoSwitch: false }));
+  assert.equal(att.count("chat-b"), 0, "the same finish delivered again is not new");
+});

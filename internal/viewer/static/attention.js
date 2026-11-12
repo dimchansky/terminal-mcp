@@ -26,7 +26,7 @@ export class Attention {
     this.unitOf = unitOf;
     this.now = now;
     this.hold = hold;
-    this.known = new Map(); // Item key → transition last counted or seen.
+    this.known = new Map(); // Item key → transition last delivered.
     this.unread = new Map(); // Item key → {lane, unit}.
     this.heldUntil = 0;
     this.pending = null; // The lane a switch was deferred to while the owner was reading.
@@ -79,14 +79,13 @@ export class Attention {
     if (u) { u.lane = this.laneOf(item); u.unit = this.unitOf(item); }
   }
 
-  // seen marks items seen (the tab is visible and they were in view); it
-  // answers whether anything was unread.
+  // seen marks items seen (the tab is visible and the owner reached them);
+  // it answers whether anything was unread. The items may be older copies
+  // than the store holds (a card not re-rendered yet), so they never update
+  // known: every delivery already does.
   seen(items) {
     let any = false;
-    for (const item of items) {
-      any = this.unread.delete(item.key) || any;
-      this.known.set(item.key, transition(item));
-    }
+    for (const item of items) { any = this.unread.delete(item.key) || any; }
     return any;
   }
 

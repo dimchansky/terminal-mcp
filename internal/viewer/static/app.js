@@ -15,7 +15,7 @@ import { icon, conversationKey } from "./identicon.js";
 import { parseRecord, field, decode } from "./json.js";
 import { laneIdentity, firstPageKey, occurrencesOf, laneTimeline, orderLanes, defaultLane, keeper, earlierCursor } from "./model.js";
 import { commandLine } from "./shell.js";
-import { isReading, canSee, closeEffects } from "./reading.js";
+import { isReading, canSee, closeEffects, seenEntries } from "./reading.js";
 import { active as filtersActive, apply as applyFilters } from "./filter.js";
 import { verb } from "./outcome.js";
 
@@ -319,14 +319,18 @@ function selectedLane() {
   return lane;
 }
 
-// markSeen marks what is in view as seen, only while the tab is visible.
+// markSeen marks what is in view as seen, only while the tab is visible;
+// once the last entry is in view, every entry the timeline shows.
 function markSeen() {
   if (!view.attention || !canSee({ visible: document.visibilityState === "visible", archive: !!view.archive, panel: view.panelOpen })) { return; }
+  for (const el of view.visible) { if (!el.isConnected) { view.visible.delete(el); } }
+  // Nothing to do while the chat shown has nothing unread (the archive view
+  // marks nothing, so the live selection is the chat shown).
+  if (!view.visible.size || !view.attention.count(view.selected)) { return; }
+  const entries = [...$("timeline").children].filter((el) => view.itemsOf.has(el));
   let any = false;
-  for (const el of view.visible) {
-    if (!el.isConnected) { view.visible.delete(el); continue; }
-    const items = view.itemsOf.get(el);
-    if (items && view.attention.seen(items)) { any = true; }
+  for (const el of seenEntries(entries, (x) => view.visible.has(x))) {
+    if (view.attention.seen(view.itemsOf.get(el))) { any = true; }
   }
   if (any) { view.lanesSignature = ""; schedule(); }
 }
